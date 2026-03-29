@@ -33,7 +33,7 @@ def get_inline_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
-    video_url = "https://clck.ru/3SpDww"
+    
 # 3. Обрабатываем нажатия
 @dp.callback_query(F.data == "like")
 async def send_random_value(callback: types.CallbackQuery):
