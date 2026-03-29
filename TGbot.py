@@ -1,11 +1,7 @@
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from aiogram.client.session.aiohttp import AiohttpSession
 
-# Если у вас есть прокси (например, http://127.0.0.1:8080)
-session = AiohttpSession(proxy="http://109.120.190.5:443")
-bot = Bot(token="8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI", session=session)
 
 
 # Настройка логирования
