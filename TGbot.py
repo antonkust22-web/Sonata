@@ -26,10 +26,7 @@ def get_inline_keyboard():
             
     ])
     return keyboard
-def get_second_keyboard():
-    button = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Цена и время", callback_data="sale1")]
-    ])
+
 # 2. Отправляем сообщение с кнопками
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
