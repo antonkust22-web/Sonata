@@ -6,9 +6,11 @@ import asyncio
 text1 = (
 "Обходите белый список легко!"
  
-"✅Невидим для DPI (глубокий анализ трафик)"
-"✅Работает в строгих сетях (корпоративных, учебных)"
-"✅Простое подключение в один клик"
+"✅Невидим для DPI (глубокий анализ трафик)                "
+"✅Работает в строгих сетях (корпоративных, учебных)                   "
+"✅Простое подключение в один клик              "
+" "
+"дальше здесь будет информция о подписке"
 )
 
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
@@ -18,12 +20,12 @@ dp = Dispatcher()
 # 1. Создаем клавиатуру с кнопками
 def get_inline_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🏡Личный кабинет", callback_data="like"),
-            InlineKeyboardButton(text="📖Информация", callback_data="dislike"),
-            InlineKeyboardButton(text="👑Оформление подписки", callback_data="saling")
-        ],
-        [InlineKeyboardButton(text="Подключить устройство", url="https://google.com")]
+            [InlineKeyboardButton(text="Подключить устройство", url="https://google.com")],
+            
+            [InlineKeyboardButton(text="🏡Личный кабинет", callback_data="like")],
+            [InlineKeyboardButton(text="👑Оформление подписки", callback_data="saling")],
+            [InlineKeyboardButton(text="📖Информация", callback_data="dislike")],
+            
     ])
     return keyboard
 
@@ -47,12 +49,13 @@ async def send_random_value(callback: types.CallbackQuery):
 async def send_random_value(callback: types.CallbackQuery):
     await callback.answer("Вам не понравилось!")
     await callback.message.edit_text("Здесь будут условия, цены и так далее")
-    [InlineKeyboardButton(text="Цена и на сколько дней", callback_data="salе1")] 
-    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Цена и на сколько дней", callback_data="salе1")] 
+    ])
+    return keyboard
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
-
