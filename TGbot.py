@@ -1,46 +1,42 @@
-import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+import asyncio
 
+API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
+# 1. Создаем клавиатуру с кнопками
+def get_inline_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👍 Лайк", callback_data="like"),
+            InlineKeyboardButton(text="👎 Дизлайк", callback_data="dislike")
+        ],
+        [InlineKeyboardButton(text="Открыть сайт", url="https://google.com")]
+    ])
+    return keyboard
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# 2. Отправляем сообщение с кнопками
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer("Оцените сообщение:", reply_markup=get_inline_keyboard())
 
-# Токен вашего бота (получите у @id199142634 (@BotFather))
-TOKEN = "8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI"
+# 3. Обрабатываем нажатия
+@dp.callback_query(F.data == "like")
+async def send_random_value(callback: types.CallbackQuery):
+    await callback.answer("Вам понравилось!") # Убирает "часики" на кнопке
+    await callback.message.edit_text("Спасибо за лайк! 👍")
 
-# Обработчик команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"Привет, {user.first_name}! 👋\n"
-        f"Я визуал-бот! Рад тебя видеть."
-    )
+@dp.callback_query(F.data == "dislike")
+async def send_random_value(callback: types.CallbackQuery):
+    await callback.answer("Вам не понравилось!")
+    await callback.message.edit_text("Нам жаль... 👎")
 
-# Обработчик команды /help (опционально)
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📌 Доступные команды:\n"
-        "/start - Начать общение\n"
-        "/help - Показать это сообщение"
-    )
-
-def main():
-    # Создаем приложение
-    application = Application.builder().token(TOKEN).build()
-
-    # Регистрируем обработчики команд
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-
-    # Запускаем бота
-    print("🤖 Бот запущен...")
-    application.run_polling()
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
 
