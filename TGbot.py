@@ -3,12 +3,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 import asyncio
 
-text1 = "Обходите белый список легко!"
-text2 = " "
-text3 = "✅Невидим для DPI (глубокий анализ трафик)"
-text4 = "✅Работает в строгих сетях (корпоративных, учебных)"
-text5 = "✅Простое подключение в один клик"
-text6 = "дальше здесь будет информция о подписке"
+text1 = ( 
+"Обходите белый список легко!"
+ 
+ "✅Невидим для DPI"
+ "✅Работает в строгих сетях"
+ "✅Простое подключение в один клик"
+ "дальше здесь будет информция о подписке")
 
 textX = textX = text1,text2,text3,text4,text4,text5,text6
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
