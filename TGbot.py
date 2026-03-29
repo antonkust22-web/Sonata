@@ -6,9 +6,9 @@ import asyncio
 text1 = (
 "Обходите белый список легко!"
  
-"✅Невидим для DPI (глубокий анализ трафик)                "
-"✅Работает в строгих сетях (корпоративных, учебных)                   "
-"✅Простое подключение в один клик              "
+"✅Невидим для DPI"
+"✅Работает в строгих сетях"
+"✅Простое подключение в один клик"
 " "
 "дальше здесь будет информция о подписке"
 )
@@ -33,6 +33,7 @@ def get_inline_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
+    video_url = "https://clck.ru/3SpDww"
 
 # 3. Обрабатываем нажатия
 @dp.callback_query(F.data == "like")
