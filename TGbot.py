@@ -9,9 +9,9 @@ text1 = (
  "✅Невидим для DPI"
  "✅Работает в строгих сетях"
  "✅Простое подключение в один клик"
- "дальше здесь будет информция о подписке")
+ "дальше здесь будет информция о подписке"
+)
 
-textX = textX = text1,text2,text3,text4,text4,text5,text6
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
