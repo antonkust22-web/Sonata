@@ -30,7 +30,7 @@ def get_inline_keyboard():
 # 2. Отправляем сообщение с кнопками
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(textX, reply_markup=get_inline_keyboard())
+    await message.answer(text1, reply_markup=get_inline_keyboard())
 
 # 3. Обрабатываем нажатия
 @dp.callback_query(F.data == "like")
