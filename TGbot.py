@@ -28,11 +28,7 @@ def get_inline_keyboard():
             
     ])
     return keyboard
-def get_second_kb():
-    buttons = [
-        [InlineKeyboardButton(text="Цена и на сколько дней", callback_data="sale1")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # 2. Отправляем сообщение с кнопками
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -52,7 +48,7 @@ async def send_random_value(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "saling")
 async def send_random_value(callback: types.CallbackQuery):
     await callback.answer("Вам не понравилось!")
-    await callback.message.edit_text("Здесь будут условия, цены и так далее", reply_markup=get_second_kb())
+    await callback.message.edit_text("Здесь будут условия, цены и так далее")
     
 async def main():
     await dp.start_polling(bot)
