@@ -9,7 +9,7 @@ text1 = (
 "✅Невидим для DPI (глубокий анализ трафик)                "
 "✅Работает в строгих сетях (корпоративных, учебных)                   "
 "✅Простое подключение в один клик              "
-"                    "
+" "
 "дальше здесь будет информция о подписке"
 )
 
@@ -33,7 +33,7 @@ def get_inline_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
-    
+
 # 3. Обрабатываем нажатия
 @dp.callback_query(F.data == "like")
 async def send_random_value(callback: types.CallbackQuery):
@@ -49,7 +49,11 @@ async def send_random_value(callback: types.CallbackQuery):
 async def send_random_value(callback: types.CallbackQuery):
     await callback.answer("Вам не понравилось!")
     await callback.message.edit_text("Здесь будут условия, цены и так далее")
-    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Цена и на сколько дней", callback_data="salе1")] 
+    ])
+    return keyboard
+
 async def main():
     await dp.start_polling(bot)
 
