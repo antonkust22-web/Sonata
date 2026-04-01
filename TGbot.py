@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, URLInputFile
 from aiogram.filters import Command
 import asyncio
+import logging
+
+# Включаем логирование, чтобы видеть ошибки в консоли
+logging.basicConfig(level=logging.INFO)
 
 text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI (глубокий анализ трафика)\n✅ Работает в строгих сетях (корпоративных, учебных)\n✅ Простое подключение в один клик\n\nДальше здесь будет информация о подписке"
-VIDEO_URL = "https://clck.ru/3SpDww"
+VIDEO_URL = "https://clck.ru"
 
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 bot = Bot(token=API_TOKEN)
@@ -31,28 +35,32 @@ def get_second_keyboard():
 def only_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[get_back_button()])
 
-# Команда /start отправляет видео с описанием
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer_video(
-        video=VIDEO_URL,
-        caption=text1,
-        parse_mode="HTML",
-        reply_markup=get_inline_keyboard()
-    )
+    try:
+        # Используем URLInputFile для надежности
+        video = URLInputFile(VIDEO_URL)
+        await message.answer_video(
+            video=video,
+            caption=text1,
+            parse_mode="HTML",
+            reply_markup=get_inline_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка отправки видео: {e}")
+        # Если видео не грузится, отправляем просто текст, чтобы бот работал
+        await message.answer(text1 + "\n\n(Видео временно недоступно)", parse_mode="HTML", reply_markup=get_inline_keyboard())
 
-# Обработка кнопки "На главную"
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: types.CallbackQuery):
     await callback.answer()
-    # Удаляем текстовое сообщение и отправляем заново видео-меню
     await callback.message.delete()
+    # Вызываем функцию старта, чтобы снова прислать видео
     await cmd_start(callback.message)
 
 @dp.callback_query(F.data == "like")
 async def kabinet(callback: types.CallbackQuery):
     await callback.answer()
-    # При переходе в категорию видео исчезнет, останется только текст (так работает edit_text)
     await callback.message.answer("Здесь информация о вашей активности", reply_markup=only_back_keyboard())
     await callback.message.delete()
 
@@ -76,6 +84,7 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
 
 
 
