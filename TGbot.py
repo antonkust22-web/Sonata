@@ -38,10 +38,9 @@ def only_back_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     try:
-        # Используем URLInputFile для надежности
-        video = URLInputFile(VIDEO_URL)
+        # Отправляем видео по file_id
         await message.answer_video(
-            video=video,
+            video=VIDEO_ID,
             caption=text1,
             parse_mode="HTML",
             reply_markup=get_inline_keyboard()
