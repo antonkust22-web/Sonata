@@ -9,7 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI (глубокий анализ трафика)\n✅ Работает в строгих сетях (корпоративных, учебных)\n✅ Простое подключение в один клик\n\nДальше здесь будет информация о подписке"
-VIDEO_URL = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
+VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
 
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 bot = Bot(token=API_TOKEN)
