@@ -1,19 +1,24 @@
-# -*- coding: utf-8 -*-
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, URLInputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 import asyncio
 import logging
 
-# Включаем логирование, чтобы видеть ошибки в консоли
 logging.basicConfig(level=logging.INFO)
 
-text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI (глубокий анализ трафика)\n✅ Работает в строгих сетях (корпоративных, учебных)\n✅ Простое подключение в один клик\n\nДальше здесь будет информация о подписке"
-VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
-
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
+VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
+text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI\n✅ Работает в строгих сетях\n✅ Подключение в один клик\n\nДальше здесь будет информация о подписке"
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+
+# --- Клавиатуры ---
+
+def get_welcome_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Перейти в главное меню", callback_data="main_menu")]
+    ])
 
 def get_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -24,7 +29,7 @@ def get_inline_keyboard():
     ])
 
 def get_back_button():
-    return [InlineKeyboardButton(text="⬅️ На главную", callback_data="back_to_main")]
+    return [InlineKeyboardButton(text="⬅️ На главную", callback_data="main_menu")]
 
 def get_second_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -32,41 +37,45 @@ def get_second_keyboard():
         get_back_button()
     ])
 
-def only_back_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[get_back_button()])
+# --- Хендлеры ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    # Приветственное сообщение
+    await message.answer(
+        "👋 Привет! Добро пожаловать в наш VPN-сервис.\nНажмите кнопку ниже, чтобы начать.",
+        reply_markup=get_welcome_keyboard()
+    )
+
+@dp.callback_query(F.data == "main_menu")
+async def show_main_menu(callback: types.CallbackQuery):
+    await callback.answer()
     try:
-        # Отправляем видео по file_id
-        await message.answer_video(
+        # Отправляем основное меню с видео
+        await callback.message.answer_video(
             video=VIDEO_ID,
             caption=text1,
             parse_mode="HTML",
             reply_markup=get_inline_keyboard()
         )
+        await callback.message.delete()
     except Exception as e:
-        logging.error(f"Ошибка отправки видео: {e}")
-        # Если видео не грузится, отправляем просто текст, чтобы бот работал
-        await message.answer(text1 + "\n\n(Видео временно недоступно)", parse_mode="HTML", reply_markup=get_inline_keyboard())
-
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.delete()
-    # Вызываем функцию старта, чтобы снова прислать видео
-    await cmd_start(callback.message)
+        logging.error(f"Ошибка: {e}")
+        await callback.message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
+        await callback.message.delete()
 
 @dp.callback_query(F.data == "like")
 async def kabinet(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer("Здесь информация о вашей активности", reply_markup=only_back_keyboard())
+    await callback.message.answer("Здесь информация о вашей активности", 
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[get_back_button()]))
     await callback.message.delete()
 
 @dp.callback_query(F.data == "dislike")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer("Здесь информация о нашем VPN", reply_markup=only_back_keyboard())
+    await callback.message.answer("Здесь информация о нашем VPN", 
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[get_back_button()]))
     await callback.message.delete()
 
 @dp.callback_query(F.data == "saling")
@@ -83,6 +92,9 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
+   
+
 
 
 
