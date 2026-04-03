@@ -40,19 +40,25 @@ def back_btn():
 async def cmd_start(message: types.Message):
     await message.answer(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_welcome_keyboard())
 
-# 2. Главное меню (только текст)
+# 2. Главное меню (Переход из приветствия или возврат)
 @dp.callback_query(F.data == "go_to_main")
 async def show_main_menu(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer(
-        MAIN_TEXT,
-        parse_mode="HTML",
-        reply_markup=get_main_keyboard()
-    )
+    # Используем edit_text, чтобы не удалять/создавать сообщения, а просто менять текст
     try:
-        await callback.message.delete()
+        await callback.message.edit_text(
+            text=MAIN_TEXT,
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard()
+        )
     except:
-        pass
+        # Если вдруг сообщение нельзя отредактировать, отправляем новое
+        await callback.message.answer(
+            text=MAIN_TEXT,
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard()
+        )
+        await callback.message.delete()
 
 # 3. Подразделы (Кабинет, Подписка, Инфо)
 @dp.callback_query(F.data.in_(["kabinet", "sub", "info"]))
@@ -65,7 +71,7 @@ async def sections(callback: types.CallbackQuery):
         "info": "Здесь информация о нашем VPN"
     }
     
-    # Для подписки используем структуру кнопок (Цена + Назад)
+    # Формируем клавиатуру для подраздела
     if callback.data == "sub":
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
@@ -74,10 +80,15 @@ async def sections(callback: types.CallbackQuery):
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[back_btn()])
 
-    await callback.message.answer(texts[callback.data], reply_markup=kb)
-    await callback.message.delete()
+    # Редактируем текущее сообщение
+    await callback.message.edit_text(
+        text=texts[callback.data],
+        reply_markup=kb
+    )
 
 async def main():
+    # Удаляем вебхуки и запускаем бота
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
