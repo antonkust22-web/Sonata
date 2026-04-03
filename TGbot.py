@@ -44,6 +44,7 @@ def only_back_keyboard():
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    # Первое приветственное сообщение
     await message.answer(
         "👋 <b>Добро пожаловать в наш VPN сервис!</b>\n\nМы поможем вам получить свободный доступ в интернет без ограничений.",
         parse_mode="HTML",
@@ -54,7 +55,10 @@ async def cmd_start(message: types.Message):
 async def show_main_menu(callback: types.CallbackQuery):
     await callback.answer()
     try:
+        # Удаляем предыдущее сообщение (приветствие или инфо-раздел)
         await callback.message.delete()
+        
+        # Отправляем видео и главное меню
         await callback.message.answer_video(
             video=VIDEO_ID,
             caption=text1,
@@ -68,25 +72,8 @@ async def show_main_menu(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "like")
 async def kabinet(callback: types.CallbackQuery):
     await callback.answer()
-    
-    # Получаем данные пользователя
-    u_id = callback.from_user.id
-    u_name = callback.from_user.full_name
-    u_username = f"@{callback.from_user.username}" if callback.from_user.username else "не установлен"
-
-    cabinet_text = (
-        f"👤 <b>Личный кабинет</b>\n\n"
-        f"<b>Ваше имя:</b> {u_name}\n"
-        f"<b>ID:</b> <code>{u_id}</code>\n"
-        f"<b>Username:</b> {u_username}\n\n"
-        f"💳 <b>Подписка:</b> Не активна"
-    )
-
-    await callback.message.edit_caption(
-        caption=cabinet_text, 
-        parse_mode="HTML", 
-        reply_markup=only_back_keyboard()
-    )
+    await callback.message.edit_caption(caption="👤 <b>Личный кабинет</b>\n\nЗдесь информация о вашей активности", 
+                                        parse_mode="HTML", reply_markup=only_back_keyboard())
 
 @dp.callback_query(F.data == "dislike")
 async def info(callback: types.CallbackQuery):
