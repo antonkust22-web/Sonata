@@ -1,7 +1,6 @@
 import asyncio
 import logging
-import mysql.connector  # Импортируем MySQL коннектор
-from mysql.connector import Error
+import aiomysql  # Используем асинхронный драйвер
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -9,74 +8,55 @@ from aiogram.filters import Command
 logging.basicConfig(level=logging.INFO)
 
 # --- Настройки ---
+# ВАЖНО: Никогда не выкладывайте токен в открытый доступ! 
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
 text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI\n✅ Работает в строгих сетях\n✅ Подключение в один клик\n\nДальше здесь будет информация о подписке"
 
-# Параметры подключения к MySQL (замените на свои)
 db_config = {
-    'host' : '127.0.0.1',
-    'user' : 'Kadin',
+    'host': '127.0.0.1',
+    'user': 'Kadin',
     'password': '542013',
-    'database': 'Sonata'
+    'db': 'Sonata',  # В aiomysql параметр называется 'db', а не 'database'
+    'autocommit': True
 }
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- Работа с базой данных MySQL ---
+# --- Асинхронная работа с базой данных MySQL ---
 
-def get_db_connection():
-    """Вспомогательная функция для создания соединения"""
-    return mysql.connector.connect(**db_config)
-
-def init_db():
-    """Создание таблицы, если её нет"""
+async def init_db():
+    """Создание таблицы при запуске"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)''')
-        conn.commit()
-        print("База данных MySQL инициализирована.")
-    except Error as e:
+        conn = await aiomysql.connect(**db_config)
+        async with conn.cursor() as cur:
+            await cur.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)')
+        conn.close()
+        logging.info("База данных MySQL инициализирована.")
+    except Exception as e:
         logging.error(f"Ошибка при инициализации БД: {e}")
-    finally:
-        if conn.is_connected():
-            cursor.close()
-            conn.close()
 
-def user_exists(user_id):
-    """Проверка наличия пользователя"""
-    exists = False
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1 FROM users WHERE user_id = %s', (user_id,))
-        exists = cursor.fetchone() is not None
-    except Error as e:
-        logging.error(f"Ошибка user_exists: {e}")
-    finally:
-        if conn.is_connected():
-            cursor.close()
-            conn.close()
-    return exists
+async def user_exists(user_id):
+    """Асинхронная проверка наличия пользователя"""
+    conn = await aiomysql.connect(**db_config)
+    async with conn.cursor() as cur:
+        await cur.execute('SELECT 1 FROM users WHERE user_id = %s', (user_id,))
+        result = await cur.fetchone()
+    conn.close()
+    return result is not None
 
-def add_user(user_id):
-    """Добавление нового пользователя"""
+async def add_user(user_id):
+    """Асинхронное добавление пользователя"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        # Используем INSERT IGNORE для MySQL (аналог INSERT OR IGNORE в SQLite)
-        cursor.execute('INSERT IGNORE INTO users (user_id) VALUES (%s)', (user_id,))
-        conn.commit()
-    except Error as e:
+        conn = await aiomysql.connect(**db_config)
+        async with conn.cursor() as cur:
+            await cur.execute('INSERT IGNORE INTO users (user_id) VALUES (%s)', (user_id,))
+        conn.close()
+    except Exception as e:
         logging.error(f"Ошибка add_user: {e}")
-    finally:
-        if conn.is_connected():
-            cursor.close()
-            conn.close()
 
-# --- Клавиатуры ---
+# --- Клавиатуры (без изменений) ---
 def get_welcome_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Перейти в главное меню", callback_data="main_menu")]
@@ -106,12 +86,13 @@ async def send_main_menu(message: types.Message):
         logging.error(f"Ошибка при отправке видео: {e}")
         await message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
 
-# --- Хендлеры ---
+# --- Хендлеры (теперь вызывают await для БД) ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if not user_exists(message.from_user.id):
-        add_user(message.from_user.id)
+    # Теперь вызываем функции БД с await
+    if not await user_exists(message.from_user.id):
+        await add_user(message.from_user.id)
         await message.answer(
             "👋 Привет! Добро пожаловать в наш VPN-сервис.\nНажмите кнопку ниже, чтобы начать.",
             reply_markup=get_welcome_keyboard()
@@ -169,7 +150,7 @@ async def subscription(callback: types.CallbackQuery):
     await callback.message.delete()
 
 async def main():
-    init_db() # Инициализация MySQL
+    await init_db() # Инициализация теперь тоже асинхронная
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
