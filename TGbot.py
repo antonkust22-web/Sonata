@@ -1,51 +1,29 @@
 import asyncio
 import logging
 import sqlite3
+import requests  # Эта библиотека у вас точно есть
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from py3xui import ApiClient, Client
 
-# --- Настройки (ЗАМЕНИТЕ НА СВОИ) ---
+# --- Настройки ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
-
-# Для PANEL_URL используйте только протокол, IP и порт
-PANEL_URL = "https://78.17.1.43:10096" 
+PANEL_URL = "https://78.17.1.43:10096"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
-INBOUND_ID = 1  # Убедитесь, что в панели ID именно 1
+INBOUND_ID = 1
 
-# Сообщение в главном меню
-text1 = (
-    "<b>Обходите блокировки легко!</b>\n"
-    "✅ Невидим для DPI\n"
-    "✅ Работает в строгих сетях\n"
-    "✅ Подключение в один клик\n\n"
-    "Ваша подписка активна!"
-)
-
-# Инициализация
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-xui_api = ApiClient(PANEL_URL, PANEL_USER, PANEL_PASSWORD)
 
-# --- База данных ---
+# --- База данных (упрощенно) ---
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)')
     conn.commit()
     conn.close()
-
-def user_exists(user_id):
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
-    exists = cursor.fetchone()
-    conn.close()
-    return exists
 
 def add_user(user_id):
     conn = sqlite3.connect('users.db')
@@ -54,128 +32,112 @@ def add_user(user_id):
     conn.commit()
     conn.close()
 
-# --- Логика 3x-ui ---
-async def get_vpn_config(user_id):
+# --- Функция VPN (через прямые запросы) ---
+def get_vpn_config_manual(user_id):
+    BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
+    URL = "https://78.17.1.43:10096"
+    email = f"user_{user_id}"
+    
     try:
-        await xui_api.login()
-        email = f"user_{user_id}"
-        
-        # Получаем данные подключения
-        inbound = await xui_api.inbound.get_by_id(INBOUND_ID)
-        if not inbound:
-            return "Ошибка: Подключение (Inbound) не найдено в панели."
-        
-        # Ищем клиента
-        client_exists = any(c.email == email for c in inbound.settings.clients)
-        
-        if not client_exists:
-            # Создаем нового клиента (UUID сгенерируется автоматически)
-            new_client = Client(email=email, enable=True, inbound_id=INBOUND_ID)
-            await xui_api.client.add(INBOUND_ID, [new_client])
-            logging.info(f"Создан новый клиент для {user_id}")
+        with requests.Session() as session:
+            session.verify = False
+            # 1. Логин
+            login_url = f"{URL}{BASE_PATH}/login"
+            session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
+            
+            # 2. Проверяем, есть ли уже такой клиент
+            get_url = f"{URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            inbound_data = session.get(get_url, timeout=10).json()
+            
+            if not inbound_data.get("success"):
+                return "❌ Ошибка: Не найден Inbound ID 1"
 
-        # Получаем ссылки (подписки)
-        configs = await xui_api.client.get_config(INBOUND_ID)
-        for cfg in configs:
-            if email in cfg:
-                return cfg
-        
-        return "Ключ создан. Скопируйте его в приложении Happ."
+            # Ищем клиента в списке настроек
+            import json
+            settings = json.loads(inbound_data["obj"]["settings"])
+            clients = settings.get("clients", [])
+            
+            client_uuid = None
+            for c in clients:
+                if c.get("email") == email:
+                    client_uuid = c.get("id")
+                    break
+            
+            # 3. Если клиента нет — создаем его
+            if not client_uuid:
+                import uuid
+                client_uuid = str(uuid.uuid4())
+                add_url = f"{URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                client_data = {
+                    "id": INBOUND_ID,
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid,
+                            "email": email,
+                            "limitIp": 2,
+                            "totalGB": 0,
+                            "expiryTime": 0,
+                            "enable": True,
+                            "tgId": user_id,
+                            "subId": ""
+                        }]
+                    })
+                }
+                session.post(add_url, data=client_data, timeout=10)
+
+            # 4. Формируем ссылку (для VLESS Reality / VLESS TCP)
+            # Вставьте сюда данные вашего сервера (домен/IP и порт подключения)
+            # Пример для VLESS Reality:
+            port = inbound_data["78.17.1.43"]["54166"]
+            remark = f"VPN_{user_id}"
+            
+            # ВНИМАНИЕ: Здесь нужно вписать параметры вашего Reality (sni, pbk и т.д.) из панели
+            # Если вы не знаете их, бот выдаст просто UUID
+            config_link = f"vless://{client_uuid}@78.17.1.43:{port}?type=tcp&security=reality&sni=google.com&fp=chrome&pbk=YtO3zPFzal-IuBtagNX_02P0yqDuPvtb8AZVF7p4LXU&sid=21607f879ca31323&spx=%2F&remark={remark}"
+            
+            return f"✅ Ключ готов!\n\n<code>{config_link}</code>"
+                
     except Exception as e:
-        logging.error(f"Ошибка API: {e}")
-        return "Сервер временно недоступен. Попробуйте позже."
+        return f"❌ Ошибка API: {str(e)[:50]}"
+
+
+
 
 # --- Клавиатуры ---
-def get_welcome_keyboard():
+def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Начать работу", callback_data="main_menu")]
+        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
+        [InlineKeyboardButton(text="📖 Инфо", callback_data="info")]
     ])
-
-def get_inline_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Инструкция (Happ/Hiddify)", url="https://google.com")],
-        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="like")],
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="saling")],
-        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="dislike")],
-    ])
-
-def get_back_button():
-    return [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
 
 # --- Хендлеры ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if not user_exists(message.from_user.id):
-        add_user(message.from_user.id)
-        await message.answer(
-            "👋 Привет! Я помогу тебе настроить быстрый VPN.\nНажми кнопку ниже:",
-            reply_markup=get_welcome_keyboard()
-        )
-    else:
-        await send_main_menu(message)
-
-async def send_main_menu(message: types.Message):
-    try:
-        await message.answer_video(
-            video=VIDEO_ID,
-            caption=text1,
-            parse_mode="HTML",
-            reply_markup=get_inline_keyboard()
-        )
-    except Exception:
-        await message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard())
-
-@dp.callback_query(F.data == "main_menu")
-async def show_main_menu(callback: types.CallbackQuery):
-    await send_main_menu(callback.message)
-    await callback.message.delete()
-
-@dp.callback_query(F.data == "like")
-async def kabinet(callback: types.CallbackQuery):
-    await callback.answer("Запрашиваю ключ...")
-    
-    vpn_config = await get_vpn_config(callback.from_user.id)
-    
-    text = (
-        f"<b>👤 Личный кабинет</b>\n\n"
-        f"<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n"
-        f"<b>Ваша ссылка для Happ/Hiddify:</b>\n"
-        f"<code>{vpn_config}</code>\n\n"
-        f"<i>Нажмите на текст выше, чтобы скопировать.</i>"
+    add_user(message.from_user.id)
+    await message.answer(
+        "👋 Бот активирован! Выберите действие:",
+        reply_markup=main_kb()
     )
 
-    await callback.message.answer(
-        text, 
-        parse_mode="HTML", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[get_back_button()])
-    )
-    await callback.message.delete()
-
-@dp.callback_query(F.data == "saling")
-async def subscription(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
+@dp.callback_query(F.data == "cabinet")
+async def cabinet(callback: types.CallbackQuery):
+    await callback.answer()
+    config = get_vpn_config_manual(callback.from_user.id)
+    await callback.message.edit_text(
+        f"<b>Личный кабинет</b>\n\nВаш ключ:\n<code>{config}</code>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[get_back_button()])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
     )
-    await callback.message.delete()
 
-@dp.callback_query(F.data == "dislike")
-async def info(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "Наш VPN работает на протоколе VLESS Reality. Это самый современный способ обхода блокировок.", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[get_back_button()])
-    )
-    await callback.message.delete()
+@dp.callback_query(F.data == "back")
+async def back(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Выберите действие:", reply_markup=main_kb())
 
 async def main():
     init_db()
-    try:
-        await xui_api.login()
-        print("✅ Подключение к 3x-ui успешно!")
-    except Exception as e:
-        print(f"❌ Ошибка подключения к панели: {e}")
-        
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
