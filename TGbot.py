@@ -8,7 +8,7 @@ from aiogram.filters import Command
 
 # --- Настройки ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "http://78.17.1.43:10096"
+PANEL_URL = "https://78.17.1.43:10096"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
@@ -34,34 +34,46 @@ def add_user(user_id):
 
 # --- Функция VPN (через прямые запросы) ---
 def get_vpn_config_manual(user_id):
-    # Добавляем секретный путь, если он есть в настройках вашей панели
-    # Если без него не заходит в браузере, оставьте его тут
-    BASE_PATH = "/XWYB6HCgL7NBchJqxo" # Если пути нет, оставьте пустым ""
+    # ВАЖНО: Проверьте, совпадает ли этот путь с тем, что вы вводите в браузере!
+    BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
+    
+    # Убедитесь, что здесь правильный протокол (http или https)
+    URL = "https://78.17.1.43:10096" 
     
     try:
-        session = requests.Session()
-        # Отключаем проверку SSL (verify=False), если используете https без сертификата
-        login_url = f"{PANEL_URL}{BASE_PATH}/login"
-        
-        login_res = session.post(
-            login_url, 
-            data={"username": PANEL_USER, "password": PANEL_PASSWORD}, 
-            timeout=10,
-            verify=False  # Важно, если https самоподписанный
-        )
-        
-        if login_res.status_code != 200:
-            return f"Ошибка связи: Код {login_res.status_code}"
-
-        if not login_res.json().get("success"):
-            return "Ошибка: Неверный логин или пароль в панели"
-
-        # Если логин прошел, пробуем получить данные
-        return f"vless://user_{user_id}_uuid@78.17.1.43:port?remark=VPN"
-        
+        # Используем session, чтобы сохранить куки (cookie) авторизации
+        with requests.Session() as session:
+            # Отключаем все проверки SSL для теста
+            session.verify = False
+            
+            login_url = f"{URL}{BASE_PATH}/login"
+            payload = {"username": PANEL_USER, "password": PANEL_PASSWORD}
+            
+            # Делаем запрос на логин
+            response = session.post(login_url, data=payload, timeout=15)
+            
+            # Если получили ответ, пробуем понять, что внутри
+            if response.status_code == 200:
+                try:
+                    res_json = response.json()
+                    if res_json.get("success"):
+                        return f"✅ Доступ разрешен!\nВаш ID: {user_id}\nЗапрос к API прошел успешно."
+                    else:
+                        return "❌ Ошибка: Панель отклонила логин/пароль."
+                except:
+                    return "❌ Сервер прислал не JSON (проверьте BASE_PATH)"
+            else:
+                return f"❌ Ошибка: Сервер вернул код {response.status_code}"
+                
+    except requests.exceptions.ConnectionError:
+        return "❌ Ошибка: Не удалось достучаться до IP (порт закрыт?)"
     except Exception as e:
-        logging.error(f"Детали ошибки VPN: {e}")
-        return f"Ошибка VPN: {str(e)[:50]}" # Выводим начало ошибки для диагностики
+        # Выводим только текст ошибки без лишних деталей
+        err_msg = str(e)
+        if "UnknownProtocol" in err_msg:
+            return "❌ Ошибка: Проблемы с SSL/HTTPS (попробуйте сменить протокол в коде)"
+        return f"❌ Ошибка: {err_msg[:40]}"
+
 
 
 # --- Клавиатуры ---
