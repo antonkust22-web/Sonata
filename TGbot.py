@@ -85,17 +85,20 @@ def get_vpn_config_manual(user_id):
                 }
                 session.post(add_url, data=client_data, timeout=10)
 
-            # 4. Формируем ссылку (для VLESS Reality / VLESS TCP)
-            # Вставьте сюда данные вашего сервера (домен/IP и порт подключения)
-            # Пример для VLESS Reality:
-            port = inbound_data["78.17.1.43"]["54166"]
+                       # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
+            # Здесь подставьте ваши данные из панели
+            my_ip = "78.17.1.43"
+            my_port = inbound_data["obj"]["port"] # Порт возьмется из панели автоматически
+            pbk = "YtO3zPFzal-IuBtagNX_02P0yqDuPvtb8AZVF7p4LXU"  # Скопируйте из панели (Reality)
+            sid = "21607f879ca31323"   # Скопируйте из панели (Reality)
+            sni = "www.amazon.com"     # Скопируйте из панели (поле SNI)
             remark = f"VPN_{user_id}"
-            
-            # ВНИМАНИЕ: Здесь нужно вписать параметры вашего Reality (sni, pbk и т.д.) из панели
-            # Если вы не знаете их, бот выдаст просто UUID
-            config_link = f"vless://{client_uuid}@78.17.1.43:{port}?type=tcp&security=reality&sni=google.com&fp=chrome&pbk=YtO3zPFzal-IuBtagNX_02P0yqDuPvtb8AZVF7p4LXU&sid=21607f879ca31323&spx=%2F&remark={remark}"
+
+            # Собираем готовую ссылку (буква f перед строкой ОБЯЗАТЕЛЬНА)
+            config_link = f"vless://{client_uuid}@{my_ip}:{my_port}?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F&remark={remark}"
             
             return f"✅ Ключ готов!\n\n<code>{config_link}</code>"
+
                 
     except Exception as e:
         return f"❌ Ошибка API: {str(e)[:50]}"
