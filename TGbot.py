@@ -4,7 +4,7 @@ import sqlite3
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from py3xui import ApiClient, Client
+
 
 # --- Настройки (ЗАМЕНИТЕ НА СВОИ) ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI' # Получите новый в @BotFather
