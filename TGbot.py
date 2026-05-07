@@ -12,7 +12,7 @@ VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6
 text1 = "<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI\n✅ Работает в строгих сетях\n✅ Подключение в один клик\n\nДальше здесь будет информация о подписке"
 
 # --- Настройки 3x-ui (ЗАПОЛНИТЕ СВОИМИ ДАННЫМИ) ---
-PANEL_URL = "https://78.17.1.43:10096/XWYB6HCgL7NBchJqxo/" 
+PANEL_URL = "https://78.17.1.43:10096" 
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1  # ID вашего подключения в панели (обычно 1)
