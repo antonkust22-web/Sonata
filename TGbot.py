@@ -8,7 +8,7 @@ from aiogram.filters import Command
 
 # --- Настройки ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "https://78.17.1.43:10096/XWYB6HCgL7NBchJqxo/"
+PANEL_URL = "http://78.17.1.43:10096"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
@@ -34,21 +34,35 @@ def add_user(user_id):
 
 # --- Функция VPN (через прямые запросы) ---
 def get_vpn_config_manual(user_id):
-    """Работает без библиотеки py3xui"""
+    # Добавляем секретный путь, если он есть в настройках вашей панели
+    # Если без него не заходит в браузере, оставьте его тут
+    BASE_PATH = "/XWYB6HCgL7NBchJqxo" # Если пути нет, оставьте пустым ""
+    
     try:
         session = requests.Session()
-        # 1. Авторизация
-        login_res = session.post(f"{PANEL_URL}/login", data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=5)
-        if not login_res.json().get("success"):
-            return "Ошибка входа в панель"
+        # Отключаем проверку SSL (verify=False), если используете https без сертификата
+        login_url = f"{PANEL_URL}{BASE_PATH}/login"
+        
+        login_res = session.post(
+            login_url, 
+            data={"username": PANEL_USER, "password": PANEL_PASSWORD}, 
+            timeout=10,
+            verify=False  # Важно, если https самоподписанный
+        )
+        
+        if login_res.status_code != 200:
+            return f"Ошибка связи: Код {login_res.status_code}"
 
-        # 2. Получение списка клиентов
-        inbound_res = session.get(f"{PANEL_URL}/panel/api/inbounds/get/{INBOUND_ID}", timeout=5)
-        # Если всё ок, здесь должна быть логика поиска/добавления
-        # Для начала просто вернем текст, чтобы проверить, не упадет ли бот
-        return f"vless://uuid-будет-тут@78.17.1.43:port?remark=user_{user_id}"
+        if not login_res.json().get("success"):
+            return "Ошибка: Неверный логин или пароль в панели"
+
+        # Если логин прошел, пробуем получить данные
+        return f"vless://user_{user_id}_uuid@78.17.1.43:port?remark=VPN"
+        
     except Exception as e:
-        return f"Ошибка VPN: {e}"
+        logging.error(f"Детали ошибки VPN: {e}")
+        return f"Ошибка VPN: {str(e)[:50]}" # Выводим начало ошибки для диагностики
+
 
 # --- Клавиатуры ---
 def main_kb():
