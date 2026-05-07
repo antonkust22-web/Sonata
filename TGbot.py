@@ -8,7 +8,7 @@ from aiogram.filters import Command
 
 # --- Настройки ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "http://78.17.1.43:10096"
+PANEL_URL = "https://78.17.1.43:10096/XWYB6HCgL7NBchJqxo/"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
