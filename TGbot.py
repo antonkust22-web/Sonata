@@ -11,16 +11,15 @@ from aiogram.filters import Command
 
 # --- НАСТРОЙКИ ПАНЕЛИ И БОТА ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
 PANEL_URL = "https://78.17.1.43:10096"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
 INBOUND_ID = 1
 
-# --- НАСТРОЙКИ СЕРВЕРА (БЕЗ БРЕНДА) ---
+# --- НАСТРОЙКИ СЕРВЕРА ---
 COUNTRY_FLAG = "🇫🇮"            # Флаг сервера
-COUNTRY_NAME = "Finland"       # Страна
+COUNTRY_NAME = "Финляндия"       # Страна
 SERVER_DESC = "VLESS Reality"  # Описание протокола
 
 # Текст главного меню
@@ -81,14 +80,13 @@ def get_vpn_config_manual(user_id):
                 }]})}
                 session.post(add_url, data=client_data, timeout=10)
 
-            # 4. Формирование ссылки (Убрали БРЕНД из названия)
+            # 4. Формирование ссылки
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
             sni = "www.sony.com"
             
-            # В Happ будет просто "🇫🇮 Finland"
             remark_text = f"{COUNTRY_FLAG} {COUNTRY_NAME}?{SERVER_DESC}"
             remark_encoded = quote(remark_text)
 
@@ -117,9 +115,8 @@ def main_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    await message.answer_video(
-        video=VIDEO_ID,
-        caption=text_main,
+    await message.answer(
+        text_main,
         parse_mode="HTML",
         reply_markup=main_keyboard()
     )
@@ -134,7 +131,6 @@ async def cabinet(callback: types.CallbackQuery):
         await callback.message.answer(f"❌ Ошибка: {happ}")
         return
 
-    # Добавили отображение Telegram ID
     text = (
         f"<b>👤 Личный кабинет</b>\n\n"
         f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
@@ -149,23 +145,20 @@ async def cabinet(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]
     ])
     
-    await callback.message.delete()
-    await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data == "to_main")
 async def to_main(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await callback.message.answer_video(
-        video=VIDEO_ID,
-        caption=text_main,
+    await callback.message.edit_text(
+        text_main,
         parse_mode="HTML",
         reply_markup=main_keyboard()
     )
 
 @dp.callback_query(F.data == "buy")
 async def buy(callback: types.CallbackQuery):
-    await callback.message.edit_caption(
-        caption="💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
+    await callback.message.edit_text(
+        "💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]])
     )
