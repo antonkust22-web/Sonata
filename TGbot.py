@@ -1,24 +1,41 @@
 import asyncio
 import logging
 import sqlite3
-import requests  # Эта библиотека у вас точно есть
+import requests
+import json
+import uuid
 from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-# --- Настройки ---
+# --- НАСТРОЙКИ ПАНЕЛИ И БОТА ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
+VIDEO_ID = "BAACAgIAAxkBAAMFac1lT_rLVMdl6y5cW3ZZdTtSjDAAAnafAAIMoHFKjUalcja6GxU6BA"
 PANEL_URL = "https://78.17.1.43:10096"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
+BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
 INBOUND_ID = 1
+
+# --- НАСТРОЙКИ СЕРВЕРА (БЕЗ БРЕНДА) ---
+COUNTRY_FLAG = "🇫🇮"            # Флаг сервера
+COUNTRY_NAME = "Finland"       # Страна
+SERVER_DESC = "VLESS Reality"  # Описание протокола
+
+# Текст главного меню
+text_main = (
+    "<b>Обходите блокировки легко!</b>\n"
+    "✅ Невидим для DPI\n"
+    "✅ Работает в один клик\n\n"
+    "Ваша подписка активна!"
+)
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- База данных (упрощенно) ---
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -33,131 +50,134 @@ def add_user(user_id):
     conn.commit()
     conn.close()
 
-# --- Функция VPN (через прямые запросы) ---
+# --- ЛОГИКА VPN ---
 def get_vpn_config_manual(user_id):
-    BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
-    URL = "https://78.17.1.43:10096"
     email = f"user_{user_id}"
-    
     try:
         with requests.Session() as session:
             session.verify = False
-            # 1. Логин
-            login_url = f"{URL}{BASE_PATH}/login"
+            # 1. Авторизация
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
             session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
             
-            # 2. Проверяем, есть ли уже такой клиент
-            get_url = f"{URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            # 2. Получение данных
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             inbound_data = session.get(get_url, timeout=10).json()
             
             if not inbound_data.get("success"):
-                return "❌ Ошибка: Не найден Inbound ID 1"
+                return None, "Ошибка API"
 
-            # Ищем клиента в списке настроек
-            import json
             settings = json.loads(inbound_data["obj"]["settings"])
             clients = settings.get("clients", [])
             
-            client_uuid = None
-            for c in clients:
-                if c.get("email") == email:
-                    client_uuid = c.get("id")
-                    break
+            client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
             
-            # 3. Если клиента нет — создаем его
+            # 3. Создание клиента, если его нет
             if not client_uuid:
-                import uuid
                 client_uuid = str(uuid.uuid4())
-                add_url = f"{URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                client_data = {
-                    "id": INBOUND_ID,
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid,
-                            "email": email,
-                            "limitIp": 2,
-                            "totalGB": 0,
-                            "expiryTime": 0,
-                            "enable": True,
-                            "tgId": user_id,
-                            "subId": ""
-                        }]
-                    })
-                }
+                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                client_data = {"id": INBOUND_ID, "settings": json.dumps({"clients": [{
+                    "id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": ""
+                }]})}
                 session.post(add_url, data=client_data, timeout=10)
 
-            
-                        # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
+            # 4. Формирование ссылки (Убрали БРЕНД из названия)
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
             sni = "www.sony.com"
             
-            # --- ИЗМЕНЕНИЯ ТУТ ---
-            country_flag = "🇫🇮" # Поставь нужный флаг (например, 🇩🇪, 🇺🇸, 🇰🇿)
-            country_name = "Финляндия" # Название страны
-            server_type = "Premium" # Доп. описание (будет под заголовком)
-            
-            # Формируем красивый Remark (имя в списке)
-            # Мы используем формат #Флаг Название?Описание
-            remark_encoded = f"{country_flag} {country_name}?{server_type}"
+            # В Happ будет просто "🇫🇮 Finland"
+            remark_text = f"{COUNTRY_FLAG} {COUNTRY_NAME}?{SERVER_DESC}"
+            remark_encoded = quote(remark_text)
 
-            # Собираем ссылку. В конце ссылки вместо &remark={remark} ставим #{remark}
-            config_link = (
+            vless_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{remark_encoded}"
             )
-            # ----------------------
             
-            return f"✅ Ключ готов!\n\n<code>{config_link}</code>"
+            happ_link = f"happ://import/{vless_link}"
+            
+            return vless_link, happ_link
                 
     except Exception as e:
-        return f"❌ Ошибка API: {str(e)[:50]}"
+        return None, str(e)
 
-
-
-
-# --- Клавиатуры ---
-def main_kb():
+# --- КЛАВИАТУРЫ ---
+def main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
-        [InlineKeyboardButton(text="📖 Инфо", callback_data="info")]
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="📖 Инструкция", url="https://google.com")]
     ])
 
-# --- Хендлеры ---
+# --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    await message.answer(
-        "👋 Бот активирован! Выберите действие:",
-        reply_markup=main_kb()
+    await message.answer_video(
+        video=VIDEO_ID,
+        caption=text_main,
+        parse_mode="HTML",
+        reply_markup=main_keyboard()
     )
 
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
-    await callback.answer()
-    config = get_vpn_config_manual(callback.from_user.id)
-    await callback.message.edit_text(
-        f"<b>Личный кабинет</b>\n\nВаш ключ:\n<code>{config}</code>",
+    await callback.answer("Генерация данных...")
+    user_id = callback.from_user.id
+    vless, happ = get_vpn_config_manual(user_id)
+    
+    if not vless:
+        await callback.message.answer(f"❌ Ошибка: {happ}")
+        return
+
+    # Добавили отображение Telegram ID
+    text = (
+        f"<b>👤 Личный кабинет</b>\n\n"
+        f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+        f"<b>Статус:</b> Активен ✅\n\n"
+        f"Ваш ключ (нажмите для копирования):\n"
+        f"<code>{vless}</code>\n\n"
+        f"Используйте кнопку ниже для быстрого импорта в Happ!"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Подключиться в Happ", url=happ)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]
+    ])
+    
+    await callback.message.delete()
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query(F.data == "to_main")
+async def to_main(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer_video(
+        video=VIDEO_ID,
+        caption=text_main,
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
+        reply_markup=main_keyboard()
     )
 
-@dp.callback_query(F.data == "back")
-async def back(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_text("Выберите действие:", reply_markup=main_kb())
+@dp.callback_query(F.data == "buy")
+async def buy(callback: types.CallbackQuery):
+    await callback.message.edit_caption(
+        caption="💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]])
+    )
 
 async def main():
     init_db()
+    requests.packages.urllib3.disable_warnings() 
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
