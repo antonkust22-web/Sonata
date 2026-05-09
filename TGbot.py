@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import requests  # Эта библиотека у вас точно есть
+from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -85,19 +86,38 @@ def get_vpn_config_manual(user_id):
                 }
                 session.post(add_url, data=client_data, timeout=10)
 
-                       # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
-            # Здесь подставьте ваши данные из панели
+            
+            # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
             my_ip = "78.17.1.43"
-            my_port = inbound_data["obj"]["port"] # Порт возьмется из панели автоматически
-            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"  # Скопируйте из панели (Reality)
-            sid = "32b6a4ff54ef1812"   # Скопируйте из панели (Reality)
-            sni = "www.sony.com"     # Скопируйте из панели (поле SNI)
-            remark = f"VPN_{user_id}"
+            my_port = inbound_data["obj"]["port"]
+            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
+            sid = "32b6a4ff54ef1812"
+            sni = "://sony.com"
+            
+            # --- ВАШИ НАСТРОЙКИ ---
+            brand_name = "🚀Sonata VPN" # Название вашего сервиса
+            country_flag = "🇫🇮"        # Флаг страны
+            country_name = "Финляндия"  # Название страны
+            
+            # Формируем структуру "Сервис: Флаг Страна"
+            # Happ сгруппирует это красиво
+            full_name = f"{brand_name}: {country_flag} {country_name}"
+            
+            from urllib.parse import quote
+            remark = quote(full_name)
 
-            # Собираем готовую ссылку (буква f перед строкой ОБЯЗАТЕЛЬНА)
-            config_link = f"vless://{client_uuid}@{my_ip}:{my_port}?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F&remark={remark}"
+            # Собираем ссылку через решетку #
+            config_link = (
+                f"vless://{client_uuid}@{my_ip}:{my_port}"
+                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
+                f"#{remark}"
+            )
             
             return f"✅ Ключ готов!\n\n<code>{config_link}</code>"
+
+            
+            
+
 
                 
     except Exception as e:
