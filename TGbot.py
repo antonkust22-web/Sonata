@@ -87,33 +87,32 @@ def get_vpn_config_manual(user_id):
                 session.post(add_url, data=client_data, timeout=10)
 
             
-            # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
+                        # --- ШАГ 4: ФОРМИРОВАНИЕ ССЫЛКИ ---
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-            sni = "://sony.com"
+            sni = "www.sony.com"
             
-            # --- ВАШИ НАСТРОЙКИ ---
-            brand_name = "🚀Sonata VPN" # Название вашего сервиса
-            country_flag = "🇫🇮"        # Флаг страны
-            country_name = "Финляндия"  # Название страны
+            # --- ИЗМЕНЕНИЯ ТУТ ---
+            country_flag = "🇫🇮" # Поставь нужный флаг (например, 🇩🇪, 🇺🇸, 🇰🇿)
+            country_name = "Финляндия" # Название страны
+            server_type = "Premium" # Доп. описание (будет под заголовком)
             
-            # Формируем структуру "Сервис: Флаг Страна"
-            # Happ сгруппирует это красиво
-            full_name = f"{brand_name}: {country_flag} {country_name}"
-            
-            from urllib.parse import quote
-            remark = quote(full_name)
+            # Формируем красивый Remark (имя в списке)
+            # Мы используем формат #Флаг Название?Описание
+            remark_encoded = f"{country_flag} {country_name} | {user_id}?{server_type}"
 
-            # Собираем ссылку через решетку #
+            # Собираем ссылку. В конце ссылки вместо &remark={remark} ставим #{remark}
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{remark}"
+                f"#{remark_encoded}"
             )
+            # ----------------------
             
             return f"✅ Ключ готов!\n\n<code>{config_link}</code>"
+
 
             
             
