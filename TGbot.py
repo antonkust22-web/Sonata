@@ -17,7 +17,6 @@ PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
 BASE_PATH = "/XWYB6HCgL7NBchJqxo"
 
-# Текст в главном меню
 text1 = (
     "<b>Обходите блокировки легко!</b>\n"
     "✅ Невидим для DPI\n"
@@ -26,7 +25,6 @@ text1 = (
     "Ваша подписка активна!"
 )
 
-# Инициализация
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -35,7 +33,7 @@ dp = Dispatcher()
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)')
     conn.commit()
     conn.close()
 
@@ -46,122 +44,98 @@ def add_user(user_id):
     conn.commit()
     conn.close()
 
-# --- Логика VPN ---
+# --- Логика VPN (Мясо) ---
 def get_vpn_config_manual(user_id):
     email = f"user_{user_id}"
     try:
         with requests.Session() as session:
             session.verify = False
-            # 1. Логин
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
+            session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=5)
             
-            # 2. Получение данных
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            inbound_data = session.get(get_url, timeout=10).json()
+            response = session.get(get_url, timeout=5).json()
             
-            if not inbound_data.get("success"):
-                return None, None
+            if not response.get("success"): return None, None
 
-            settings = json.loads(inbound_data["obj"]["settings"])
+            settings = json.loads(response["obj"]["settings"])
             clients = settings.get("clients", [])
-            
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
             
-            # 3. Создание клиента, если нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {"id": INBOUND_ID, "settings": json.dumps({"clients": [{
                     "id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": ""
                 }]})}
-                session.post(add_url, data=client_data, timeout=10)
+                session.post(add_url, data=client_data, timeout=5)
 
-            # 4. Формирование ссылки
             my_ip = "78.17.1.43"
-            my_port = inbound_data["obj"]["port"]
+            my_port = response["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-            sni = "www.sony.com"
+            sni = "://sony.com"
+            remark = quote("🇫🇮 Finland Premium")
             
-            remark = quote("🇫🇮 Финляндия?Premium")
-            config_link = (
-                f"vless://{client_uuid}@{my_ip}:{my_port}"
-                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{remark}"
-            )
-            
-            return config_link, f"happ://import/{config_link}"
-                
+            link = f"vless://{client_uuid}@{my_ip}:{my_port}?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F#{remark}"
+            return link, f"happ://import/{link}"
     except Exception:
         return None, None
 
 # --- Клавиатура ---
-def get_inline_keyboard(happ_url="#"):
+def get_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ)", url=happ_url)],
-        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="like")],
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="saling")],
-        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="dislike")],
+        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect_happ")],
+        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="profile")],
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="info")],
     ])
 
 # --- Хендлеры ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    # Сразу вызываем меню без лишних приветствий
-    await send_main_menu(message)
+    await message.answer(text1, parse_mode="HTML", reply_markup=get_main_kb())
 
-async def send_main_menu(message: types.Message):
-    # Запускаем тяжелый запрос к панели в отдельном потоке, чтобы бот не вис
+@dp.callback_query(F.data == "connect_happ")
+async def connect(callback: types.CallbackQuery):
+    await callback.answer("Генерирую ссылку...")
     loop = asyncio.get_event_loop()
-    _, happ_url = await loop.run_in_executor(None, get_vpn_config_manual, message.chat.id)
+    _, happ_url = await loop.run_in_executor(None, get_vpn_config_manual, callback.from_user.id)
     
-    final_url = happ_url if happ_url else "#"
-    
-    await message.answer(
-        text1, 
-        parse_mode="HTML", 
-        reply_markup=get_inline_keyboard(final_url)
-    )
+    if happ_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+        await callback.message.edit_text("Ваша ссылка готова! Нажмите кнопку ниже для импорта:", reply_markup=kb)
+    else:
+        await callback.answer("❌ Ошибка связи с сервером", show_alert=True)
 
-@dp.callback_query(F.data == "main_menu")
-async def back_to_menu(callback: types.CallbackQuery):
+@dp.callback_query(F.data == "profile")
+async def profile(callback: types.CallbackQuery):
     await callback.answer()
-    await send_main_menu(callback.message)
-    await callback.message.delete()
-
-@dp.callback_query(F.data == "like")
-async def kabinet(callback: types.CallbackQuery):
-    await callback.answer("Загрузка...")
-    vless, _ = get_vpn_config_manual(callback.from_user.id)
+    loop = asyncio.get_event_loop()
+    vless, _ = await loop.run_in_executor(None, get_vpn_config_manual, callback.from_user.id)
     
-    text = (
-        f"<b>👤 Личный кабинет</b>\n\n"
-        f"<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n"
-        f"<b>Ваша ссылка для Happ/Hiddify:</b>\n"
-        f"<code>{vless if vless else 'Ошибка получения ключа'}</code>\n\n"
-        f"<i>Нажмите на текст выше, чтобы скопировать.</i>"
-    )
+    text = f"<b>👤 Профиль</b>\nID: <code>{callback.from_user.id}</code>\n\nКлюч:\n<code>{vless if vless else 'Ошибка'}</code>"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
-    await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
-    await callback.message.delete()
-
-@dp.callback_query(F.data == "saling")
-async def subscription(callback: types.CallbackQuery):
+@dp.callback_query(F.data == "back")
+async def back(callback: types.CallbackQuery):
     await callback.answer()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
-    await callback.message.answer("💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", parse_mode="HTML", reply_markup=kb)
-    await callback.message.delete()
+    await callback.message.edit_text(text1, parse_mode="HTML", reply_markup=get_main_kb())
 
-@dp.callback_query(F.data == "dislike")
+@dp.callback_query(F.data == "buy")
+async def buy(callback: types.CallbackQuery):
+    await callback.answer("Раздел в разработке")
+
+@dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
-    await callback.message.answer("Наш VPN работает на протоколе VLESS Reality. Это самый современный способ обхода блокировок.", reply_markup=kb)
-    await callback.message.delete()
+    await callback.message.edit_text("Наш VPN работает на протоколе VLESS Reality.", 
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]]))
 
 async def main():
     init_db()
@@ -170,9 +144,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
-
-
-
