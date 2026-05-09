@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-# --- НАСТРОЙКИ ПАНЕЛИ И БОТА ---
+# --- НАСТРОЙКИ ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 PANEL_URL = "https://78.17.1.43:10096"
 PANEL_USER = "Asad"
@@ -17,16 +17,17 @@ PANEL_PASSWORD = "Lodka120259"
 BASE_PATH = "/XWYB6HCgL7NBchJqxo" 
 INBOUND_ID = 1
 
-# --- НАСТРОЙКИ СЕРВЕРА ---
-COUNTRY_FLAG = "🇫🇮"            # Флаг сервера
-COUNTRY_NAME = "Финляндия"       # Страна
-SERVER_DESC = "VLESS Reality"  # Описание протокола
+# Настройки отображения в приложении
+COUNTRY_FLAG = "🇫🇮"
+COUNTRY_NAME = "Finland"
+SERVER_DESC = "VLESS Reality"
 
-# Текст главного меню
+# Текст меню
 text_main = (
     "<b>Обходите блокировки легко!</b>\n"
     "✅ Невидим для DPI\n"
-    "✅ Работает в один клик\n\n"
+    "✅ Работает в строгих сетях\n"
+    "✅ Подключение в один клик\n\n"
     "Ваша подписка активна!"
 )
 
@@ -55,23 +56,23 @@ def get_vpn_config_manual(user_id):
     try:
         with requests.Session() as session:
             session.verify = False
-            # 1. Авторизация
+            # 1. Авторизация в панели
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
             
-            # 2. Получение данных
+            # 2. Получение данных инбаунда
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            inbound_data = session.get(get_url, timeout=10).json()
+            response = session.get(get_url, timeout=10).json()
             
-            if not inbound_data.get("success"):
+            if not response.get("success"):
                 return None, "Ошибка API"
 
-            settings = json.loads(inbound_data["obj"]["settings"])
+            settings = json.loads(response["obj"]["settings"])
             clients = settings.get("clients", [])
             
+            # Ищем существующий UUID или создаем новый
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
             
-            # 3. Создание клиента, если его нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
@@ -80,22 +81,22 @@ def get_vpn_config_manual(user_id):
                 }]})}
                 session.post(add_url, data=client_data, timeout=10)
 
-            # 4. Формирование ссылки
+            # 3. Сборка ссылки
             my_ip = "78.17.1.43"
-            my_port = inbound_data["obj"]["port"]
+            my_port = response["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
             sni = "www.sony.com"
             
-            remark_text = f"{COUNTRY_FLAG} {COUNTRY_NAME}?{SERVER_DESC}"
-            remark_encoded = quote(remark_text)
+            remark = quote(f"{COUNTRY_FLAG} {COUNTRY_NAME}?{SERVER_DESC}")
 
             vless_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{remark_encoded}"
+                f"#{remark}"
             )
             
+            # Ссылка для автоматического открытия в Happ
             happ_link = f"happ://import/{vless_link}"
             
             return vless_link, happ_link
@@ -104,22 +105,19 @@ def get_vpn_config_manual(user_id):
         return None, str(e)
 
 # --- КЛАВИАТУРЫ ---
-def main_keyboard():
+def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
-        [InlineKeyboardButton(text="📖 Инструкция", url="https://google.com")]
+        [InlineKeyboardButton(text="📲 Инструкция", url="https://google.com")],
+        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about")]
     ])
 
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    await message.answer(
-        text_main,
-        parse_mode="HTML",
-        reply_markup=main_keyboard()
-    )
+    await message.answer(text_main, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
@@ -128,39 +126,41 @@ async def cabinet(callback: types.CallbackQuery):
     vless, happ = get_vpn_config_manual(user_id)
     
     if not vless:
-        await callback.message.answer(f"❌ Ошибка: {happ}")
+        await callback.message.answer(f"❌ Ошибка подключения к серверу: {happ}")
         return
 
     text = (
         f"<b>👤 Личный кабинет</b>\n\n"
         f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
         f"<b>Статус:</b> Активен ✅\n\n"
-        f"Ваш ключ (нажмите для копирования):\n"
-        f"<code>{vless}</code>\n\n"
-        f"Используйте кнопку ниже для быстрого импорта в Happ!"
+        f"Ваша ссылка:\n<code>{vless}</code>\n\n"
+        f"Нажмите кнопку ниже, чтобы импортировать настройки в Happ автоматически!"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Подключиться в Happ", url=happ)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
-@dp.callback_query(F.data == "to_main")
-async def to_main(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        text_main,
-        parse_mode="HTML",
-        reply_markup=main_keyboard()
-    )
+@dp.callback_query(F.data == "back_main")
+async def back_main(callback: types.CallbackQuery):
+    await callback.message.edit_text(text_main, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data == "buy")
 async def buy(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
+        "💎 <b>Доступные тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", 
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]])
+    )
+
+@dp.callback_query(F.data == "about")
+async def about(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "Наш VPN использует протокол VLESS Reality. Это обеспечивает максимальную скорость и защиту от блокировок.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]])
     )
 
 async def main():
