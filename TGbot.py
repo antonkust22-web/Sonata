@@ -89,9 +89,9 @@ def get_vpn_config_manual(user_id):
             # Здесь подставьте ваши данные из панели
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"] # Порт возьмется из панели автоматически
-            pbk = "YtO3zPFzal-IuBtagNX_02P0yqDuPvtb8AZVF7p4LXU"  # Скопируйте из панели (Reality)
-            sid = "21607f879ca31323"   # Скопируйте из панели (Reality)
-            sni = "://samsung.com"     # Скопируйте из панели (поле SNI)
+            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"  # Скопируйте из панели (Reality)
+            sid = "32b6a4ff54ef1812"   # Скопируйте из панели (Reality)
+            sni = "www.sony.com"     # Скопируйте из панели (поле SNI)
             remark = f"VPN_{user_id}"
 
             # Собираем готовую ссылку (буква f перед строкой ОБЯЗАТЕЛЬНА)
