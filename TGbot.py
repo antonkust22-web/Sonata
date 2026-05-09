@@ -46,7 +46,7 @@ def add_user(user_id):
     conn.commit()
     conn.close()
 
-# --- Логика VPN (Мясо) ---
+# --- Логика VPN ---
 def get_vpn_config_manual(user_id):
     email = f"user_{user_id}"
     try:
@@ -61,14 +61,13 @@ def get_vpn_config_manual(user_id):
             inbound_data = session.get(get_url, timeout=10).json()
             
             if not inbound_data.get("success"):
-                return None, "❌ Ошибка: Не найден Inbound ID"
+                return None, "❌ Ошибка панели"
 
             settings = json.loads(inbound_data["obj"]["settings"])
             clients = settings.get("clients", [])
             
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
             
-            # 3. Создание клиента, если нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
@@ -77,7 +76,6 @@ def get_vpn_config_manual(user_id):
                 }]})}
                 session.post(add_url, data=client_data, timeout=10)
 
-            # 4. Формирование ссылки
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
@@ -91,8 +89,7 @@ def get_vpn_config_manual(user_id):
                 f"#{remark}"
             )
             
-            happ_link = f"happ://import/{config_link}"
-            return config_link, happ_link
+            return config_link, f"happ://import/{config_link}"
                 
     except Exception as e:
         return None, str(e)
@@ -122,21 +119,24 @@ async def cmd_start(message: types.Message):
 
 @dp.callback_query(F.data == "main_menu")
 async def show_main_menu(callback: types.CallbackQuery):
-    _, happ_url = get_vpn_config_manual(callback.from_user.id)
-    await callback.message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard(happ_url))
+    await callback.answer("Загрузка...")
+    res = get_vpn_config_manual(callback.from_user.id)
+    # Если VPN ссылка не создалась, ставим # в кнопку
+    happ_link = res[1] if res and res[0] else "#"
+    
+    await callback.message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard(happ_link))
     await callback.message.delete()
 
 @dp.callback_query(F.data == "like")
 async def kabinet(callback: types.CallbackQuery):
-    await callback.answer("Загрузка...")
-    vless, _ = get_vpn_config_manual(callback.from_user.id)
+    await callback.answer()
+    res = get_vpn_config_manual(callback.from_user.id)
+    vless = res[0] if res and res[0] else "Ошибка получения ключа"
     
     text = (
         f"<b>👤 Личный кабинет</b>\n\n"
         f"<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n"
-        f"<b>Ваша ссылка для Happ/Hiddify:</b>\n"
-        f"<code>{vless}</code>\n\n"
-        f"<i>Нажмите на текст выше, чтобы скопировать.</i>"
+        f"<b>Ваша ссылка:</b>\n<code>{vless}</code>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
@@ -145,14 +145,16 @@ async def kabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "saling")
 async def subscription(callback: types.CallbackQuery):
+    await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
     await callback.message.answer("💎 <b>Тарифы:</b>\n\n1 месяц — 150₽\n3 месяца — 400₽", parse_mode="HTML", reply_markup=kb)
     await callback.message.delete()
 
 @dp.callback_query(F.data == "dislike")
 async def info(callback: types.CallbackQuery):
+    await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
-    await callback.message.answer("Наш VPN работает на протоколе VLESS Reality. Это самый современный способ обхода блокировок.", reply_markup=kb)
+    await callback.message.answer("Наш VPN работает на протоколе VLESS Reality.", reply_markup=kb)
     await callback.message.delete()
 
 async def main():
