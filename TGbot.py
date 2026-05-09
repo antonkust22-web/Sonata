@@ -61,13 +61,14 @@ def get_vpn_config_manual(user_id):
             inbound_data = session.get(get_url, timeout=10).json()
             
             if not inbound_data.get("success"):
-                return None, "❌ Ошибка панели"
+                return None, None
 
             settings = json.loads(inbound_data["obj"]["settings"])
             clients = settings.get("clients", [])
             
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
             
+            # 3. Создание клиента, если нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
@@ -76,6 +77,7 @@ def get_vpn_config_manual(user_id):
                 }]})}
                 session.post(add_url, data=client_data, timeout=10)
 
+            # 4. Формирование ссылки
             my_ip = "78.17.1.43"
             my_port = inbound_data["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
@@ -91,15 +93,10 @@ def get_vpn_config_manual(user_id):
             
             return config_link, f"happ://import/{config_link}"
                 
-    except Exception as e:
-        return None, str(e)
+    except Exception:
+        return None, None
 
-# --- Клавиатуры ---
-def get_welcome_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Начать работу", callback_data="main_menu")]
-    ])
-
+# --- Клавиатура ---
 def get_inline_keyboard(happ_url="#"):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📲 Подключиться (Happ)", url=happ_url)],
@@ -109,34 +106,43 @@ def get_inline_keyboard(happ_url="#"):
     ])
 
 # --- Хендлеры ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
+    # Сразу вызываем меню без лишних приветствий
+    await send_main_menu(message)
+
+async def send_main_menu(message: types.Message):
+    # Запускаем тяжелый запрос к панели в отдельном потоке, чтобы бот не вис
+    loop = asyncio.get_event_loop()
+    _, happ_url = await loop.run_in_executor(None, get_vpn_config_manual, message.chat.id)
+    
+    final_url = happ_url if happ_url else "#"
+    
     await message.answer(
-        "👋 Привет! Я помогу тебе настроить быстрый VPN.\nНажми кнопку ниже:",
-        reply_markup=get_welcome_keyboard()
+        text1, 
+        parse_mode="HTML", 
+        reply_markup=get_inline_keyboard(final_url)
     )
 
 @dp.callback_query(F.data == "main_menu")
-async def show_main_menu(callback: types.CallbackQuery):
-    await callback.answer("Загрузка...")
-    res = get_vpn_config_manual(callback.from_user.id)
-    # Если VPN ссылка не создалась, ставим # в кнопку
-    happ_link = res[1] if res and res[0] else "#"
-    
-    await callback.message.answer(text1, parse_mode="HTML", reply_markup=get_inline_keyboard(happ_link))
+async def back_to_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    await send_main_menu(callback.message)
     await callback.message.delete()
 
 @dp.callback_query(F.data == "like")
 async def kabinet(callback: types.CallbackQuery):
-    await callback.answer()
-    res = get_vpn_config_manual(callback.from_user.id)
-    vless = res[0] if res and res[0] else "Ошибка получения ключа"
+    await callback.answer("Загрузка...")
+    vless, _ = get_vpn_config_manual(callback.from_user.id)
     
     text = (
         f"<b>👤 Личный кабинет</b>\n\n"
         f"<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n"
-        f"<b>Ваша ссылка:</b>\n<code>{vless}</code>"
+        f"<b>Ваша ссылка для Happ/Hiddify:</b>\n"
+        f"<code>{vless if vless else 'Ошибка получения ключа'}</code>\n\n"
+        f"<i>Нажмите на текст выше, чтобы скопировать.</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
@@ -154,7 +160,7 @@ async def subscription(callback: types.CallbackQuery):
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
-    await callback.message.answer("Наш VPN работает на протоколе VLESS Reality.", reply_markup=kb)
+    await callback.message.answer("Наш VPN работает на протоколе VLESS Reality. Это самый современный способ обхода блокировок.", reply_markup=kb)
     await callback.message.delete()
 
 async def main():
@@ -164,6 +170,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
