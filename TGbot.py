@@ -16,6 +16,9 @@ PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
 BASE_PATH = "/XWYB6HCgL7NBchJqxo"
 
+text1 = "👋<b>Обходите блокировки легко!</b>\n✅ Невидим для DPI\n✅ Работает в строгих сетях\n✅ Подключение в один клик\n\nДальше здесь будет информация о подписке"
+
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -103,7 +106,7 @@ def main_kb():
         [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
-        [InlineKeyboardButton(text="📖 Инструкция", callback_data="instruction")]
+        [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
     ])
 
 def back_kb():
@@ -113,7 +116,7 @@ def back_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    await message.answer("👋 <b>Добро пожаловать!</b>\nВыберите действие:", reply_markup=main_kb(), parse_mode="HTML")
+    await message.answer(text1, reply_markup=main_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
@@ -140,7 +143,29 @@ async def connect(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
-    await callback.message.edit_text("👋 <b>Добро пожаловать!</b>", reply_markup=main_kb(), parse_mode="HTML")
+    await callback.message.edit_text(text1, reply_markup=main_kb(), parse_mode="HTML")
+
+@dp.callback_query(F.data == "info")
+async def info(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. Планируется внедрение современных протоколов безопасности и удобный интерфейс. Тех.поддержка @Sonata_VPN_Admin", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_kb()])
+    )
+    await callback.message.delete()
+
+@dp.callback_query(F.data == "buy")
+async def subscription(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "Здесь будут условия и цены", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
+            back_kb()
+        ])
+    )
+    await callback.message.delete()
+
 
 # --- Запуск ---
 async def main():
