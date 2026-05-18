@@ -103,14 +103,10 @@ def get_vpn_config_manual(user_id):
 
 from aiogram import types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- File ID ваших видео (отправьте видео боту, скопируйте ID и вставьте сюда) ---
-VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"      # Главное видео меню
-VIDEO_CABINET = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"   # Личный кабинет
-VIDEO_CONNECT = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"   # Подключение (Happ)
-VIDEO_INFO = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"      # Информация
-VIDEO_BUY = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"       # Купить подписку
+# --- Вставьте сюда ваш проверенный File ID, который заработал! ---
+VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
 
 # --- Клавиатуры ---
 def main_kb():
@@ -130,7 +126,7 @@ def back_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
-    # Отправляем видео вместе с текстом (текст идет в параметр caption)
+    # Отправляем главное видео вместе с текстом text1
     await message.answer_video(
         video=VIDEO_MAIN,
         caption=text1,
@@ -147,11 +143,8 @@ async def cabinet(callback: types.CallbackQuery):
     else:
         text = "❌ Не удалось получить ключ. Проверьте настройки панели."
         
-    # Динамически меняем видео и текст в одном сообщении
-    await callback.message.edit_message_media(
-        media=InputMediaVideo(media=VIDEO_CABINET, caption=text, parse_mode="HTML"),
-        reply_markup=back_kb()
-    )
+    # ИСПРАВЛЕНО: Меняем ТОЛЬКО текст (caption) под вашим стартовым видео
+    await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -162,21 +155,16 @@ async def connect(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
-        await callback.message.edit_message_media(
-            media=InputMediaVideo(media=VIDEO_CONNECT, caption="Нажмите кнопку ниже для импорта в Happ:"),
-            reply_markup=kb
-        )
+        # ИСПРАВЛЕНО: Меняем только текст под видео
+        await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
     else:
         await callback.answer("❌ Ошибка сервера", show_alert=True)
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
     await callback.answer()
-    # Возвращаем главное видео и текст
-    await callback.message.edit_message_media(
-        media=InputMediaVideo(media=VIDEO_MAIN, caption=text1, parse_mode="HTML"),
-        reply_markup=main_kb()
-    )
+    # ИСПРАВЛЕНО: Возвращаем под видео первоначальный текст text1
+    await callback.message.edit_caption(caption=text1, reply_markup=main_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
@@ -186,10 +174,8 @@ async def info(callback: types.CallbackQuery):
         "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
         "Тех.поддержка @Sonata_VPN_Admin"
     )
-    await callback.message.edit_message_media(
-        media=InputMediaVideo(media=VIDEO_INFO, caption=text),
-        reply_markup=back_kb()
-    )
+    # ИСПРАВЛЕНО: Меняем только текст под видео
+    await callback.message.edit_caption(caption=text, reply_markup=back_kb())
 
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
@@ -198,10 +184,8 @@ async def subscription(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
-    await callback.message.edit_message_media(
-        media=InputMediaVideo(media=VIDEO_BUY, caption="Здесь будут условия и цены"),
-        reply_markup=buy_kb
-    )
+    # ИСПРАВЛЕНО: Меняем только текст под видео
+    await callback.message.edit_caption(caption="Здесь будут условия и цены", reply_markup=buy_kb)
 
 
 
