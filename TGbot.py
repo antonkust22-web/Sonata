@@ -104,7 +104,7 @@ def get_vpn_config_manual(user_id):
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
+        [InlineKeyboardButton(text="📲 Подключиться (Happ) РАЗРАБОТКА", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
