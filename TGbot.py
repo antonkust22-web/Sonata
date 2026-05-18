@@ -100,6 +100,7 @@ def get_vpn_config_manual(user_id):
         logging.error(f"Ошибка VPN: {e}")
         return None, None
 
+
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -110,7 +111,9 @@ def main_kb():
     ])
 
 def back_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+    ])
 
 # --- Хендлеры ---
 @dp.message(Command("start"))
@@ -143,28 +146,33 @@ async def connect(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
+    await callback.answer()
     await callback.message.edit_text(text1, reply_markup=main_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer(
-        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. Планируется внедрение современных протоколов безопасности и удобный интерфейс. Тех.поддержка @Sonata_VPN_Admin", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_kb()])
+    text = (
+        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. "
+        "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
+        "Тех.поддержка @Sonata_VPN_Admin"
     )
-    await callback.message.delete()
+    # Исправлено: заменяем текст текущего сообщения, передавая чистый back_kb()
+    await callback.message.edit_text(text, reply_markup=back_kb())
 
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer(
-        "Здесь будут условия и цены", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
-            back_kb()
-        ])
-    )
-    await callback.message.delete()
+    
+    # Исправлено: корректно собираем структуру кнопок в массив
+    buy_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")] # Берем кнопку напрямую из логики
+    ])
+    
+    # Исправлено: вместо удаления и отправки нового, бесшовно редактируем старое
+    await callback.message.edit_text("Здесь будут условия и цены", reply_markup=buy_kb)
+
 
 
 # --- Запуск ---
