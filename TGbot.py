@@ -42,88 +42,77 @@ def get_vpn_config_manual(user_id):
     email = f"user_{user_id}"
     try:
         with requests.Session() as session:
-            session.verify = False  # Отключение проверки SSL (для самоподписанных сертификатов)
-
+            session.verify = False
             # 1. Логин
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            login_resp = session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
+            session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
             
-            if login_resp.status_code != 200:
-                logging.error(f"Ошибка авторизации в панели: {login_resp.text}")
-                return None, None
-
             # 2. Получение данных инбаунда
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             resp = session.get(get_url, timeout=10).json()
             if not resp.get("success"):
                 return None, None
-
+                
             settings = json.loads(resp["obj"]["settings"])
             clients = settings.get("clients", [])
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
-
+            
             # 3. Создание клиента, если его нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                
-                # Корректный формат отправки клиента в API 3X-UI
-                new_client = {
-                    "id": client_uuid,
-                    "email": email,
-                    "limitIp": 2,
-                    "totalGB": 0,
-                    "expiryTime": 0,
-                    "enable": True,
-                    "tgId": user_id,
-                    "subId": str(uuid.uuid4())[:8] # Генерируем уникальный subId
-                }
-
                 client_data = {
                     "id": INBOUND_ID,
-                    "settings": json.dumps({"clients": [new_client]})
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid,
+                            "email": email,
+                            "limitIp": 2,
+                            "totalGB": 0,
+                            "expiryTime": 0,
+                            "enable": True,
+                            "tgId": user_id,
+                            "subId": ""
+                        }]
+                    })
                 }
+                session.post(add_url, data=client_data, timeout=10)
                 
-                add_resp = session.post(add_url, data=client_data, timeout=10)
-                if not add_resp.json().get("success"):
-                    logging.error(f"Не удалось добавить клиента: {add_resp.text}")
-                    return None, None
-
-            # 4. Формирование рабочей ссылки
+            # 4. Формирование рабочей ссылки по вашему образцу
             my_ip = "78.17.1.43"
             my_port = resp["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-            sni = "www.sony.com"
+            sni = "://sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
             remark = f"{country_flag} {country_name}?{server_type}"
-
-            # VLESS ссылку обязательно кодируем внутри happ-ссылки
-            import urllib.parse
             
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{urllib.parse.quote(remark)}"
+                f"#{remark}"
             )
             
-            happ_url = f"happ://import/{urllib.parse.quote(config_link)}"
+            # Возвращаем кортеж: (чистая ссылка, ссылка для Happ)
+            return config_link, f"happ://import/{config_link}"
             
-            return config_link, happ_url
-
     except Exception as e:
         logging.error(f"Ошибка VPN: {e}")
         return None, None
 
-# --- Вставьте сюда ваш проверенный File ID ---
+from aiogram import types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# --- Вставьте сюда ваш проверенный File ID, который заработал! ---
 VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
 
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
+        [InlineKeyboardButton(text="📲 Подключиться (Happ) РАЗРАБОТКА", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
@@ -138,6 +127,7 @@ def back_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     add_user(message.from_user.id)
+    # Отправляем главное видео вместе с текстом text1
     await message.answer_video(
         video=VIDEO_MAIN,
         caption=text1,
@@ -153,22 +143,19 @@ async def cabinet(callback: types.CallbackQuery):
         text = f"<b>👤 Личный кабинет</b>\n\n<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n<b>Ваш ключ:</b>\n<code>{config}</code>"
     else:
         text = "❌ Не удалось получить ключ. Проверьте настройки панели."
-    
-    try:
-        await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
-    except Exception:
-        pass # Игнорируем ошибку, если текст не изменился
+    # ИСПРАВЛЕНО: Меняем ТОЛЬКО текст (caption) под вашим стартовым видео
+    await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
     _, happ_url = get_vpn_config_manual(callback.from_user.id)
-    
     if happ_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
+        # ИСПРАВЛЕНО: Меняем только текст под видео
         await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
     else:
         await callback.answer("❌ Ошибка сервера", show_alert=True)
@@ -176,6 +163,7 @@ async def connect(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
     await callback.answer()
+    # ИСПРАВЛЕНО: Возвращаем под видео первоначальный текст text1
     await callback.message.edit_caption(caption=text1, reply_markup=main_kb(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "info")
@@ -186,6 +174,7 @@ async def info(callback: types.CallbackQuery):
         "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
         "Тех.поддержка @Sonata_VPN_Admin"
     )
+    # ИСПРАВЛЕНО: Меняем только текст под видео
     await callback.message.edit_caption(caption=text, reply_markup=back_kb())
 
 @dp.callback_query(F.data == "buy")
@@ -195,6 +184,7 @@ async def subscription(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="Цена и время", url="https://google.com")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
+    # ИСПРАВЛЕНО: Меняем только текст под видео
     await callback.message.edit_caption(caption="Здесь будут условия и цены", reply_markup=buy_kb)
 
 # --- Запуск ---
