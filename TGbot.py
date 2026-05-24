@@ -42,21 +42,20 @@ def get_vpn_config_manual(user_id):
     email = f"user_{user_id}"
     try:
         with requests.Session() as session:
-            session.verify = False
-            # 1. Логин
+            session.verify = False  # 1. Логин
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
-            
+
             # 2. Получение данных инбаунда
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             resp = session.get(get_url, timeout=10).json()
             if not resp.get("success"):
                 return None, None
-                
+
             settings = json.loads(resp["obj"]["settings"])
             clients = settings.get("clients", [])
             client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
-            
+
             # 3. Создание клиента, если его нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
@@ -77,7 +76,7 @@ def get_vpn_config_manual(user_id):
                     })
                 }
                 session.post(add_url, data=client_data, timeout=10)
-                
+
             # 4. Формирование рабочей ссылки по вашему образцу
             my_ip = "78.17.1.43"
             my_port = resp["obj"]["port"]
@@ -88,16 +87,16 @@ def get_vpn_config_manual(user_id):
             country_name = "Финляндия"
             server_type = "Premium"
             remark = f"{country_flag} {country_name}?{server_type}"
-            
+
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{remark}"
             )
-            
+
             # Возвращаем кортеж: (чистая ссылка, ссылка для Happ)
             return config_link, f"happ://import/{config_link}"
-            
+
     except Exception as e:
         logging.error(f"Ошибка VPN: {e}")
         return None, None
