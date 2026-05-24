@@ -302,5 +302,5 @@ async def main():
     logging.info("Диспетчер: Бот успешно запущен и начинает опрос серверов Telegram (Polling)...")
     await dp.start_polling(bot)
 
-if name == '__main__':
+if __name__== '__main__':
     asyncio.run(main())
