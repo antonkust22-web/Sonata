@@ -4,6 +4,7 @@ import sqlite3
 import requests
 import json
 import uuid
+import urllib.parse  # Добавлено для автоматического исправления ссылок
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -82,16 +83,19 @@ def get_vpn_config_manual(user_id):
             my_port = resp["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-            sni = "://sony.com"
+            sni = "www.sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
             remark = f"{country_flag} {country_name}?{server_type}"
+            
+            # ИСПРАВЛЕНИЕ: Безопасное экранирование спецсимволов и кириллицы
+            safe_remark = urllib.parse.quote(remark)
 
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{remark}"
+                f"#{safe_remark}"
             )
 
             # Возвращаем кортеж: (чистая ссылка, ссылка для Happ)
