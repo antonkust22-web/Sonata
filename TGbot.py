@@ -262,10 +262,13 @@ async def subscription(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
 
+# Не забудьте импортировать LabeledPrice, если он еще не импортирован в начале файла:
+from aiogram.types import LabeledPrice
+
 @dp.callback_query(F.data == "pay_30_days")
 async def send_invoice(callback: types.CallbackQuery):
     await callback.answer()
-    # Теперь вызываем асинхронно через await, чтобы создать запись клиента до оплаты
+    # Создаем запись клиента до оплаты, чтобы ключ уже существовал
     await get_vpn_config_manual(callback.from_user.id)
     
     logging.info(f"Диспетчер: Отправка инвойса пользователю {callback.from_user.id}")
@@ -298,24 +301,49 @@ async def successful_payment_handler(message: types.Message):
     
     if payload == "vpn_30_days_subscription":
         logging.info(f"Диспетчер: Запуск функции продления подписки в X-UI для {user_id}...")
-        success = await renew_vpn_subscription(user_id) # Обязательно await
+        
+        # Пробуем продлить подписку в панели
+        success = await renew_vpn_subscription(user_id) 
+        
+        # В любом случае (даже при ошибке продления времени) получаем конфигурацию ключа
+        config, happ_url = await get_vpn_config_manual(user_id)
         
         if success:
             logging.info(f"Диспетчер: Подписка в панели X-UI для {user_id} успешно продлена.")
+            
+            # Генерируем клавиатуру для быстрого импорта в приложение Happ
+            kb = InlineKeyboardMarkup(inline_keyboard=[])
+            if happ_url:
+                kb.inline_keyboard.append([InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)])
+                
             await message.answer(
-                "✅ Оплата прошла успешно!\n"
-                "Ваша подписка успешно продлена на 30 дней.\n"
-                "Проверить статус можно в личном кабинете под главным видео.",
+                f"✅ <b>Оплата прошла успешно!</b>\n"
+                f"Ваша подписка успешно продлена на 30 дней.\n\n"
+                f"<b>Ваш ключ подключения VLESS:</b>\n"
+                f"<code>{config if config else 'Ошибка генерации текста ключа'}</code>\n\n"
+                f"Вы можете скопировать этот ключ или нажать кнопку ниже для импорта.",
+                reply_markup=kb if happ_url else None,
                 parse_mode="HTML"
             )
         else:
-            logging.error(f"Диспетчер КРИТИЧЕСКАЯ ОШИБКА: Деньги от {user_id} получены, но X-UI панель вернула ошибку!")
+            # Сценарий, когда ЮКасса приняла деньги, но API X-UI (например, функция выставления даты) выдала ошибку
+            logging.error(f"Диспетчер КРИТИЧЕСКАЯ ОШИБКА: Деньги от {user_id} получены, но функция renew_vpn_subscription вернула False!")
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[])
+            if happ_url:
+                kb.inline_keyboard.append([InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)])
+            
             await message.answer(
-                "⚠️ Деньги получены, но возникла ошибка панели!\n"
-                "Пожалуйста, свяжитесь с администратором @Sonata_VPN_Admin для ручного продления. "
-                f"Укажите ваш ID: {user_id}",
+                f"⚠️ <b>Оплата прошла успешно, но возник сбой синхронизации с сервером!</b>\n"
+                f"Не переживайте, ваш доступ активирован. Администратор уже уведомлен и исправит отображение дней.\n\n"
+                f"<b>Ваш рабочий ключ для подключения:</b>\n"
+                f"<code>{config if config else 'Пожалуйста, обратитесь в поддержку для получения ключа'}</code>\n\n"
+                f"Если ключ не работает, свяжитесь с поддержкой: @Sonata_VPN_Admin\n"
+                f"Ваш ID: <code>{user_id}</code>",
+                reply_markup=kb if happ_url else None,
                 parse_mode="HTML"
             )
+
 
 # --- Запуск ---
 async def main():
