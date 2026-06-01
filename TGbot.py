@@ -309,51 +309,84 @@ async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # Сначала пробуем получить данные актуальные из панели X-UI
+    # Синхронизируем данные с панелью X-UI (чтобы обновить дату, если платеж прошел)
     config, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
     
-    # Читаем из нашей локальной БД sqlite3, чтобы вывести красивую инфу
+    # Читаем данные из нашей надежной локальной SQLite3
     db_data = get_user_from_db(user_id)
     
-    if db_data and db_data[1]:  # Если есть сохраненный vpn_config
-        expiry_timestamp = db_data[3]
-        if expiry_timestamp > time.time():
-            # Рассчитываем сколько дней осталось
-            days_left = int((expiry_timestamp - time.time()) / (24 * 3600))
+    # Создаем клавиатуру для ЛК (кнопка Назад будет всегда)
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    if db_data and db_data[1]:  # Если запись и ключ существуют в базе
+        expiry_timestamp = db_data[3] # Получаем Unix-время окончания из БД
+        current_time = time.time()
+        
+        # ПРОВЕРКА: Если подписка активна (время окончания больше текущего)
+        if expiry_timestamp > current_time:
+            # Рассчитываем оставшиеся дни
+            days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
-        else:
-            status_text = "🔴 Истекла или не оплачена"
             
-        text = (
-            f"<b>👤 Личный кабинет</b>\n\n"
-            f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
-            f"<b>Статус подписки:</b> {status_text}\n\n"
-            f"<b>Ваш ключ:</b>\n<code>{db_data[1]}</code>"
-        )
+            # ПОКАЗЫВАЕМ ТЕКСТ И КЛЮЧ
+            text = (
+                f"<b>👤 Личный кабинет</b>\n\n"
+                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>Статус подписки:</b> {status_text}\n\n"
+                f"<b>Ваш ключ подключения VLESS:</b>\n"
+                f"<code>{db_data[1]}</code>\n\n"
+                f" Скопируйте этот ключ или перейдите в меню 'Подключиться' для быстрого импорта."
+            )
+            # В активном кабинете оставляем только кнопку Назад
+            kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+            
+        else:
+            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА — ПРЯЧЕМ КЛЮЧ
+            status_text = "🔴 Не активна (требуется оплата)"
+            text = (
+                f"<b>👤 Личный кабинет</b>\n\n"
+                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>Статус подписки:</b> {status_text}\n\n"
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata и генерации вашего личного ключа, пожалуйста, приобретите подписку."
+            )
+            # Сюда мы принудительно добавляем кнопку быстрой покупки тарифного плана
+            kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
+            kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
     else:
-        text = "❌ Не удалось получить ключ. Проверьте настройки панели X-UI."
+        text = "❌ Ошибка профиля. Нажмите /start для перезапуска бота."
+        kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
         
     try:
-        await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
         pass
+
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
-    _, happ_url = await get_vpn_config_manual(callback.from_user.id, callback.from_user.username or "")
+    user_id = callback.from_user.id
     
-    if happ_url:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
-        try:
-            await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
-        except TelegramBadRequest:
-            pass
+    # Проверяем статус в нашей локальной базе данных
+    db_data = get_user_from_db(user_id)
+    
+    # Если подписка оформлена и еще не закончилась
+    if db_data and db_data[3] > time.time():
+        _, happ_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        if happ_url:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            ])
+            try:
+                await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
+            except TelegramBadRequest:
+                pass
+        else:
+            await callback.answer("❌ Ошибка сервера: не удалось сгенерировать ссылку.", show_alert=True)
     else:
-        await callback.answer("❌ Ошибка сервера: не удалось сгенерировать ссылку подключения.", show_alert=True)
+        # Если клиент пытается зайти без оплаты — выдаем предупреждение
+        await callback.answer("⚠️ Доступ заблокирован! Сначала приобретите подписку в меню 'Купить подписку'.", show_alert=True)
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
