@@ -116,14 +116,18 @@ def get_user_from_db(user_id):
     return row
 
 
+import urllib.parse
+
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
+    
+    # Включаем принудительное сохранение кук сессии для работы по IP
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
+            # 1. Логин в панель
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -138,34 +142,15 @@ async def get_vpn_config_manual(user_id, username=""):
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Панель X-UI вернула ошибку при GET (код {resp.status}): {res_json}")
+                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
                 return None, None
 
-            # --- АВТОМАТИЧЕСКИЙ РАЗБОР НАСТРОЕК СЕТИ ИЗ ВАШЕЙ ПАНЕЛИ ---
-            my_ip = "78.17.1.43"
-            my_port = res_json["obj"]["port"]
-            
-            # Распаковываем streamSettings, чтобы забрать оригинальные ключи Reality вашего сервера
-            stream_settings = json.loads(res_json["obj"]["streamSettings"])
-            reality_settings = stream_settings.get("realitySettings", {})
-            
-            # Извлекаем реальный Public Key вашего сервера
-            pbk = reality_settings.get("settings", {}).get("publicKey", "")
-            
-            # Извлекаем Short ID (берем первый из списка на сервере)
-            short_ids = reality_settings.get("shortIds", [])
-            sid = short_ids[0] if short_ids else ""
-            
-            # Извлекаем домен маскировки (SNI) (берем первый из списка на сервере)
-            server_names = reality_settings.get("serverNames", [])
-            sni = server_names[0] if server_names else "google.com"
-
-            # 3. Поиск или добавление клиента
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
-            client = next((c for c in clients if c.get("email") == email), None)
+            client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
 
-            if not client:
+            # 3. Создание клиента, если его нет
+            if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {
@@ -187,17 +172,26 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                client_uuid = client.get("id")
-                expiry_time_ms = client.get("expiryTime", 0)
+                # Ищем expiryTime текущего клиента для базы данных
+                client = next((c for c in clients if c.get("email") == email), None)
+                expiry_time_ms = client.get("expiryTime", 0) if client else 0
 
-            # 4. Формирование ВАЛИДНОЙ и РАБОЧЕЙ ссылки подключения
+            # 4. Формирование рабочей ссылки по вашему эталону
+            my_ip = "78.17.1.43"
+            my_port = res_json["obj"]["port"]
+            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
+            sid = "32b6a4ff54ef1812"
+            
+            # Параметры маскировки
+            sni = "www.sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
-            # Заменен знак ? на пробел, чтобы имя не ломало параметры ссылки
+            
+            # ИСПРАВЛЕНО: Для имени (после #) кодирование НЕ НУЖНО, иначе в Happ будет каша из процентов
             remark = f"{country_flag} {country_name} - {server_type}"
 
-            # Собрана технически верная ссылка (добавлен обязательный параметр flow)
+            # Собираем точную ссылку (добавлен flow для стабильности сети)
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&flow=xtls-rprx-vision&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
@@ -205,23 +199,27 @@ async def get_vpn_config_manual(user_id, username=""):
             )
             happ_url = f"happ://import/{config_link}"
             
+            # Синхронизируем дату в локальную базу SQLite
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
             
             return config_link, happ_url
-            
+
     except Exception as e:
-        logging.error(f"Ошибка VPN при получении конфига: {e}")
+        logging.error(f"Ошибка VPN: {e}")
         return None, None
+
 
 async def renew_vpn_subscription(user_id):
     email = f"user_{user_id}"
+    
+    # Точно так же включаем удержание кук для IP-адреса, как в requests
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
+            # 1. Логин в панель
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -247,6 +245,7 @@ async def renew_vpn_subscription(user_id):
                 logging.error(f"Клиент {email} не найден в панели X-UI.")
                 return False
 
+            # 3. Расчет времени (в миллисекундах)
             current_time_ms = int(time.time() * 1000)
             thirty_days_ms = 30 * 24 * 60 * 60 * 1000
             
@@ -273,17 +272,20 @@ async def renew_vpn_subscription(user_id):
                     }]
                 })
             }
+            # Отправляем обновление в панель X-UI
             async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
                 update_resp = await resp.json()
             
             success = update_resp.get("success", False)
             if success:
+                # Синхронизируем новую дату окончания подписки в локальную SQLite3
                 expiry_seconds = int(new_expiry / 1000)
                 add_or_update_user(user_id, "", expiry_time=expiry_seconds)
+                logging.info(f"Подписка для пользователя {user_id} успешно продлена в X-UI и SQLite3.")
                 
             return success
     except Exception as e:
-        logging.error(f"Ошибка при продлении подписки: {e}")
+        logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
         return False
 
 
