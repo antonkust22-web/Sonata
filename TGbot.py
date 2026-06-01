@@ -121,18 +121,17 @@ async def get_vpn_config_manual(user_id, username=""):
     connector = aiohttp.TCPConnector(ssl=False)
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в панель (Добавлен обязательный слэш на конце /login/)
-            login_url = f"{PANEL_URL}{BASE_PATH}/login/"
+            # 1. Логин в панель
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
 
-            # Базовые заголовки для API
             headers = {
                 "Accept": "application/json"
             }
 
-            # 2. Получение данных инбаунда (Добавлен обязательный слэш на конце)
-            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}/"
+            # 2. Получение данных инбаунда (Исправлен префикс на /xui/API/inbounds/get/)
+            get_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -147,8 +146,8 @@ async def get_vpn_config_manual(user_id, username=""):
             # 3. Добавление клиента, если его нет
             if not client:
                 client_uuid = str(uuid.uuid4())
-                # Добавлен обязательный слэш на конце /addClient/
-                add_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/addClient/"
+                # Исправлен префикс на /xui/API/inbounds/addClient/
+                add_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/addClient"
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
@@ -203,8 +202,8 @@ async def renew_vpn_subscription(user_id):
     connector = aiohttp.TCPConnector(ssl=False)
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Авторизация в панели (Добавлен обязательный слэш на конце /login/)
-            login_url = f"{PANEL_URL}{BASE_PATH}/login/"
+            # 1. Авторизация в панели
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
             
@@ -212,8 +211,8 @@ async def renew_vpn_subscription(user_id):
                 "Accept": "application/json"
             }
 
-            # 2. Получаем текущие данные инбаунда (Добавлен обязательный слэш на конце)
-            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}/"
+            # 2. Получаем текущие данные инбаунда (Исправлен префикс на /xui/API/inbounds/get/)
+            get_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -238,8 +237,8 @@ async def renew_vpn_subscription(user_id):
                 new_expiry = current_time_ms + thirty_days_ms
 
             client_uuid = client['id']
-            # Добавлен обязательный слэш на конце /updateClient/ c UUID
-            update_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/updateClient/{client_uuid}/"
+            # Исправлен префикс на /xui/API/inbounds/updateClient/
+            update_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/updateClient/{client_uuid}"
             
             client_data = {
                 "id": str(INBOUND_ID),
