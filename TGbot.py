@@ -121,30 +121,23 @@ async def get_vpn_config_manual(user_id, username=""):
     connector = aiohttp.TCPConnector(ssl=False)
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            # 1. Логин в панель (Добавлен обязательный слэш на конце /login/)
+            login_url = f"{PANEL_URL}{BASE_PATH}/login/"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
 
-            # Жестко вытаскиваем куку авторизации 3x-ui из ответа сервера
-            session_cookie = session.cookie_jar.filter_cookies(PANEL_URL).get('3x-ui')
-            if not session_cookie:
-                logging.error("Ошибка VPN: Не удалось получить куку авторизации '3x-ui' от панели.")
-                return None, None
-
-            # Добавляем куку в заголовки для защиты от 404
+            # Базовые заголовки для API
             headers = {
-                "Accept": "application/json",
-                "Cookie": f"3x-ui={session_cookie.value}"
+                "Accept": "application/json"
             }
 
-            # 2. Получение данных инбаунда с заголовками
-            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}"
+            # 2. Получение данных инбаунда (Добавлен обязательный слэш на конце)
+            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}/"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
+                logging.error(f"Панель X-UI вернула ошибку при GET (код {resp.status}): {res_json}")
                 return None, None
 
             settings = json.loads(res_json["obj"]["settings"])
@@ -154,7 +147,8 @@ async def get_vpn_config_manual(user_id, username=""):
             # 3. Добавление клиента, если его нет
             if not client:
                 client_uuid = str(uuid.uuid4())
-                add_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/addClient"
+                # Добавлен обязательный слэш на конце /addClient/
+                add_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/addClient/"
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
@@ -209,28 +203,22 @@ async def renew_vpn_subscription(user_id):
     connector = aiohttp.TCPConnector(ssl=False)
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            # 1. Авторизация в панели (Добавлен обязательный слэш на конце /login/)
+            login_url = f"{PANEL_URL}{BASE_PATH}/login/"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
             
-            # Жестко вытаскиваем куку авторизации 3x-ui из ответа сервера
-            session_cookie = session.cookie_jar.filter_cookies(PANEL_URL).get('3x-ui')
-            if not session_cookie:
-                logging.error("Ошибка VPN: Не удалось получить куку авторизации '3x-ui' для продления.")
-                return False
-
             headers = {
-                "Accept": "application/json",
-                "Cookie": f"3x-ui={session_cookie.value}"
+                "Accept": "application/json"
             }
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}"
+            # 2. Получаем текущие данные инбаунда (Добавлен обязательный слэш на конце)
+            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}/"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
+                logging.error(f"Не удалось получить данные инбаунда для продления подписки: {res_json}")
                 return False
                 
             settings = json.loads(res_json["obj"]["settings"])
@@ -238,6 +226,7 @@ async def renew_vpn_subscription(user_id):
             client = next((c for c in clients if c.get("email") == email), None)
             
             if not client:
+                logging.error(f"Клиент {email} не найден в панели X-UI.")
                 return False
 
             current_time_ms = int(time.time() * 1000)
@@ -249,7 +238,8 @@ async def renew_vpn_subscription(user_id):
                 new_expiry = current_time_ms + thirty_days_ms
 
             client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/updateClient/{client_uuid}"
+            # Добавлен обязательный слэш на конце /updateClient/ c UUID
+            update_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/updateClient/{client_uuid}/"
             
             client_data = {
                 "id": str(INBOUND_ID),
@@ -278,6 +268,7 @@ async def renew_vpn_subscription(user_id):
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки: {e}")
         return False
+
 
 
 
