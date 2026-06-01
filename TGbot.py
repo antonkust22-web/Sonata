@@ -5,19 +5,23 @@ import uuid
 import time
 import os
 import subprocess
-import aiohttp
-import aiosqlite  # Используем асинхронный SQLite для работы хендлеров
+import sqlite3  # Используем стандартный встроенный sqlite3
 
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
-# --- НАСТРОЙКА АВТОМАТИЧЕСКИХ ПУТЕЙ ДЛЯ ХОСТИНГА ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "users.db")  # База будет прямо в папке бота
+# --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
+# На Amvera папка /data постоянная, файлы в ней не стираются при пересборках.
+if os.path.exists("/data"):
+    DB_PATH = "/data/users.db"
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(BASE_DIR, "users.db")
 
-# Включаем логирование ошибок в стандартный вывод хостинга (консоль)
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -38,7 +42,7 @@ PROVIDER_TOKEN = "390540012:LIVE:96775"
 VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
 
 text1 = (
-    "👋<b>Обходите блокировки легко!</b>\n"
+    "👋 <b>Обходите блокировки легко!</b>\n"
     "✅ Невидим для DPI\n"
     "✅ Работает в строгих сетях\n"
     "✅ Подключение в один клик\n\n"
@@ -49,23 +53,71 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 
-# --- База данных (Асинхронная версия для Linux) ---
-async def init_db():
+# --- Блок Базы Данных (Синхронный sqlite3 с защитой от блокировок) ---
+def init_db():
     logging.info(f"Диспетчер: Инициализация базы данных: {DB_PATH}")
-    async with aiosqlite.connect(DB_PATH, timeout=30.0) as conn:
-        await conn.execute('PRAGMA journal_mode=WAL;')
-        await conn.execute('PRAGMA synchronous=NORMAL;')
-        await conn.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)')
-        await conn.commit()
+    # timeout=30.0 заставляет запросы послушно ждать, если база занята
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Включаем режим WAL. Это ускоряет запись в 10 раз и исключает зависания
+    cursor.execute('PRAGMA journal_mode=WAL;')
+    cursor.execute('PRAGMA synchronous=NORMAL;')
+    
+    # Создаем продвинутую таблицу пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            vpn_config TEXT,
+            happ_url TEXT,
+            expiry_time INTEGER DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-async def add_user(user_id):
-    async with aiosqlite.connect(DB_PATH, timeout=30.0) as conn:
-        await conn.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
-        await conn.commit()
+def add_or_update_user(user_id, username, vpn_config=None, happ_url=None, expiry_time=None):
+    """Безопасное добавление или обновление данных пользователя"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Проверяем, есть ли уже юзер
+    cursor.execute('SELECT user_id, vpn_config, happ_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        # Если пользователя нет — создаем запись
+        cursor.execute(
+            'INSERT INTO users (user_id, username, vpn_config, happ_url, expiry_time) VALUES (?, ?, ?, ?, ?)',
+            (user_id, username, vpn_config, happ_url, expiry_time if expiry_time else 0)
+        )
+    else:
+        # Если пользователь есть — обновляем только то, что передано
+        new_config = vpn_config if vpn_config else row[1]
+        new_happ = happ_url if happ_url else row[2]
+        new_expiry = expiry_time if expiry_time is not None else row[3]
+        
+        cursor.execute(
+            'UPDATE users SET username = ?, vpn_config = ?, happ_url = ?, expiry_time = ? WHERE user_id = ?',
+            (username, new_config, new_happ, new_expiry, user_id)
+        )
+        
+    conn.commit()
+    conn.close()
+
+def get_user_from_db(user_id):
+    """Получение всех данных о пользователе из локальной БД"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, vpn_config, happ_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
 
 
 # --- Асинхронные Функции VPN (X-UI API через aiohttp) ---
-async def get_vpn_config_manual(user_id):
+async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
     connector = aiohttp.TCPConnector(ssl=False)
     try:
@@ -83,9 +135,9 @@ async def get_vpn_config_manual(user_id):
 
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
-            client_uuid = next((c.get("id") for c in clients if c.get("email") == email), None)
+            client = next((c for c in clients if c.get("email") == email), None)
 
-            if not client_uuid:
+            if not client:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {
@@ -105,6 +157,10 @@ async def get_vpn_config_manual(user_id):
                 }
                 async with session.post(add_url, data=client_data, timeout=10) as resp:
                     await resp.text()
+                expiry_time_ms = 0
+            else:
+                client_uuid = client.get("id")
+                expiry_time_ms = client.get("expiryTime", 0)
 
             my_ip = "78.17.1.43"
             my_port = res_json["obj"]["port"]
@@ -121,7 +177,13 @@ async def get_vpn_config_manual(user_id):
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{remark}"
             )
-            return config_link, f"happ://import/{config_link}"
+            happ_url = f"happ://import/{config_link}"
+            
+            # Сохраняем/обновляем всё в локальной sqlite3 (переводим время из мс в секунды)
+            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+            add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
+            
+            return config_link, happ_url
             
     except Exception as e:
         logging.error(f"Ошибка VPN при получении конфига: {e}")
@@ -145,8 +207,8 @@ async def renew_vpn_subscription(user_id):
                 
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
-            
             client = next((c for c in clients if c.get("email") == email), None)
+            
             if not client:
                 return False
 
@@ -178,8 +240,14 @@ async def renew_vpn_subscription(user_id):
             }
             async with session.post(update_url, data=client_data, timeout=10) as resp:
                 update_resp = await resp.json()
+            
+            success = update_resp.get("success", False)
+            if success:
+                # Синхронизируем дату окончания в нашу локальную базу данных sqlite3
+                expiry_seconds = int(new_expiry / 1000)
+                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
                 
-            return update_resp.get("success", False)
+            return success
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки: {e}")
         return False
@@ -199,11 +267,12 @@ def back_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
 
-
 # --- Хендлеры ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await add_user(message.from_user.id)
+    # Обычный быстрый вызов без await — sqlite3 отработает мгновенно
+    add_or_update_user(message.from_user.id, message.from_user.username or "Unknown")
     await message.answer_video(
         video=VIDEO_MAIN,
         caption=text1,
@@ -214,11 +283,32 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
-    config, _ = await get_vpn_config_manual(callback.from_user.id)
-    if config:
-        text = f"<b>👤 Личный кабинет</b>\n\n<b>Ваш ID:</b> <code>{callback.from_user.id}</code>\n\n<b>Ваш ключ:</b>\n<code>{config}</code>"
+    user_id = callback.from_user.id
+    
+    # Сначала пробуем получить данные актуальные из панели X-UI
+    config, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+    
+    # Читаем из нашей локальной БД sqlite3, чтобы вывести красивую инфу
+    db_data = get_user_from_db(user_id)
+    
+    if db_data and db_data[1]:  # Если есть сохраненный vpn_config
+        expiry_timestamp = db_data[3]
+        if expiry_timestamp > time.time():
+            # Рассчитываем сколько дней осталось
+            days_left = int((expiry_timestamp - time.time()) / (24 * 3600))
+            status_text = f"🟢 Активна (осталось {days_left} дн.)"
+        else:
+            status_text = "🔴 Истекла или не оплачена"
+            
+        text = (
+            f"<b>👤 Личный кабинет</b>\n\n"
+            f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+            f"<b>Статус подписки:</b> {status_text}\n\n"
+            f"<b>Ваш ключ:</b>\n<code>{db_data[1]}</code>"
+        )
     else:
-        text = "❌ Не удалось получить ключ. Проверьте настройки панели."
+        text = "❌ Не удалось получить ключ. Проверьте настройки панели X-UI."
+        
     try:
         await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
     except TelegramBadRequest:
@@ -227,7 +317,8 @@ async def cabinet(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
-    _, happ_url = await get_vpn_config_manual(callback.from_user.id)
+    _, happ_url = await get_vpn_config_manual(callback.from_user.id, callback.from_user.username or "")
+    
     if happ_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
@@ -280,7 +371,7 @@ async def subscription(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "pay_30_days")
 async def send_invoice(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
-    await get_vpn_config_manual(callback.from_user.id)
+    await get_vpn_config_manual(callback.from_user.id, callback.from_user.username or "")
     logging.info(f"Диспетчер: Отправка инвойса пользователю {callback.from_user.id}")
     await bot.send_invoice(
         chat_id=callback.from_user.id,
@@ -309,7 +400,7 @@ async def successful_payment_handler(message: types.Message):
     
     if payload == "vpn_30_days_subscription":
         success = await renew_vpn_subscription(user_id)
-        config, happ_url = await get_vpn_config_manual(user_id)
+        config, happ_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
         
         kb = InlineKeyboardMarkup(inline_keyboard=[])
         if happ_url:
@@ -318,7 +409,7 @@ async def successful_payment_handler(message: types.Message):
         if success:
             await message.answer(
                 f"✅ <b>Оплата прошла успешно!</b>\nВаша подписка продлена на 30 дней.\n\n"
-                f"<b>Ваш ключ:</b>\n<code>{config}</code>",
+                f"<b>Ваш новый ключ:</b>\n<code>{config}</code>",
                 reply_markup=kb if happ_url else None, 
                 parse_mode="HTML"
             )
@@ -332,22 +423,30 @@ async def successful_payment_handler(message: types.Message):
 
 # --- Запуск ---
 async def main():
-    # Инициализируем асинхронную базу данных в папке бота
-    await init_db()
+    # Очищаем вебхуки от старых запросов при перезапусках
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Инициализируем стандартную базу данных sqlite3
+    init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
 
-    # Фоновый запуск сайта-админки базы данных
+    # Фоновый запуск сайта-админки базы данных sqlite-web
     try:
-        subprocess.Popen(["sqlite-web", DB_PATH, "--port", "8080", "--host", "0.0.0.0"])
-        logging.info("Диспетчер: Сайт-админка успешно запущен в фоне на порту 8080!")
+        subprocess.Popen(
+            ["sqlite-web", DB_PATH, "--port", "8080", "--host", "0.0.0.0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        logging.info("Диспетчер: Запрос на фоновый запуск сайта-админки на порту 8080 отправлен.")
     except Exception as e:
-        logging.warning(f"Не удалось запустить сайт-админку: {e}")
+        logging.warning(f"Не удалось запустить сайт-админку (это не влияет на бота): {e}")
 
-    logging.info("Диспетчер: Бот успешно запущен на хостинге. Начинаем Polling...")
+    logging.info("Диспетчер: Бот успешно запущен на хостинге Amvera. Начинаем Polling...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
