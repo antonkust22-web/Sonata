@@ -118,10 +118,14 @@ def get_user_from_db(user_id):
 
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
+    
+    # ПРИНУДИТЕЛЬНО РАЗРЕШАЕМ КУКИ ДЛЯ IP-АДРЕСОВ (Решает проблему 404)
+    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
+    
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в панель
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            # 1. Авторизация в панели
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -130,8 +134,8 @@ async def get_vpn_config_manual(user_id, username=""):
                 "Accept": "application/json"
             }
 
-            # 2. Получение данных инбаунда (Исправлен префикс на /xui/API/inbounds/get/)
-            get_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/get/{INBOUND_ID}"
+            # 2. Получение данных инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -146,8 +150,7 @@ async def get_vpn_config_manual(user_id, username=""):
             # 3. Добавление клиента, если его нет
             if not client:
                 client_uuid = str(uuid.uuid4())
-                # Исправлен префикс на /xui/API/inbounds/addClient/
-                add_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/addClient"
+                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
@@ -199,9 +202,11 @@ async def get_vpn_config_manual(user_id, username=""):
 
 async def renew_vpn_subscription(user_id):
     email = f"user_{user_id}"
+    jar = aiohttp.CookieJar(unsafe=True)  # Разрешаем куки для IP-адреса
     connector = aiohttp.TCPConnector(ssl=False)
+    
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             # 1. Авторизация в панели
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
@@ -211,8 +216,8 @@ async def renew_vpn_subscription(user_id):
                 "Accept": "application/json"
             }
 
-            # 2. Получаем текущие данные инбаунда (Исправлен префикс на /xui/API/inbounds/get/)
-            get_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/get/{INBOUND_ID}"
+            # 2. Получаем текущие данные инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -237,8 +242,7 @@ async def renew_vpn_subscription(user_id):
                 new_expiry = current_time_ms + thirty_days_ms
 
             client_uuid = client['id']
-            # Исправлен префикс на /xui/API/inbounds/updateClient/
-            update_url = f"{PANEL_URL}{BASE_PATH}/xui/API/inbounds/updateClient/{client_uuid}"
+            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
             
             client_data = {
                 "id": str(INBOUND_ID),
@@ -267,6 +271,7 @@ async def renew_vpn_subscription(user_id):
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки: {e}")
         return False
+
 
 
 
