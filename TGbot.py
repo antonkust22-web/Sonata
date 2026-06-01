@@ -116,30 +116,34 @@ def get_user_from_db(user_id):
     return row
 
 
-# --- Асинхронные Функции VPN (X-UI API через aiohttp) ---
+# --- Асинхронные Функции VPN (Исправленные адреса API под вашу панель) ---
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
     connector = aiohttp.TCPConnector(ssl=False)
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
+            # 1. Логин
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
 
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            # 2. Получение данных инбаунда (Убран лишний /panel из пути)
+            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
+                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
                 return None, None
 
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
 
+            # 3. Добавление клиента, если его нет
             if not client:
                 client_uuid = str(uuid.uuid4())
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                add_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/addClient"  # Убран /panel
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
@@ -162,6 +166,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 client_uuid = client.get("id")
                 expiry_time_ms = client.get("expiryTime", 0)
 
+            # 4. Формирование рабочей ссылки
             my_ip = "78.17.1.43"
             my_port = res_json["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
@@ -179,7 +184,6 @@ async def get_vpn_config_manual(user_id, username=""):
             )
             happ_url = f"happ://import/{config_link}"
             
-            # Сохраняем/обновляем всё в локальной sqlite3 (переводим время из мс в секунды)
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
             
@@ -198,7 +202,8 @@ async def renew_vpn_subscription(user_id):
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
             
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            # Убран лишний /panel из пути
+            get_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -221,7 +226,7 @@ async def renew_vpn_subscription(user_id):
                 new_expiry = current_time_ms + thirty_days_ms
 
             client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+            update_url = f"{PANEL_URL}{BASE_PATH}/api/inbounds/updateClient/{client_uuid}"  # Убран /panel
             
             client_data = {
                 "id": str(INBOUND_ID),
@@ -243,7 +248,6 @@ async def renew_vpn_subscription(user_id):
             
             success = update_resp.get("success", False)
             if success:
-                # Синхронизируем дату окончания в нашу локальную базу данных sqlite3
                 expiry_seconds = int(new_expiry / 1000)
                 add_or_update_user(user_id, "", expiry_time=expiry_seconds)
                 
@@ -251,6 +255,7 @@ async def renew_vpn_subscription(user_id):
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки: {e}")
         return False
+
 
 
 # --- Клавиатуры ---
