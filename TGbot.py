@@ -121,13 +121,13 @@ import urllib.parse
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
     
-    # Принудительно разрешаем куки для IP-адресов (удерживает сессию)
+    # Включаем принудительное сохранение кук сессии для работы по IP (аналог requests.Session)
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели X-UI
+            # 1. Логин в панель
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -154,7 +154,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {
-                    "id": str(INBOUND_ID),
+                    "id": str(INBOUND_ID), # Передаем строку/число инбаунда
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
@@ -172,34 +172,33 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Ищем expiryTime текущего клиента для обновления локальной БД
-                client = next((c for c in clients if c.get("email") == email), None)
-                expiry_time_ms = client.get("expiryTime", 0) if client else 0
+                # Находим текущего клиента в списке, чтобы забрать его expiryTime для SQLite3
+                current_client = next((c for c in clients if c.get("email") == email), None)
+                expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
 
-            # 4. Формирование рабочей ссылки по вашему эталону
+            # 4. Формирование рабочей ссылки ТОЧЬ-В-ТОЧЬ ПО ВАШЕМУ ЭТАЛОНУ
             my_ip = "78.17.1.43"
             my_port = res_json["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-            
-            # Параметры маскировки (как в вашем рабочем коде на requests)
-            sni = "://sony.com"
+           
+            sni = "www.sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
+            remark = f"{country_flag} {country_name}?{server_type}"
             
-            # Текстовая ремарка без лишнего кодирования для корректного отображения в Happ
-            remark = f"{country_flag} {country_name} - {server_type}"
+            # Экранирование спецсимволов и кириллицы (сохранено как в вашем рабочем коде)
+            safe_remark = urllib.parse.quote(remark)
 
-            # ИСПРАВЛЕНО: Параметр flow полностью удален из строки запроса
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{remark}"
+                f"#{safe_remark}"
             )
             happ_url = f"happ://import/{config_link}"
             
-            # Синхронизируем дату в локальную базу SQLite
+            # Сохраняем/обновляем данные в нашей локальной БД sqlite3
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
             
@@ -283,6 +282,7 @@ async def renew_vpn_subscription(user_id):
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
         return False
+
 
 
 
