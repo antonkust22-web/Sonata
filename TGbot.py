@@ -437,7 +437,7 @@ async def send_invoice(callback: types.CallbackQuery, bot: Bot):
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="1 месяц подписки", amount=1500)],
+        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)],
         start_parameter="vpn-sub-30-days"
     )
 
