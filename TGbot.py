@@ -118,8 +118,6 @@ def get_user_from_db(user_id):
 
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
-    
-    # ПРИНУДИТЕЛЬНО РАЗРЕШАЕМ КУКИ ДЛЯ IP-АДРЕСОВ (Решает проблему 404)
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -143,11 +141,30 @@ async def get_vpn_config_manual(user_id, username=""):
                 logging.error(f"Панель X-UI вернула ошибку при GET (код {resp.status}): {res_json}")
                 return None, None
 
+            # --- АВТОМАТИЧЕСКИЙ РАЗБОР НАСТРОЕК СЕТИ ИЗ ВАШЕЙ ПАНЕЛИ ---
+            my_ip = "78.17.1.43"
+            my_port = res_json["obj"]["port"]
+            
+            # Распаковываем streamSettings, чтобы забрать оригинальные ключи Reality вашего сервера
+            stream_settings = json.loads(res_json["obj"]["streamSettings"])
+            reality_settings = stream_settings.get("realitySettings", {})
+            
+            # Извлекаем реальный Public Key вашего сервера
+            pbk = reality_settings.get("settings", {}).get("publicKey", "")
+            
+            # Извлекаем Short ID (берем первый из списка на сервере)
+            short_ids = reality_settings.get("shortIds", [])
+            sid = short_ids[0] if short_ids else ""
+            
+            # Извлекаем домен маскировки (SNI) (берем первый из списка на сервере)
+            server_names = reality_settings.get("serverNames", [])
+            sni = server_names[0] if server_names else "google.com"
+
+            # 3. Поиск или добавление клиента
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
 
-            # 3. Добавление клиента, если его нет
             if not client:
                 client_uuid = str(uuid.uuid4())
                 add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
@@ -173,20 +190,17 @@ async def get_vpn_config_manual(user_id, username=""):
                 client_uuid = client.get("id")
                 expiry_time_ms = client.get("expiryTime", 0)
 
-            # 4. Формирование рабочей ссылки
-            my_ip = "78.17.1.43"
-            my_port = res_json["obj"]["port"]
-            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
-            sid = "32b6a4ff54ef1812"
-            sni = "sony.com"
+            # 4. Формирование ВАЛИДНОЙ и РАБОЧЕЙ ссылки подключения
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
-            remark = f"{country_flag} {country_name}?{server_type}"
+            # Заменен знак ? на пробел, чтобы имя не ломало параметры ссылки
+            remark = f"{country_flag} {country_name} - {server_type}"
 
+            # Собрана технически верная ссылка (добавлен обязательный параметр flow)
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
-                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
+                f"?type=tcp&security=reality&flow=xtls-rprx-vision&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{remark}"
             )
             happ_url = f"happ://import/{config_link}"
@@ -202,7 +216,7 @@ async def get_vpn_config_manual(user_id, username=""):
 
 async def renew_vpn_subscription(user_id):
     email = f"user_{user_id}"
-    jar = aiohttp.CookieJar(unsafe=True)  # Разрешаем куки для IP-адреса
+    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
