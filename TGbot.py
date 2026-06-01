@@ -121,13 +121,13 @@ import urllib.parse
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
     
-    # Включаем принудительное сохранение кук сессии для работы по IP
+    # Принудительно разрешаем куки для IP-адресов (удерживает сессию)
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
+            # 1. Авторизация в панели X-UI
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -172,7 +172,7 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Ищем expiryTime текущего клиента для базы данных
+                # Ищем expiryTime текущего клиента для обновления локальной БД
                 client = next((c for c in clients if c.get("email") == email), None)
                 expiry_time_ms = client.get("expiryTime", 0) if client else 0
 
@@ -182,19 +182,19 @@ async def get_vpn_config_manual(user_id, username=""):
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
             
-            # Параметры маскировки
-            sni = "www.sony.com"
+            # Параметры маскировки (как в вашем рабочем коде на requests)
+            sni = "://sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
             
-            # ИСПРАВЛЕНО: Для имени (после #) кодирование НЕ НУЖНО, иначе в Happ будет каша из процентов
+            # Текстовая ремарка без лишнего кодирования для корректного отображения в Happ
             remark = f"{country_flag} {country_name} - {server_type}"
 
-            # Собираем точную ссылку (добавлен flow для стабильности сети)
+            # ИСПРАВЛЕНО: Параметр flow полностью удален из строки запроса
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
-                f"?type=tcp&security=reality&flow=xtls-rprx-vision&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
+                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{remark}"
             )
             happ_url = f"happ://import/{config_link}"
@@ -209,17 +209,14 @@ async def get_vpn_config_manual(user_id, username=""):
         logging.error(f"Ошибка VPN: {e}")
         return None, None
 
-
 async def renew_vpn_subscription(user_id):
     email = f"user_{user_id}"
-    
-    # Точно так же включаем удержание кук для IP-адреса, как в requests
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
+            # 1. Авторизация в панели
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
@@ -272,7 +269,6 @@ async def renew_vpn_subscription(user_id):
                     }]
                 })
             }
-            # Отправляем обновление в панель X-UI
             async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
                 update_resp = await resp.json()
             
@@ -287,6 +283,7 @@ async def renew_vpn_subscription(user_id):
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
         return False
+
 
 
 
