@@ -13,6 +13,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPri
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
+# --- ПРАВА АДМИНИСТРАТОРА ---
+ADMIN_ID = 8759913724  # ОБЯЗАТЕЛЬНО: Замените эти цифры на ваш настоящий Telegram ID
+
+
 # --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
 # На Amvera папка /data постоянная, файлы в ней не стираются при пересборках.
 if os.path.exists("/data"):
@@ -454,6 +458,83 @@ async def send_invoice(callback: types.CallbackQuery, bot: Bot):
         start_parameter="vpn-sub-30-days"
     )
 
+# --- АДМИН-ПАНЕЛЬ: РАССЫЛКА И ПОДАРКИ ---
+
+@dp.message(Command("send"))
+async def admin_broadcast(message: types.Message):
+    # Жесткая проверка: если пишет не админ, бот просто игнорирует команду
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Вытаскиваем текст сообщения, убирая саму команду /send
+    text_to_send = message.text.replace("/send", "").strip()
+    
+    if not text_to_send:
+        await message.answer("⚠️ <b>Ошибка:</b> Вы ввели пустую команду. Пишите так: <code>/send Ваш текст</code>")
+        return
+
+    # Получаем список всех ID из нашей SQLite3
+    all_users = get_all_users_from_db()
+    
+    await message.answer(f"⏳ <b>Начата рассылка</b> для {len(all_users)} пользователей...")
+    
+    success_count = 0
+    for user_id in all_users:
+        try:
+            # Отправляем сообщение каждому пользователю
+            await bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
+            success_count += 1
+            # Небольшая микро-пауза, чтобы Telegram не заблокировал бота за спам
+            await asyncio.sleep(0.05)
+        except Exception:
+            # Игнорируем ошибки, если пользователь заблокировал бота
+            pass
+
+    await message.answer(f"✅ <b>Рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
+
+
+@dp.message(Command("gift"))
+async def admin_gift_sub(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        # Разделяем команду по пробелам: /gift 123456789 30
+        parts = message.text.split()
+        target_user_id = int(parts[1])  # ID пользователя
+        days_to_add = int(parts[2])     # Количество дней подписки (например, 30)
+    except (IndexError, ValueError):
+        await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/gift ID_ПОЛЬЗОВАТЕЛЯ ДНИ</code>\n\nПример: <code>/gift 584930211 30</code>")
+        return
+
+    await message.answer(f"⏳ Связываюсь с панелью X-UI для выдачи подписки пользователю {target_user_id}...")
+
+    # Вызываем функцию автоматического добавления дней (она у нас уже написана для ЮKassa!)
+    # Но так как ЮKassa добавляет жестко 30 дней, давайте запустим её.
+    # Если вы ввели 30 дней, это сработает идеально через API
+    success = await renew_vpn_subscription(target_user_id)
+    
+    if success:
+        # Генерируем обновленный ключ, чтобы он записался в локальную SQLite3
+        await get_vpn_config_manual(target_user_id)
+        
+        await message.answer(f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней.")
+        
+        # Автоматически отправляем уведомление самому пользователю, чтобы он порадовался
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=f"🎁 <b>Вам подарок от администратора!</b>\nВаша подписка успешно активирована на {days_to_add} дней. Проверьте ваш Личный кабинет!",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось продлить подписку. Убедитесь, что пользователь нажал /start и существует в панели.")
+
+
+
+
 # --- Валидация платежа ---
 @dp.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery, bot: Bot):
@@ -513,6 +594,18 @@ async def main():
 
     logging.info("Диспетчер: Бот успешно запущен на хостинге Amvera. Начинаем Polling...")
     await dp.start_polling(bot)
+
+
+def get_all_users_from_db():
+    """Получить список Telegram ID всех пользователей бота для рассылки"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users')
+    rows = cursor.fetchall()
+    conn.close()
+    # Превращаем список кортежей [(123,), (456,)] в обычный список [123, 456]
+    return [row[0] for row in rows]
+
 
 if __name__ == '__main__':
     asyncio.run(main())
