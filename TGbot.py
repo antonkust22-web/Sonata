@@ -574,9 +574,9 @@ async def successful_payment_handler(message: types.Message):
 
 
 
-
 async def check_and_notify_expiring_subscriptions(bot):
-    """Фоновая задача проверки подписок."""
+    """Фоновая задача: проверяет пользователей, у которых подписка 
+    заканчивается ровно через 4 дня, и отправляет им уведомление."""
     logging.info("Запуск проверки истекающих подписок...")
     
     FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
@@ -586,11 +586,12 @@ async def check_and_notify_expiring_subscriptions(bot):
     target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
     target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
 
-        try:
+    try:
+        # Подключение к вашей базе данных на хостинге Amvera
         conn = sqlite3.connect("/app/users.db") 
         cursor = conn.cursor()
         
-        # ЗАМЕНИЛИ tg_id НА user_id
+        # Исправлено: вместо tg_id теперь запрашивается user_id
         cursor.execute(
             "SELECT user_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
             (target_time_min, target_time_max)
@@ -601,22 +602,26 @@ async def check_and_notify_expiring_subscriptions(bot):
         logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
         return
 
-
-    # Рассылка
+    # Рассылка уведомлений найденным пользователям
     for row in users_to_notify:
-        user_id = row[0] # Извлекаем ID из кортежа SQLite
+        user_id = row[0]  # Безопасно извлекаем ID пользователя из кортежа SQLite
         try:
             text = (
                 "⚠️ **Внимание!**\n\n"
                 "Ваша VPN-подписка заканчивается через **4 дня**.\n"
                 "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
             )
+            # Отправка сообщения пользователю в Telegram
             await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
-            logging.info(f"Уведомление об окончании отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05) # Защита от флуд-лимитов Telegram
+            logging.info(f"Уведомление об окончании успешно отправлено пользователю {user_id}")
+            
+            # Защитная пауза 0.05 сек (до 20 сообщений в секунду), чтобы Telegram не заблокировал бота за спам
+            await asyncio.sleep(0.05) 
             
         except Exception as send_error:
             logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
+
+
 
 
 async def scheduler(bot):
