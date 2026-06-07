@@ -47,9 +47,9 @@ VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8h
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
-    "✅ Невидим для DPI\n"
-    "✅ Работает в строгих сетях\n"
-    "✅ Подключение в один клик\n\n"
+    " ✅ Невидим для DPI\n"
+    " ✅ Работает в строгих сетях\n"
+    " ✅ Подключение в один клик\n\n"
     "Дальше здесь будет информация о подписке"
 )
 
@@ -586,14 +586,13 @@ async def check_and_notify_expiring_subscriptions(bot):
     target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
     target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
 
-    try:
-        # Подключаемся к вашей реальной базе данных из логов
+        try:
         conn = sqlite3.connect("/app/users.db") 
         cursor = conn.cursor()
         
-        # ВНИМАНИЕ: Если названия колонок tg_id или expiry_time другие, замените их здесь
+        # ЗАМЕНИЛИ tg_id НА user_id
         cursor.execute(
-            "SELECT tg_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
+            "SELECT user_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
             (target_time_min, target_time_max)
         )
         users_to_notify = cursor.fetchall()
@@ -601,6 +600,7 @@ async def check_and_notify_expiring_subscriptions(bot):
     except Exception as e:
         logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
         return
+
 
     # Рассылка
     for row in users_to_notify:
