@@ -572,6 +572,68 @@ async def successful_payment_handler(message: types.Message):
                 parse_mode="HTML"
             )
 
+
+async def check_and_notify_expiring_subscriptions(bot: Bot):
+    """Фоновая задача проверки подписок."""
+    logging.info("Запуск проверки истекающих подписок...")
+    
+    FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
+    ONE_HOUR = 60 * 60 
+    
+    current_time = int(time.time())
+    target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
+    target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
+
+    try:
+        # ВНИМАНИЕ: Используйте вашу существующую функцию подключения к БД
+        conn = sqlite3.connect("database.db") # Замените database.db на имя вашего файла БД
+        cursor = conn.cursor()
+        
+        # Замените users, tg_id и expiry_time на ваши названия колонок из add_or_update_user
+        cursor.execute(
+            "SELECT tg_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
+            (target_time_min, target_time_max)
+        )
+        users_to_notify = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
+        return
+
+    # Рассылка
+    for row in users_to_notify:
+        user_id = row  # Извлекаем ID из кортежа SQLite
+        try:
+            text = (
+                "⚠️ **Внимание!**\n\n"
+                "Ваша VPN-подписка заканчивается через **4 дня**.\n"
+                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
+            )
+            await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
+            logging.info(f"Уведомление об окончании отправлено пользователю {user_id}")
+            await asyncio.sleep(0.05) # Защита от флуд-лимитов Telegram
+            
+        except Exception as send_error:
+            logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
+
+
+async def subscription_scheduler(bot: Bot):
+    """Цикл, который запускает проверку раз в сутки без блокировки бота."""
+    # Даем боту 10 секунд на запуск, чтобы он сначала подключился к серверам Telegram
+    await asyncio.sleep(10)
+    
+    while True:
+        try:
+            await check_and_notify_expiring_subscriptions(bot)
+        except Exception as e:
+            logging.error(f"Критическая ошибка в планировщике подписок: {e}")
+        
+        # Спим 24 часа до следующей проверки
+        await asyncio.sleep(24 * 60 * 60)
+
+
+
+
 # --- Запуск ---
 async def main():
     # Очищаем вебхуки от старых запросов при перезапусках
@@ -592,6 +654,14 @@ async def main():
     except Exception as e:
         logging.warning(f"Не удалось запустить сайт-админку (это не влияет на бота): {e}")
 
+
+    # 2. ЗАПУСК ПЛАНИРОВЩИКА (Сначала запускаем фоновую задачу)
+    asyncio.create_task(scheduler(bot))
+    logging.info("Фоновый планировщик успешно запущен")
+
+    
+
+    
     logging.info("Диспетчер: Бот успешно запущен на хостинге Amvera. Начинаем Polling...")
     await dp.start_polling(bot)
 
