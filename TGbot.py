@@ -47,9 +47,9 @@ VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8h
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
-    "✅ Невидим для DPI\n"
-    "✅ Работает в строгих сетях\n"
-    "✅ Подключение в один клик\n\n"
+    " ✅ Невидим для DPI\n"
+    " ✅ Работает в строгих сетях\n"
+    " ✅ Подключение в один клик\n\n"
     "Дальше здесь будет информация о подписке"
 )
 
@@ -288,6 +288,60 @@ async def renew_vpn_subscription(user_id):
         return False
 
 
+import logging
+import time
+
+async def check_and_notify_expiring_subscriptions(bot):
+    """
+    Фоновая задача: проверяет пользователей, у которых подписка 
+    заканчивается ровно через 4 дня (+/- небольшой зазор времени).
+    """
+    logging.info("Запуск проверки истекающих подписок...")
+    
+    # 4 дня в секундах
+    FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
+    # Зазор в 1 час, чтобы точно поймать нужный день при ежедневной проверке
+    ONE_HOUR = 60 * 60 
+    
+    current_time = int(time.time())
+    target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
+    target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
+
+    # 1. Получаем пользователей из SQLite3, у которых expiry_time попадает в окно "через 4 дня"
+    # ВНИМАНИЕ: Названия таблицы (users) и колонок (tg_id, expiry_time) замените на свои реальные!
+    try:
+        conn = get_db_connection() # Ваша функция подключения к локальной sqlite3
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT tg_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
+            (target_time_min, target_time_max)
+        )
+        users_to_notify = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
+        return
+
+    # 2. Рассылка уведомлений
+    for row in users_to_notify:
+        user_id = row[0]
+        try:
+            # Текст уведомления (можете изменить под себя)
+            text = (
+                "⚠️ **Внимание!**\n\n"
+                "Ваша VPN-подписка заканчивается через **4 дня**.\n"
+                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
+            )
+            
+            # Отправка через ваш aiogram/telebot (пример для aiogram)
+            await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
+            logging.info(f"Уведомление об окончании отправлено пользователю {user_id}")
+            
+            # Небольшая пауза против флуд-лимитов Telegram API
+            await asyncio.sleep(0.05)
+            
+        except Exception as send_error:
+            logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
 
 
 
@@ -417,7 +471,7 @@ async def back(callback: types.CallbackQuery):
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. "
+        "Новый VPN будет обеспечивать высокую скорость соединения. "
         "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
         "Тех.поддержка @Sonata_VPN_Admin"
     )
@@ -605,6 +659,20 @@ def get_all_users_from_db():
     conn.close()
     # Превращаем список кортежей [(123,), (456,)] в обычный список [123, 456]
     return [row[0] for row in rows]
+
+# Бесконечный цикл для ежесуточного запуска
+async def scheduler(bot):
+    while True:
+        await check_and_notify_expiring_subscriptions(bot)
+        # Спим 24 часа перед следующей проверкой
+        await asyncio.sleep(24 * 60 * 60) 
+
+# В вашей главной функции запуска (main/start)
+async def main():
+    # ... инициализация bot и dp ...
+    
+    # Запускаем планировщик в фоне, он не будет блокировать работу бота
+    asyncio.create_task(scheduler(bot))
 
 
 if __name__ == '__main__':
