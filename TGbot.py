@@ -573,7 +573,9 @@ async def successful_payment_handler(message: types.Message):
             )
 
 
-async def check_and_notify_expiring_subscriptions(bot: Bot):
+
+
+async def check_and_notify_expiring_subscriptions(bot):
     """Фоновая задача проверки подписок."""
     logging.info("Запуск проверки истекающих подписок...")
     
@@ -585,11 +587,11 @@ async def check_and_notify_expiring_subscriptions(bot: Bot):
     target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
 
     try:
-        # ВНИМАНИЕ: Используйте вашу существующую функцию подключения к БД
-        conn = sqlite3.connect("database.db") # Замените database.db на имя вашего файла БД
+        # Подключаемся к вашей реальной базе данных из логов
+        conn = sqlite3.connect("/app/users.db") 
         cursor = conn.cursor()
         
-        # Замените users, tg_id и expiry_time на ваши названия колонок из add_or_update_user
+        # ВНИМАНИЕ: Если названия колонок tg_id или expiry_time другие, замените их здесь
         cursor.execute(
             "SELECT tg_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
             (target_time_min, target_time_max)
@@ -602,7 +604,7 @@ async def check_and_notify_expiring_subscriptions(bot: Bot):
 
     # Рассылка
     for row in users_to_notify:
-        user_id = row  # Извлекаем ID из кортежа SQLite
+        user_id = row[0] # Извлекаем ID из кортежа SQLite
         try:
             text = (
                 "⚠️ **Внимание!**\n\n"
@@ -617,9 +619,9 @@ async def check_and_notify_expiring_subscriptions(bot: Bot):
             logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
 
 
-async def subscription_scheduler(bot: Bot):
-    """Цикл, который запускает проверку раз в сутки без блокировки бота."""
-    # Даем боту 10 секунд на запуск, чтобы он сначала подключился к серверам Telegram
+async def scheduler(bot):
+    """Цикл, который запускает проверку раз в сутки под именем scheduler."""
+    # Даем боту 10 секунд на запуск
     await asyncio.sleep(10)
     
     while True:
@@ -630,6 +632,7 @@ async def subscription_scheduler(bot: Bot):
         
         # Спим 24 часа до следующей проверки
         await asyncio.sleep(24 * 60 * 60)
+
 
 
 
