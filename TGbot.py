@@ -230,10 +230,14 @@ async def get_vpn_config_manual(user_id, username=""):
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{safe_remark}"
             )
+
+                        # Название для плашки подписки (как "Сейв ВПН" на скрине)
+            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
             
-            # Формируем URL подписки (Именно он отвечает за вывод плашки и дат в приложении)
-            subscription_url = f"{PANEL_URL}{BASE_PATH}/sub/{sub_id}"
+            # Формируем URL подписки с явным указанием имени группы
+            subscription_url = f"{PANEL_URL}{BASE_PATH}/sub/{sub_id}#{sub_remark}"
             happ_url = f"happ://import/{subscription_url}"
+
             
             # Сохраняем/обновляем данные в нашей локальной БД sqlite3
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
