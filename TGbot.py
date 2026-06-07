@@ -47,9 +47,9 @@ VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8h
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
-    " ✅ Невидим для DPI\n"
-    " ✅ Работает в строгих сетях\n"
-    " ✅ Подключение в один клик\n\n"
+    "✅ Невидим для DPI\n"
+    "✅ Работает в строгих сетях\n"
+    "✅ Подключение в один клик\n\n"
     "Дальше здесь будет информация о подписке"
 )
 
@@ -63,11 +63,11 @@ def init_db():
     # timeout=30.0 заставляет запросы послушно ждать, если база занята
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-    
+
     # Включаем режим WAL. Это ускоряет запись в 10 раз и исключает зависания
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
-    
+
     # Создаем продвинутую таблицу пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -85,11 +85,11 @@ def add_or_update_user(user_id, username, vpn_config=None, happ_url=None, expiry
     """Безопасное добавление или обновление данных пользователя"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-    
+
     # Проверяем, есть ли уже юзер
     cursor.execute('SELECT user_id, vpn_config, happ_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
-    
+
     if not row:
         # Если пользователя нет — создаем запись
         cursor.execute(
@@ -101,12 +101,12 @@ def add_or_update_user(user_id, username, vpn_config=None, happ_url=None, expiry
         new_config = vpn_config if vpn_config else row[1]
         new_happ = happ_url if happ_url else row[2]
         new_expiry = expiry_time if expiry_time is not None else row[3]
-        
+
         cursor.execute(
             'UPDATE users SET username = ?, vpn_config = ?, happ_url = ?, expiry_time = ? WHERE user_id = ?',
             (username, new_config, new_happ, new_expiry, user_id)
         )
-        
+
     conn.commit()
     conn.close()
 
@@ -124,11 +124,11 @@ import urllib.parse
 
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
-    
+
     # Включаем принудительное сохранение кук сессии для работы по IP (аналог requests.Session)
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
+
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             # 1. Логин в панель
@@ -144,7 +144,7 @@ async def get_vpn_config_manual(user_id, username=""):
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
-                
+
             if not res_json.get("success"):
                 logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
                 return None, None
@@ -185,13 +185,13 @@ async def get_vpn_config_manual(user_id, username=""):
             my_port = res_json["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-           
+
             sni = "www.sony.com"
             country_flag = "🇫🇮"
             country_name = "Финляндия"
             server_type = "Premium"
             remark = f"{country_flag} {country_name}?{server_type}"
-            
+
             # Экранирование спецсимволов и кириллицы (сохранено как в вашем рабочем коде)
             safe_remark = urllib.parse.quote(remark)
 
@@ -201,11 +201,11 @@ async def get_vpn_config_manual(user_id, username=""):
                 f"#{safe_remark}"
             )
             happ_url = f"happ://import/{config_link}"
-            
+
             # Сохраняем/обновляем данные в нашей локальной БД sqlite3
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
-            
+
             return config_link, happ_url
 
     except Exception as e:
@@ -216,14 +216,14 @@ async def renew_vpn_subscription(user_id):
     email = f"user_{user_id}"
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
+
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             # 1. Авторизация в панели
             login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
-            
+
             headers = {
                 "Accept": "application/json"
             }
@@ -232,15 +232,15 @@ async def renew_vpn_subscription(user_id):
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
-                
+
             if not res_json.get("success"):
                 logging.error(f"Не удалось получить данные инбаунда для продления подписки: {res_json}")
                 return False
-                
+
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
-            
+
             if not client:
                 logging.error(f"Клиент {email} не найден в панели X-UI.")
                 return False
@@ -248,7 +248,7 @@ async def renew_vpn_subscription(user_id):
             # 3. Расчет времени (в миллисекундах)
             current_time_ms = int(time.time() * 1000)
             thirty_days_ms = 30 * 24 * 60 * 60 * 1000
-            
+
             if client.get("expiryTime", 0) > current_time_ms:
                 new_expiry = client["expiryTime"] + thirty_days_ms
             else:
@@ -256,7 +256,7 @@ async def renew_vpn_subscription(user_id):
 
             client_uuid = client['id']
             update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-            
+
             client_data = {
                 "id": str(INBOUND_ID),
                 "settings": json.dumps({
@@ -274,74 +274,20 @@ async def renew_vpn_subscription(user_id):
             }
             async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
                 update_resp = await resp.json()
-            
+
             success = update_resp.get("success", False)
             if success:
                 # Синхронизируем новую дату окончания подписки в локальную SQLite3
                 expiry_seconds = int(new_expiry / 1000)
                 add_or_update_user(user_id, "", expiry_time=expiry_seconds)
                 logging.info(f"Подписка для пользователя {user_id} успешно продлена в X-UI и SQLite3.")
-                
+
             return success
     except Exception as e:
         logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
         return False
 
 
-import logging
-import time
-
-async def check_and_notify_expiring_subscriptions(bot):
-    """
-    Фоновая задача: проверяет пользователей, у которых подписка 
-    заканчивается ровно через 4 дня (+/- небольшой зазор времени).
-    """
-    logging.info("Запуск проверки истекающих подписок...")
-    
-    # 4 дня в секундах
-    FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
-    # Зазор в 1 час, чтобы точно поймать нужный день при ежедневной проверке
-    ONE_HOUR = 60 * 60 
-    
-    current_time = int(time.time())
-    target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
-    target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
-
-    # 1. Получаем пользователей из SQLite3, у которых expiry_time попадает в окно "через 4 дня"
-    # ВНИМАНИЕ: Названия таблицы (users) и колонок (tg_id, expiry_time) замените на свои реальные!
-    try:
-        conn = get_db_connection() # Ваша функция подключения к локальной sqlite3
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT tg_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
-            (target_time_min, target_time_max)
-        )
-        users_to_notify = cursor.fetchall()
-        conn.close()
-    except Exception as e:
-        logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
-        return
-
-    # 2. Рассылка уведомлений
-    for row in users_to_notify:
-        user_id = row[0]
-        try:
-            # Текст уведомления (можете изменить под себя)
-            text = (
-                "⚠️ **Внимание!**\n\n"
-                "Ваша VPN-подписка заканчивается через **4 дня**.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
-            )
-            
-            # Отправка через ваш aiogram/telebot (пример для aiogram)
-            await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
-            logging.info(f"Уведомление об окончании отправлено пользователю {user_id}")
-            
-            # Небольшая пауза против флуд-лимитов Telegram API
-            await asyncio.sleep(0.05)
-            
-        except Exception as send_error:
-            logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
 
 
 
@@ -379,26 +325,26 @@ async def cmd_start(message: types.Message):
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    
+
     # Синхронизируем данные с панелью X-UI (чтобы обновить дату, если платеж прошел)
     config, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-    
+
     # Читаем данные из нашей надежной локальной SQLite3
     db_data = get_user_from_db(user_id)
-    
+
     # Создаем клавиатуру для ЛК (кнопка Назад будет всегда)
     kb = InlineKeyboardMarkup(inline_keyboard=[])
-    
+
     if db_data and db_data[1]:  # Если запись и ключ существуют в базе
         expiry_timestamp = db_data[3] # Получаем Unix-время окончания из БД
         current_time = time.time()
-        
+
         # ПРОВЕРКА: Если подписка активна (время окончания больше текущего)
         if expiry_timestamp > current_time:
             # Рассчитываем оставшиеся дни
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
-            
+
             # ПОКАЗЫВАЕМ ТЕКСТ И КЛЮЧ
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
@@ -410,7 +356,7 @@ async def cabinet(callback: types.CallbackQuery):
             )
             # В активном кабинете оставляем только кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
-            
+
         else:
             # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА — ПРЯЧЕМ КЛЮЧ
             status_text = "🔴 Не активна (требуется оплата)"
@@ -426,7 +372,7 @@ async def cabinet(callback: types.CallbackQuery):
     else:
         text = "❌ Ошибка профиля. Нажмите /start для перезапуска бота."
         kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
-        
+
     try:
         await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
@@ -437,10 +383,10 @@ async def cabinet(callback: types.CallbackQuery):
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    
+
     # Проверяем статус в нашей локальной базе данных
     db_data = get_user_from_db(user_id)
-    
+
     # Если подписка оформлена и еще не закончилась
     if db_data and db_data[3] > time.time():
         _, happ_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
@@ -471,7 +417,7 @@ async def back(callback: types.CallbackQuery):
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "Новый VPN будет обеспечивать высокую скорость соединения. "
+        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. "
         "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
         "Тех.поддержка @Sonata_VPN_Admin"
     )
@@ -602,15 +548,15 @@ async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery,
 async def successful_payment_handler(message: types.Message):
     user_id = message.from_user.id
     payload = message.successful_payment.invoice_payload
-    
+
     if payload == "vpn_30_days_subscription":
         success = await renew_vpn_subscription(user_id)
         config, happ_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
-        
+
         kb = InlineKeyboardMarkup(inline_keyboard=[])
         if happ_url:
             kb.inline_keyboard.append([InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)])
-            
+
         if success:
             await message.answer(
                 f"✅ <b>Оплата прошла успешно!</b>\nВаша подписка продлена на 30 дней.\n\n"
@@ -630,7 +576,7 @@ async def successful_payment_handler(message: types.Message):
 async def main():
     # Очищаем вебхуки от старых запросов при перезапусках
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     # Инициализируем стандартную базу данных sqlite3
     init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
@@ -660,25 +606,8 @@ def get_all_users_from_db():
     # Превращаем список кортежей [(123,), (456,)] в обычный список [123, 456]
     return [row[0] for row in rows]
 
-# Бесконечный цикл для ежесуточного запуска
-async def scheduler(bot):
-    while True:
-        await check_and_notify_expiring_subscriptions(bot)
-        # Спим 24 часа перед следующей проверкой
-        await asyncio.sleep(24 * 60 * 60) 
-
-# В вашей главной функции запуска (main/start)
-async def main():
-    # ... инициализация bot и dp ...
-    
-    # Запускаем планировщик в фоне, он не будет блокировать работу бота
-    asyncio.create_task(scheduler(bot))
-
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
 
 
