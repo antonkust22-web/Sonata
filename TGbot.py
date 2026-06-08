@@ -133,7 +133,7 @@ async def get_vpn_config_manual(user_id, username=""):
     
     # Формируем красивый Email, который Happ отобразит как имя сервера.
     # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
-    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -265,7 +265,7 @@ async def renew_vpn_subscription(user_id: int) -> bool:
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     # Добавлено нижнее подчеркивание между флагом и страной для единого стиля
-    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -354,7 +354,7 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -440,7 +440,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
