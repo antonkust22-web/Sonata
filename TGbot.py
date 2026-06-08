@@ -602,22 +602,35 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Читаем данные из локальной SQLite3
+        # Получаем данные напрямую через вызов функции (она синхронизирует БД и X-UI)
+        # Функция get_vpn_config_manual возвращает (config_link, subscription_web_url)
+        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        
+        # Читаем данные из локальной SQLite3 для проверки времени
         db_data = get_user_from_db(user_id)
 
-        # Проверяем статус подписки (индекс 3 — Unix-время окончания)
-        if db_data and len(db_data) > 3 and db_data[3] > time.time():
+        # Универсальный поиск timestamp окончания подписки в строке данных пользователя
+        expiry_timestamp = 0
+        current_time = time.time()
+
+        if db_data:
+            # Перебираем элементы из БД, чтобы найти Unix-время окончания (число больше текущего года)
+            for item in db_data:
+                if isinstance(item, (int, float)) and item > 1700000000:
+                    expiry_timestamp = item
+                    break
+
+        # ПРОВЕРКА: Если подписка активна ИЛИ панель X-UI успешно вернула нам веб-ссылку
+        if (expiry_timestamp > current_time) or sub_web_url:
             
-            # Синхронизируем данные с панелью и получаем чистый URL
-            _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-            
-            # Защита: если функция из X-UI не вернула ссылку, берем из БД
-            if not sub_web_url and len(db_data) > 2:
-                sub_web_url = db_data[2]
+            # Если по какой-то причине sub_web_url пустой, но подписка активна, ищем ссылку в БД
+            if not sub_web_url and db_data:
+                for item in db_data:
+                    if isinstance(item, str) and item.startswith("http"):
+                        sub_web_url = item
+                        break
 
             if sub_web_url:
-                # Чтобы Telegram не ругался на протокол happ://, мы используем чистую https:// ссылку.
-                # Смартфоны с установленным Happ часто перехватывают её автоматически.
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -643,11 +656,13 @@ async def connect(callback: types.CallbackQuery):
                 logging.error(f"Ошибка генерации ссылок для пользователя {user_id}: sub_web_url пустой.")
                 await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки. Обратитесь к администратору.")
         else:
+            # Если подписка действительно истекла
             await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
