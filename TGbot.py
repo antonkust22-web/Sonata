@@ -511,7 +511,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ) РАЗРАБОТКА", callback_data="connect")],
+        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
@@ -535,6 +535,7 @@ async def cmd_start(message: types.Message):
         parse_mode="HTML"
     )
 
+
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
@@ -549,7 +550,7 @@ async def cabinet(callback: types.CallbackQuery):
     # Создаем клавиатуру для ЛК
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    if db_data and db_data[1]:  # Если запись и ключ существуют в базе
+    if db_data and len(db_data) > 3:  # Если запись существует в базе
         expiry_timestamp = db_data[3] # Получаем Unix-время окончания из БД
         current_time = time.time()
 
@@ -559,16 +560,14 @@ async def cabinet(callback: types.CallbackQuery):
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
-            # Оформляем текст ЛК без упоминания веб-ссылок подписки
+            # Полностью чистый текст БЕЗ каких-либо vless:// и веб-ссылок
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"<b>📋 Ваш ключ подключения VLESS:</b>\n"
-                f"<code>{db_data[1]}</code>\n\n"
-                f"✨ Чтобы быстро настроить VPN на смартфоне или ПК, перейдите в главное меню и нажмите кнопку <b>«Подключиться»</b>."
+                f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
-            # В активном кабинете оставляем только кнопку Назад (без веб-ссылки)
+            # Оставляем только кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
         else:
@@ -578,7 +577,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata и генерации вашего личного ключа, пожалуйста, приобретите подписку."
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку."
             )
             # Добавляем кнопки покупки и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
@@ -594,51 +593,69 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # 1. Сразу гасим часики анимации на кнопке в Telegram
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Проверяем статус в нашей локальной базе данных
-    db_data = get_user_from_db(user_id)
+    try:
+        # Читаем данные из локальной SQLite3
+        db_data = get_user_from_db(user_id)
 
-    # Если подписка оформлена и еще не закончилась
-    if db_data and db_data[3] > time.time():
-        # Вызываем функцию (она вернет config_link и чистую subscription_web_url)
-        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-        
-        if sub_web_url:
-            # Формируем корректную ссылку авто-импорта для приложения Happ
-            # Ссылка должна иметь вид happ://import/https://...
-            happ_import_url = f"happ://import/{sub_web_url}"
+        # Проверяем: существует ли пользователь и активна ли подписка
+        # db_data[3] — это сохраненный Unix-timestamp окончания подписки
+        if db_data and len(db_data) > 3 and db_data[3] > time.time():
+            
+            # Вызываем функцию синхронизации. Она вернет (vless_config, subscription_web_url)
+            _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+            
+            # Защита: если функция из X-UI не вернула ссылку, пробуем взять её из БД (индекс 2)
+            if not sub_web_url and len(db_data) > 2:
+                sub_web_url = db_data[2]
 
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=happ_import_url)],
-                [InlineKeyboardButton(text="🌐 ОТКРЫТЬ В БРАУЗЕРЕ", url=sub_web_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-            ])
+            if sub_web_url:
+                # Собираем deep-link строго для приложения Happ
+                happ_import_url = f"happ://import/{sub_web_url}"
 
-            text = (
-                "<b>📥 Подключение через приложение Happ:</b>\n\n"
-                "1. Установите приложение <b>Happ</b> на ваше устройство.\n"
-                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже для автоматического добавления.\n\n"
-                "Если автоматический импорт не сработал:\n"
-                "• Нажмите «🌐 ОТКРЫТЬ В БРАУЗЕРЕ»\n"
-                "• Скопируйте адрес страницы из браузера\n"
-                "• Вставьте его в приложении Happ вручную (кнопка Плюс ➕ -> Добавить по ссылке).\n\n"
-                "<b>Ваша ссылка для ручного копирования:</b>\n"
-                f"<code>{sub_web_url}</code>"
-            )
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=happ_import_url)],
+                    [InlineKeyboardButton(text="🌐 ОТКРЫТЬ В БРАУЗЕРЕ", url=sub_web_url)],
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+                ])
 
-            try:
-                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-            except TelegramBadRequest:
-                pass
+                text = (
+                    "<b>📥 Подключение через приложение Happ:</b>\n\n"
+                    "1. Установите приложение <b>Happ</b> на ваше устройство.\n"
+                    "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже для автоматического добавления конфигурации.\n\n"
+                    "<i>Если автоматический импорт не сработал:</i>\n"
+                    "• Нажмите кнопку «🌐 ОТКРЫТЬ В БРАУЗЕРЕ»\n"
+                    "• Скопируйте адрес открывшейся страницы из адресной строки браузера\n"
+                    "• В приложении Happ нажмите Плюс (➕) -> Добавить по ссылке (Add by URL) и вставьте её.\n\n"
+                    "<b>Ваша прямая ссылка для ручного копирования:</b>\n"
+                    f"<code>{sub_web_url}</code>"
+                )
+
+                await callback.message.edit_caption(
+                    caption=text, 
+                    reply_markup=kb, 
+                    parse_mode="HTML"
+                )
+            else:
+                logging.error(f"Ошибка генерации ссылок для пользователя {user_id}: sub_web_url пустой.")
+                # Если ссылки вообще нет, отправляем текстовое уведомление во всплывающем окне
+                await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки. Обратитесь к администратору.")
         else:
-            await callback.answer("❌ Ошибка сервера: не удалось сгенерировать ссылку.", show_alert=True)
-    else:
-        # Если клиент пытается зайти без оплаты — выдаем предупреждение
-        await callback.answer("⚠️ Доступ заблокирован! Сначала приобретите подписку в меню 'Купить подписку'.", show_alert=True)
+            # Если подписка не оплачена или закончилась — отправляем alert-уведомление
+            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка в обработчике connect: {e}")
+        # Показываем красивую плашку ошибки вместо бесконечной загрузки
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 @dp.callback_query(F.data == "back")
