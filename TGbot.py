@@ -330,15 +330,14 @@ async def renew_vpn_subscription(user_id):
         logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
         return False
 
-import json
-import logging
-import time
-import secrets
-import aiohttp
 
-async def renew_vpn_subscription_flexible(user_id: int, days: int) -> bool:
+
+
+
+async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
     Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней.
+    При успехе возвращает строку subId, при ошибке — False.
     """
     email = f"user_{user_id}"
     jar = aiohttp.CookieJar(unsafe=True)
@@ -370,11 +369,10 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int) -> bool:
                 logging.error(f"Клиент {email} не найден в панели X-UI.")
                 return False
 
-            # 3. Динамический расчет времени (в миллисекундах) на основе переданных дней
+            # 3. Динамический расчет времени (в миллисекундах)
             current_time_ms = int(time.time() * 1000)
             custom_days_ms = days * 24 * 60 * 60 * 1000
             
-            # Если старая подписка еще активна — плюсуем дни к ней, если сгорела — от текущего момента
             if client.get("expiryTime", 0) > current_time_ms:
                 new_expiry = client["expiryTime"] + custom_days_ms
             else:
@@ -407,12 +405,14 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int) -> bool:
             
             success = update_resp.get("success", False)
             if success:
-                # Синхронизируем новую точную дату окончания в SQLite3
+                # Синхронизируем дату в SQLite3
                 expiry_seconds = int(new_expiry / 1000)
                 add_or_update_user(user_id, "", expiry_time=expiry_seconds)
                 logging.info(f"Подписка для пользователя {user_id} успешно продлена на {days} дн. в X-UI и SQLite3.")
+                # ВОЗВРАЩАЕМ КЛЮЧ СУБИД ДЛЯ ССЫЛКИ
+                return client_sub_id
                 
-            return success
+            return False
     except Exception as e:
         logging.error(f"Ошибка при гибком продлении подписки: {e}")
         return False
@@ -421,7 +421,6 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int) -> bool:
 async def revoke_vpn_subscription(user_id: int) -> bool:
     """
     Аннулирует подписку в 3X-UI, выставляя expiryTime в далекое прошлое.
-    При этом настройки клиента (UUID, subId) не удаляются, но доступ блокируется.
     """
     email = f"user_{user_id}"
     jar = aiohttp.CookieJar(unsafe=True)
@@ -456,7 +455,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
             client_uuid = client['id']
             update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
             
-            # Ставим expiryTime = 1 (1970 год), панель моментально отключает его за просрочку
+            # Ставим 1970 год и выключаем активность клиента
             past_expiry = 1
 
             client_data = {
@@ -468,7 +467,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
                         "limitIp": client.get("limitIp", 2),
                         "totalGB": client.get("totalGB", 0),
                         "expiryTime": past_expiry,
-                        "enable": False, # Для надежности выключаем тумблер активности
+                        "enable": False,
                         "tgId": user_id,
                         "subId": client.get("subId", "")
                     }]
@@ -479,7 +478,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
             
             success = update_resp.get("success", False)
             if success:
-                # Синхронизируем аннулирование с локальной SQLite3 (ставим 0 — подписка истекла)
+                # Ставим 0 в SQLite3 (подписка истекла)
                 add_or_update_user(user_id, "", expiry_time=0)
                 logging.info(f"Подписка для пользователя {user_id} успешно отозвана в X-UI и SQLite3.")
                 
@@ -487,6 +486,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
     except Exception as e:
         logging.error(f"Ошибка при отзыве подписки: {e}")
         return False
+
 
 
 
@@ -659,36 +659,29 @@ async def send_invoice(callback: types.CallbackQuery, bot: Bot):
         start_parameter="vpn-sub-30-days"
     )
 
-# --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ И ОТЗЫВ ПОДПИСКИ ---
+# --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
 
 @dp.message(Command("send"))
 async def admin_broadcast(message: types.Message):
-    # Жесткая проверка: если пишет не админ, бот просто игнорирует команду
     if message.from_user.id != ADMIN_ID:
         return
 
-    # Вытаскиваем текст сообщения, убирая саму команду /send
     text_to_send = message.text.replace("/send", "").strip()
     
     if not text_to_send:
         await message.answer("⚠️ <b>Ошибка:</b> Вы ввели пустую команду. Пишите так: <code>/send Ваш текст</code>")
         return
 
-    # Получаем список всех ID из нашей SQLite3
     all_users = get_all_users_from_db()
-    
     await message.answer(f"⏳ <b>Начата рассылка</b> для {len(all_users)} пользователей...")
     
     success_count = 0
     for user_id in all_users:
         try:
-            # Отправляем сообщение каждому пользователю
             await bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
             success_count += 1
-            # Небольшая микро-пауза, чтобы Telegram не заблокировал бота за спам
             await asyncio.sleep(0.05)
         except Exception:
-            # Игнорируем ошибки, если пользователь заблокировал бота
             pass
 
     await message.answer(f"✅ <b>Рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
@@ -700,26 +693,40 @@ async def admin_gift_sub(message: types.Message):
         return
 
     try:
-        # Разбиваем строку по пробелам и достаем параметры по индексам
         parts = message.text.split()
-        target_user_id = int(parts[1])  # ID пользователя (1-й индекс)
-        days_to_add = int(parts[2])     # Количество дней подписки (2-й индекс)
+        target_user_id = int(parts[1])  
+        days_to_add = int(parts[2])     
     except (IndexError, ValueError):
         await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/gift ID_ПОЛЬЗОВАТЕЛЯ ДНИ</code>\n\nПример: <code>/gift 584930211 5</code>")
         return
 
     await message.answer(f"⏳ Связываюсь с панелью X-UI для выдачи подписки на {days_to_add} дн. пользователю {target_user_id}...")
 
-    # Вызываем новую функцию гибкого продления
-    success = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
+    # Вызываем функцию гибкого продления (она вернет строку subId при успехе)
+    sub_id = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
     
-    if success:
-        # Генерируем обновленный ключ для записи в локальную SQLite3
+    if sub_id:
         await get_vpn_config_manual(target_user_id)
         
-        await message.answer(f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней.")
+        # Динамически вытаскиваем IP вашей панели из PANEL_URL, но подставляем порт подписок 2096
+        # Если у вас PANEL_URL имеет вид "http://78.17.1.43:2053", скрипт возьмет чистый IP и сделает нужную вам ссылку
+        try:
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(PANEL_URL)
+            host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')[0]
+        except Exception:
+            host = "78.17.1.43" # Резервное значение на случай сбоя парсинга
+
+        # Ссылка в красивом стиле с вашим портом 2096
+        sub_link = f"https://{host}:2096/sub/{sub_id}"
         
-        # Автоматически отправляем уведомление самому пользователю
+        await message.answer(
+            f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней.\n\n"
+            f"🔗 <b>Ссылка на подписку (с верхней плашкой):</b>\n<code>{sub_link}</code>",
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        
         try:
             await bot.send_message(
                 chat_id=target_user_id,
@@ -738,22 +745,19 @@ async def admin_revoke_sub(message: types.Message):
         return
 
     try:
-        # Разбиваем строку по пробелам и достаем ID пользователя
         parts = message.text.split()
-        target_user_id = int(parts[1])  # ID пользователя (1-й индекс)
+        target_user_id = int(parts[1])
     except (IndexError, ValueError):
         await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/revoke ID_ПОЛЬЗОВАТЕЛЯ</code>")
         return
 
     await message.answer(f"⏳ Отзываю подписку у пользователя {target_user_id} в панели X-UI...")
 
-    # Вызываем функцию полного аннулирования подписки
     success = await revoke_vpn_subscription(target_user_id)
     
     if success:
         await message.answer(f"🛑 <b>Подписка аннулирована!</b> Пользователь <code>{target_user_id}</code> больше не имеет доступа к VPN.")
         
-        # Автоматически отправляем уведомление пользователю
         try:
             await bot.send_message(
                 chat_id=target_user_id,
