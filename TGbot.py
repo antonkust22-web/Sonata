@@ -3,6 +3,8 @@ import logging
 import json
 import uuid
 import time
+import urllib.parse
+import secrets
 import os
 import subprocess
 import sqlite3  # Используем стандартный встроенный sqlite3
@@ -120,13 +122,7 @@ def get_user_from_db(user_id):
     return row
 
 
-import urllib.parse
-import secrets  
-import uuid
-import json
-import logging
-import time
-import aiohttp
+
 
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
@@ -595,78 +591,64 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        db_data = get_user_from_db(user_id)
-
-        expiry_timestamp = 0
-        current_time = time.time()
-
-        if db_data:
-            for item in db_data:
-                if isinstance(item, (int, float)) and item > 1700000000:
-                    expiry_timestamp = item
-                    break
-
-        # Проверяем активность
-        if (expiry_timestamp > current_time):
-            _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
+        # Она возвращает (config_link, subscription_web_url)
+        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        
+        # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
+        if sub_web_url and sub_web_url.startswith("http"):
             
-            if not sub_web_url and db_data:
-                for item in db_data:
-                    if isinstance(item, str) and item.startswith("http"):
-                        sub_web_url = item
-                        break
+            # 1. Собираем прямую ссылку для приложения Happ
+            raw_happ_url = f"happ://import/{sub_web_url}"
+            
+            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
+            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
+            try:
+                async with aiohttp.ClientSession() as session:
+                    enc_url = urllib.parse.quote(raw_happ_url)
+                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                        if resp.status == 200:
+                            safe_redirect_url = await resp.text()
+            except Exception as e:
+                logging.error(f"Не удалось сократить happ-ссылку: {e}")
+                safe_redirect_url = sub_web_url
 
-            if sub_web_url:
-                # 1. Собираем ту самую прямую команду для приложения Happ, на которую ругался Telegram
-                raw_happ_url = f"happ://import/{sub_web_url}"
-                
-                # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
-                # Это превратит "happ://import/..." в безопасную "https://clck.ru..."
-                safe_redirect_url = raw_happ_url  # Резервный вариант
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        enc_url = urllib.parse.quote(raw_happ_url)
-                        async with session.get(f"https://clck.ru--?url={enc_url}", timeout=5) as resp:
-                            if resp.status == 200:
-                                safe_redirect_url = await resp.text()
-                except Exception as e:
-                    logging.error(f"Не удалось сократить happ-ссылку: {e}")
-                    # Если сокращатель недоступен, подставим чистый веб-url, чтобы кнопка хотя бы открыла браузер
-                    safe_redirect_url = sub_web_url
+            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            ])
 
-                # Кнопка теперь содержит безопасную https ссылку, которая сама откроет Happ!
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
-                    [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-                ])
+            text = (
+                "<b>📥 Подключение через приложение Happ:</b>\n\n"
+                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
+                "<b>💡 Если автоматический импорт не сработал:</b>\n"
+                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                f"<code>{sub_web_url}</code>\n\n"
+                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+            )
 
-                text = (
-                    "<b>📥 Подключение через приложение Happ:</b>\n\n"
-                    "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                    "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                    "3. Смартфон автоматически предложит открыть приложение и импортировать подписку.\n\n"
-                    "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                    "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
-                    f"<code>{sub_web_url}</code>\n\n"
-                    "• Откройте Happ, нажмите <b>Плюс (➕)</b> ➔ <b>«Добавить по ссылке» (Add by URL)</b> и вставьте её."
-                )
-
-                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-            else:
-                await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки.")
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            
         else:
+            # Если X-UI панель не вернула ссылку (пользователь истек, удален или отключен в панели)
             await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
