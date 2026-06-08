@@ -597,33 +597,25 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации в Telegram
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Получаем данные напрямую через вызов функции (она синхронизирует БД и X-UI)
-        # Функция get_vpn_config_manual возвращает (config_link, subscription_web_url)
-        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-        
-        # Читаем данные из локальной SQLite3 для проверки времени
         db_data = get_user_from_db(user_id)
 
-        # Универсальный поиск timestamp окончания подписки в строке данных пользователя
         expiry_timestamp = 0
         current_time = time.time()
 
         if db_data:
-            # Перебираем элементы из БД, чтобы найти Unix-время окончания (число больше текущего года)
             for item in db_data:
                 if isinstance(item, (int, float)) and item > 1700000000:
                     expiry_timestamp = item
                     break
 
-        # ПРОВЕРКА: Если подписка активна ИЛИ панель X-UI успешно вернула нам веб-ссылку
-        if (expiry_timestamp > current_time) or sub_web_url:
+        # Проверяем активность
+        if (expiry_timestamp > current_time):
+            _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
             
-            # Если по какой-то причине sub_web_url пустой, но подписка активна, ищем ссылку в БД
             if not sub_web_url and db_data:
                 for item in db_data:
                     if isinstance(item, str) and item.startswith("http"):
@@ -631,37 +623,51 @@ async def connect(callback: types.CallbackQuery):
                         break
 
             if sub_web_url:
+                # 1. Собираем ту самую прямую команду для приложения Happ, на которую ругался Telegram
+                raw_happ_url = f"happ://import/{sub_web_url}"
+                
+                # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
+                # Это превратит "happ://import/..." в безопасную "https://clck.ru..."
+                safe_redirect_url = raw_happ_url  # Резервный вариант
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        enc_url = urllib.parse.quote(raw_happ_url)
+                        async with session.get(f"https://clck.ru--?url={enc_url}", timeout=5) as resp:
+                            if resp.status == 200:
+                                safe_redirect_url = await resp.text()
+                except Exception as e:
+                    logging.error(f"Не удалось сократить happ-ссылку: {e}")
+                    # Если сокращатель недоступен, подставим чистый веб-url, чтобы кнопка хотя бы открыла браузер
+                    safe_redirect_url = sub_web_url
+
+                # Кнопка теперь содержит безопасную https ссылку, которая сама откроет Happ!
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)],
+                    [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+                    [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
                 ])
 
                 text = (
                     "<b>📥 Подключение через приложение Happ:</b>\n\n"
                     "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                    "2. Нажмите кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже.\n"
-                    "3. На открывшейся веб-странице нажмите кнопку импорта в приложение.\n\n"
+                    "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                    "3. Смартфон автоматически предложит открыть приложение и импортировать подписку.\n\n"
                     "<b>💡 Если автоматический импорт не сработал:</b>\n"
                     "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
                     f"<code>{sub_web_url}</code>\n\n"
-                    "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+                    "• Откройте Happ, нажмите <b>Плюс (➕)</b> ➔ <b>«Добавить по ссылке» (Add by URL)</b> и вставьте её."
                 )
 
-                await callback.message.edit_caption(
-                    caption=text, 
-                    reply_markup=kb, 
-                    parse_mode="HTML"
-                )
+                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             else:
-                logging.error(f"Ошибка генерации ссылок для пользователя {user_id}: sub_web_url пустой.")
-                await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки. Обратитесь к администратору.")
+                await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки.")
         else:
-            # Если подписка действительно истекла
             await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
@@ -846,27 +852,38 @@ async def successful_payment_handler(message: types.Message):
     payload = message.successful_payment.invoice_payload
 
     if payload == "vpn_30_days_subscription":
+        # Вызываем вашу стандартную функцию продления на 30 дней для ЮKassa
         success = await renew_vpn_subscription(user_id)
-        config, happ_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
+        
+        # Получаем обновленные данные (теперь во второй переменной возвращается чистый веб-URL подписки)
+        _, sub_web_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
 
+        # Формируем клавиатуру под новый формат ссылки
         kb = InlineKeyboardMarkup(inline_keyboard=[])
-        if happ_url:
-            kb.inline_keyboard.append([InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)])
+        if sub_web_url:
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)
+            ])
 
         if success:
             await message.answer(
-                f"✅ <b>Оплата прошла успешно!</b>\nВаша подписка продлена на 30 дней.\n\n"
-                f"<b>Ваш новый ключ:</b>\n<code>{config}</code>",
-                reply_markup=kb if happ_url else None, 
+                f"✅ <b>Оплата прошла успешно!</b>\n"
+                f"Ваша подписка успешно продлена на 30 дней 🎉\n\n"
+                f"<b>📥 Как подключиться:</b>\n"
+                f"Нажмите на кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже, чтобы автоматически импортировать настройки или открыть веб-страницу вашей подписки со статистикой.\n\n"
+                f"<i>Также вы в любой момент можете управлять вашим подключением через кнопку «Подключиться» в главном меню бота.</i>",
+                reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
         else:
             await message.answer(
-                f"⚠️ <b>Оплата прошла успешно, но возник сбой синхронизации!</b>\n"
-                f"Администратор уже уведомлен. Ваш ID: <code>{user_id}</code>",
-                reply_markup=kb if happ_url else None, 
+                f"⚠️ <b>Оплата прошла успешно, но возник сбой автоматической синхронизации!</b>\n"
+                f"Не переживайте, платеж зафиксирован. Администратор уже уведомлен и активирует вам доступ вручную в ближайшее время.\n\n"
+                f"Ваш ID для поддержки: <code>{user_id}</code>",
+                reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
+
 
 
 
