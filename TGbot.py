@@ -597,7 +597,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # 1. Сразу гасим часики анимации на кнопке в Telegram
+    # Сразу гасим часики анимации в Telegram
     await callback.answer()
     user_id = callback.from_user.id
 
@@ -605,37 +605,33 @@ async def connect(callback: types.CallbackQuery):
         # Читаем данные из локальной SQLite3
         db_data = get_user_from_db(user_id)
 
-        # Проверяем: существует ли пользователь и активна ли подписка
-        # db_data[3] — это сохраненный Unix-timestamp окончания подписки
+        # Проверяем статус подписки (индекс 3 — Unix-время окончания)
         if db_data and len(db_data) > 3 and db_data[3] > time.time():
             
-            # Вызываем функцию синхронизации. Она вернет (vless_config, subscription_web_url)
+            # Синхронизируем данные с панелью и получаем чистый URL
             _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
             
-            # Защита: если функция из X-UI не вернула ссылку, пробуем взять её из БД (индекс 2)
+            # Защита: если функция из X-UI не вернула ссылку, берем из БД
             if not sub_web_url and len(db_data) > 2:
                 sub_web_url = db_data[2]
 
             if sub_web_url:
-                # Собираем deep-link строго для приложения Happ
-                happ_import_url = f"happ://import/{sub_web_url}"
-
+                # Чтобы Telegram не ругался на протокол happ://, мы используем чистую https:// ссылку.
+                # Смартфоны с установленным Happ часто перехватывают её автоматически.
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=happ_import_url)],
-                    [InlineKeyboardButton(text="🌐 ОТКРЫТЬ В БРАУЗЕРЕ", url=sub_web_url)],
+                    [InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
                 ])
 
                 text = (
                     "<b>📥 Подключение через приложение Happ:</b>\n\n"
-                    "1. Установите приложение <b>Happ</b> на ваше устройство.\n"
-                    "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже для автоматического добавления конфигурации.\n\n"
-                    "<i>Если автоматический импорт не сработал:</i>\n"
-                    "• Нажмите кнопку «🌐 ОТКРЫТЬ В БРАУЗЕРЕ»\n"
-                    "• Скопируйте адрес открывшейся страницы из адресной строки браузера\n"
-                    "• В приложении Happ нажмите Плюс (➕) -> Добавить по ссылке (Add by URL) и вставьте её.\n\n"
-                    "<b>Ваша прямая ссылка для ручного копирования:</b>\n"
-                    f"<code>{sub_web_url}</code>"
+                    "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+                    "2. Нажмите кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже.\n"
+                    "3. На открывшейся веб-странице нажмите кнопку импорта в приложение.\n\n"
+                    "<b>💡 Если автоматический импорт не сработал:</b>\n"
+                    "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                    f"<code>{sub_web_url}</code>\n\n"
+                    "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
                 )
 
                 await callback.message.edit_caption(
@@ -645,15 +641,12 @@ async def connect(callback: types.CallbackQuery):
                 )
             else:
                 logging.error(f"Ошибка генерации ссылок для пользователя {user_id}: sub_web_url пустой.")
-                # Если ссылки вообще нет, отправляем текстовое уведомление во всплывающем окне
                 await callback.message.answer("❌ Ошибка сервера: Не удалось сгенерировать ссылку подписки. Обратитесь к администратору.")
         else:
-            # Если подписка не оплачена или закончилась — отправляем alert-уведомление
             await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        # Показываем красивую плашку ошибки вместо бесконечной загрузки
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
 
 
