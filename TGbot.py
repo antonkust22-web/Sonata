@@ -121,12 +121,17 @@ def get_user_from_db(user_id):
 
 
 import urllib.parse
-import secrets  # Добавлено для генерации случайного subId
+import secrets  
+import uuid
+import json
+import logging
+import time
+import aiohttp
 
 async def get_vpn_config_manual(user_id, username=""):
     email = f"user_{user_id}"
     
-    # Включаем принудительное сохранение кук сессии для работы по IP (аналог requests.Session)
+    # Включаем принудительное сохранение кук сессии для работы по IP
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -231,23 +236,31 @@ async def get_vpn_config_manual(user_id, username=""):
                 f"#{safe_remark}"
             )
 
-                        # Название для плашки подписки (как "Сейв ВПН" на скрине)
-            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+            # Название для плашки подписки
+            sub_remark = urllib.parse.quote("🚀 Sonata VPN")
             
-            # Формируем URL подписки с явным указанием имени группы
-            subscription_url = f"{PANEL_URL}{BASE_PATH}/sub/{sub_id}#{sub_remark}"
-            happ_url = f"happ://import/{subscription_url}"
+            # Парсим IP панели для красивой ссылки
+            try:
+                parsed_url = urllib.parse.urlparse(PANEL_URL)
+                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')[0]
+            except Exception:
+                host = "78.17.1.43"
 
-            
+            # Формируем КРАСИВУЮ прямую ссылку для браузера с портом 2096 и названием плашки
+            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
+
             # Сохраняем/обновляем данные в нашей локальной БД sqlite3
+            # Вместо happ_url отправляем туда нашу красивую https:// ссылку, 
+            # чтобы Личный кабинет вытаскивал и отображал именно её!
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-            add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
+            add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
-            return config_link, happ_url
+            return config_link, subscription_web_url
 
     except Exception as e:
         logging.error(f"Ошибка VPN: {e}")
         return None, None
+
 
 
 async def renew_vpn_subscription(user_id):
@@ -527,13 +540,13 @@ async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Синхронизируем данные с панелью X-UI (чтобы обновить дату, если платеж прошел)
-    config, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+    # Синхронизируем данные с панелью X-UI
+    await get_vpn_config_manual(user_id, callback.from_user.username or "")
 
-    # Читаем данные из нашей надежной локальной SQLite3
+    # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
 
-    # Создаем клавиатуру для ЛК (кнопка Назад будет всегда)
+    # Создаем клавиатуру для ЛК
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if db_data and db_data[1]:  # Если запись и ключ существуют в базе
@@ -546,28 +559,28 @@ async def cabinet(callback: types.CallbackQuery):
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
-            # ПОКАЗЫВАЕМ ТЕКСТ И КЛЮЧ
+            # Оформляем текст ЛК без упоминания веб-ссылок подписки
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
-                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"<b>Ваш ключ подключения VLESS:</b>\n"
+                f"<b>📋 Ваш ключ подключения VLESS:</b>\n"
                 f"<code>{db_data[1]}</code>\n\n"
-                f" Скопируйте этот ключ или перейдите в меню 'Подключиться' для быстрого импорта."
+                f"✨ Чтобы быстро настроить VPN на смартфоне или ПК, перейдите в главное меню и нажмите кнопку <b>«Подключиться»</b>."
             )
-            # В активном кабинете оставляем только кнопку Назад
+            # В активном кабинете оставляем только кнопку Назад (без веб-ссылки)
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
         else:
-            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА — ПРЯЧЕМ КЛЮЧ
+            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА
             status_text = "🔴 Не активна (требуется оплата)"
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
-                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
                 f"⚠️ Для получения доступа к высокоскоростному VPN Sonata и генерации вашего личного ключа, пожалуйста, приобретите подписку."
             )
-            # Сюда мы принудительно добавляем кнопку быстрой покупки тарифного плана
+            # Добавляем кнопки покупки и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
     else:
@@ -580,6 +593,7 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -590,14 +604,34 @@ async def connect(callback: types.CallbackQuery):
 
     # Если подписка оформлена и еще не закончилась
     if db_data and db_data[3] > time.time():
-        _, happ_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-        if happ_url:
+        # Вызываем функцию (она вернет config_link и чистую subscription_web_url)
+        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        
+        if sub_web_url:
+            # Формируем корректную ссылку авто-импорта для приложения Happ
+            # Ссылка должна иметь вид happ://import/https://...
+            happ_import_url = f"happ://import/{sub_web_url}"
+
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=happ_import_url)],
+                [InlineKeyboardButton(text="🌐 ОТКРЫТЬ В БРАУЗЕРЕ", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
+
+            text = (
+                "<b>📥 Подключение через приложение Happ:</b>\n\n"
+                "1. Установите приложение <b>Happ</b> на ваше устройство.\n"
+                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже для автоматического добавления.\n\n"
+                "Если автоматический импорт не сработал:\n"
+                "• Нажмите «🌐 ОТКРЫТЬ В БРАУЗЕРЕ»\n"
+                "• Скопируйте адрес страницы из браузера\n"
+                "• Вставьте его в приложении Happ вручную (кнопка Плюс ➕ -> Добавить по ссылке).\n\n"
+                "<b>Ваша ссылка для ручного копирования:</b>\n"
+                f"<code>{sub_web_url}</code>"
+            )
+
             try:
-                await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
+                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             except TelegramBadRequest:
                 pass
         else:
@@ -605,6 +639,7 @@ async def connect(callback: types.CallbackQuery):
     else:
         # Если клиент пытается зайти без оплаты — выдаем предупреждение
         await callback.answer("⚠️ Доступ заблокирован! Сначала приобретите подписку в меню 'Купить подписку'.", show_alert=True)
+
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
