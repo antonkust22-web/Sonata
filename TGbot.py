@@ -35,17 +35,13 @@ logging.basicConfig(
 
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "https://78.17.1.43:10096"
-PANEL_USER = "Asad"
-PANEL_PASSWORD = "Lodka120259"
-INBOUND_ID = 1
-BASE_PATH = "/XWYB6HCgL7NBchJqxo"
+
 
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
+VIDEO_MAIN = "BAACAgIAAxkBAAMNailcPwV0q8eFSyhltQtxQywU1sgAAh2qAAKFqEhJPIGIg3JS6007BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
