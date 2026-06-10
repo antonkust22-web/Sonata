@@ -153,132 +153,113 @@ SERVERS_CONFIG = {
 }
 
 async def get_vpn_config_manual(user_id, username=""):
-    """
-    Создает/обновляет клиента на серверах Финляндии и Польши с одинаковым UUID/subId.
-    Использует корректные пути API (/xui/API/) для современных версий 3X-UI.
-    Возвращает список одиночных конфигураций и единую ссылку на подписку.
-    """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Генерируем единые UUID и subId заранее на случай, если пользователя еще нет в панелях
     client_uuid = str(uuid.uuid4())
     sub_id = secrets.token_hex(8)
-    
     config_links = []
     expiry_time_ms = 0
+    success_count = 0  # Считаем, сколько серверов успешно ответили
     
-    try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            
-            # Циклом обходим оба сервера (Финляндия и Польша)
-            for s_key, s_data in SERVERS_CONFIG.items():
-                try:
-                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
-                    
-                    # 1. Авторизация на конкретном сервере
-                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
-                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        # Поочередно обходим сервера
+        for s_key, s_data in SERVERS_CONFIG.items():
+            try:
+                email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
+                
+                # 1. Авторизация на конкретном сервере
+                login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=7) as resp:
+                    await resp.text()
+
+                headers = {"Accept": "application/json"}
+
+                # Умный автоподбор API путей именно под этот сервер
+                res_json = None
+                for api_prefix in ["/panel/api", "/xui/API"]:
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}{api_prefix}/inbounds/get/{s_data['inbound_id']}"
+                    try:
+                        async with session.get(get_url, headers=headers, timeout=5) as resp:
+                            if resp.status == 200 and "application/json" in resp.headers.get("Content-Type", ""):
+                                res_json = await resp.json()
+                                s_data["working_api"] = api_prefix
+                                break
+                    except Exception:
+                        continue
+                
+                if not res_json or not res_json.get("success"):
+                    logging.error(f"❌ Сервер {s_key} НЕ ответил на запрос данных инбаунда.")
+                    continue  # Ошибка на одном сервере БОЛЬШЕ НЕ ЛОМАЕТ остальной код!
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
+                
+                # Ищем клиента
+                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not current_client:
+                    old_email = f"user_{user_id}"
+                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+
+                if current_client:
+                    client_uuid = current_client.get("id", client_uuid)
+                    sub_id = current_client.get("subId", sub_id)
+                    expiry_time_ms = max(expiry_time_ms, current_client.get("expiryTime", 0))
+
+                # 3. Создаем или обновляем аккаунт на ЭТОМ сервере
+                working_api = s_data.get("working_api", "/panel/api")
+                if not current_client:
+                    add_url = f"{s_data['panel_url']}{s_data['base_path']}{working_api}/inbounds/addClient"
+                    post_data = {
+                        "id": str(s_data['inbound_id']), 
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
+                        }]})
+                    }
+                    async with session.post(add_url, headers=headers, data=post_data, timeout=5) as resp:
+                        await resp.text()
+                else:
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}{working_api}/inbounds/updateClient/{client_uuid}"
+                    post_data = {
+                        "id": str(s_data['inbound_id']),
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": current_client.get("expiryTime", 0),
+                            "enable": True, "tgId": user_id, "subId": sub_id
+                        }]})
+                    }
+                    async with session.post(update_url, headers=headers, data=post_data, timeout=5) as resp:
                         await resp.text()
 
-                    headers = {"Accept": "application/json"}
+                # 4. Сохраняем рабочую VLESS ссылку ЭТОГО сервера
+                my_port = res_json["obj"]["port"]
+                remark = f"{s_data['flag']} {s_data['name']}?Premium"
+                config_link = (
+                    f"vless://{client_uuid}@{s_data['ip']}:{my_port}"
+                    f"?type=tcp&security=reality&sni={s_data['sni']}&fp=chrome&pbk={s_data['pbk']}&sid={s_data['sid']}&spx=%2F"
+                    f"#{urllib.parse.quote(remark)}"
+                )
+                config_links.append(config_link)
+                success_count += 1
 
-                    # 2. Получение данных инбаунда (ИСПРАВЛЕНО: добавлен путь /xui/API/)
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
-                    async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
-                        
-                    if not res_json.get("success"):
-                        logging.error(f"Панель {s_key} вернула ошибку при GET: {res_json}")
-                        continue
+            except Exception as server_error:
+                logging.error(f"⚠️ Критическая изоляция ошибки сервера {s_key}: {server_error}")
+                continue
 
-                    settings = json.loads(res_json["obj"]["settings"])
-                    clients = settings.get("clients", [])
-                    
-                    # Ищем существующего клиента
-                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-                    if not current_client:
-                        old_email = f"user_{user_id}"
-                        current_client = next((c for c in clients if c.get("email") == old_email), None)
+    # 5. Формируем общую подписку на базе Польши
+    sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+    subscription_web_url = f"http://{SERVERS_CONFIG['PL']['ip']}:2096/sub/{sub_id}#{sub_remark}"
 
-                    # Если клиент уже есть на сервере, берем его старые UUID и subId, чтобы не ломать старые подключения
-                    if current_client:
-                        client_uuid = current_client.get("id", client_uuid)
-                        sub_id = current_client.get("subId", sub_id)
-                        expiry_time_ms = current_client.get("expiryTime", 0)
+    # Если хотя бы один сервер успешно считался/создался, пишем данные в локальную SQLite3
+    if success_count > 0:
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+        all_configs_str = "\n".join(config_links)
+        add_or_update_user(user_id, username, all_configs_str, subscription_web_url, expiry_seconds)
+        return all_configs_str, subscription_web_url
+        
+    return None, None
 
-                    # 3. Добавление или обновление клиента на текущем сервере
-                    if not current_client:
-                        # Создание нового (ИСПРАВЛЕНО: добавлен путь /xui/API/)
-                        add_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/addClient"
-                        post_data = {
-                            "id": str(s_data['inbound_id']), 
-                            "settings": json.dumps({
-                                "clients": [{
-                                    "id": client_uuid,
-                                    "email": email,
-                                    "limitIp": 2,
-                                    "totalGB": 0,
-                                    "expiryTime": 0,
-                                    "enable": True,
-                                    "tgId": user_id,
-                                    "subId": sub_id  
-                                }]
-                            })
-                        }
-                        async with session.post(add_url, headers=headers, data=post_data, timeout=10) as resp:
-                            await resp.text()
-                    else:
-                        # Обновление существующего (ИСПРАВЛЕНО: добавлен путь /xui/API/)
-                        update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
-                        post_data = {
-                            "id": str(s_data['inbound_id']),
-                            "settings": json.dumps({
-                                "clients": [{
-                                    "id": client_uuid,
-                                    "email": email,
-                                    "limitIp": current_client.get("limitIp", 2),
-                                    "totalGB": current_client.get("totalGB", 0),
-                                    "expiryTime": expiry_time_ms,
-                                    "enable": current_client.get("enable", True),
-                                    "tgId": user_id,
-                                    "subId": sub_id
-                                }]
-                            })
-                        }
-                        async with session.post(update_url, headers=headers, data=post_data, timeout=10) as resp:
-                            await resp.text()
-
-                    # 4. Формирование прямой ссылки VLESS для текущего сервера
-                    my_port = res_json["obj"]["port"]
-                    remark = f"{s_data['flag']} {s_data['name']}?Premium"
-                    safe_remark = urllib.parse.quote(remark)
-
-                    config_link = (
-                        f"vless://{client_uuid}@{s_data['ip']}:{my_port}"
-                        f"?type=tcp&security=reality&sni={s_data['sni']}&fp=chrome&pbk={s_data['pbk']}&sid={s_data['sid']}&spx=%2F"
-                        f"#{safe_remark}"
-                    )
-                    config_links.append(config_link)
-
-                except Exception as server_error:
-                    logging.error(f"Ошибка при работе с сервером {s_key}: {server_error}")
-
-            # 5. Формирование ЕДИНОЙ ссылки на подписку (на базе портов подписок 2096 Польши)
-            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            subscription_web_url = f"http://{SERVERS_CONFIG['PL']['ip']}:2096/sub/{sub_id}#{sub_remark}"
-
-            # Сохраняем агрегированные данные в вашу локальную БД
-            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-            all_configs_str = "\n".join(config_links) # Объединяем одиночные ссылки через перенос строки
-            
-            add_or_update_user(user_id, username, all_configs_str, subscription_web_url, expiry_seconds)
-            
-            return all_configs_str, subscription_web_url
-
-    except Exception as e:
-        logging.error(f"Глобальная ошибка VPN: {e}")
-        return None, None
 
 
 
@@ -400,11 +381,6 @@ async def renew_vpn_subscription(user_id: int) -> bool:
 # Убедитесь, что он импортирован или находится в этом же файле.
 
 async def renew_vpn_subscription_flexible(user_id: int, days: int):
-    """
-    Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней на ВСЕХ серверах (поиск по tgId).
-    Использует корректные пути API (/xui/API/) для интеграции с панелями 3X-UI.
-    Возвращает client_sub_id в случае успеха или False при ошибке.
-    """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -415,98 +391,82 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
     updated_servers_count = 0
     client_sub_id = ""
 
-    try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            
-            # Проходим циклом по всем серверам из конфигурации
-            for s_key, s_data in SERVERS_CONFIG.items():
-                try:
-                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
-                    
-                    # 1. Авторизация на конкретном сервере
-                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
-                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
-                        await resp.text()
-                    
-                    headers = {"Accept": "application/json"}
-
-                    # 2. Получаем текущие данные инбаунда с этого сервера (ИСПРАВЛЕНО: добавлен путь /xui/API/)
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
-                    async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
-                        
-                    if not res_json.get("success"):
-                        logging.error(f"Не удалось получить данные инбаунда на сервере {s_key} для гибкого продления: {res_json}")
-                        continue
-                        
-                    settings = json.loads(res_json["obj"]["settings"])
-                    clients = settings.get("clients", [])
-                    
-                    # Поиск строго по уникальному tgId
-                    client = next((c for c in clients if c.get("tgId") == user_id), None)
-                    
-                    if not client:
-                        logging.warning(f"Клиент {user_id} не найден в панели сервера {s_key}. Пропускаем.")
-                        continue
-
-                    # 3. Динамический расчет времени
-                    client_expiry = client.get("expiryTime", 0)
-                    if client_expiry > current_time_ms:
-                        new_expiry = client_expiry + custom_days_ms
-                    else:
-                        new_expiry = current_time_ms + custom_days_ms
-
-                    # Фиксируем максимальную дату для сохранения в локальную БД бота
-                    final_expiry_seconds = max(final_expiry_seconds, int(new_expiry / 1000))
-
-                    client_uuid = client['id']
-                    
-                    # Сохраняем subId (желательно, чтобы он на всех серверах был одинаковым)
-                    if not client_sub_id:
-                        client_sub_id = client.get("subId", "")
-                    if not client_sub_id:
-                        client_sub_id = secrets.token_hex(8)
-
-                    # 4. Отправка обновленных параметров клиента на текущий сервер (ИСПРАВЛЕНО: добавлен путь /xui/API/)
-                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
-                    client_data = {
-                        "id": str(s_data['inbound_id']),
-                        "settings": json.dumps({
-                            "clients": [{
-                                "id": client_uuid,
-                                "email": email,
-                                "limitIp": client.get("limitIp", 2),
-                                "totalGB": client.get("totalGB", 0),
-                                "expiryTime": new_expiry,
-                                "enable": True,
-                                "tgId": user_id,
-                                "subId": client_sub_id
-                            }]
-                        })
-                    }
-                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                        update_resp = await resp.json()
-                    
-                    if update_resp.get("success", False):
-                        logging.info(f"Сервер {s_key} успешно продлил подписку для {user_id} на {days} дней.")
-                        updated_servers_count += 1
-                    else:
-                        logging.error(f"Сервер {s_key} ответил ошибкой при гибком продлении: {update_resp}")
-                        
-                except Exception as server_err:
-                    logging.error(f"Ошибка при обработке гибкого продления на сервере {s_key}: {server_err}")
-
-            # 5. Если хотя бы один сервер успешно обновился, применяем изменения в локальной БД
-            if updated_servers_count > 0:
-                add_or_update_user(user_id, "", expiry_time=final_expiry_seconds)
-                logging.info(f"Гибкое продление: Пользователь {user_id} продлен на {days} дн. на {updated_servers_count} серверах.")
-                return client_sub_id
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        for s_key, s_data in SERVERS_CONFIG.items():
+            try:
+                email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
                 
-            return False
+                # 1. Авторизация
+                login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=7) as resp:
+                    await resp.text()
+                
+                headers = {"Accept": "application/json"}
 
-    except Exception as e:
-        logging.error(f"Глобальная ошибка при гибком продлении подписки: {e}")
-        return False
+                # Автоподбор путей API
+                res_json = None
+                for api_prefix in ["/panel/api", "/xui/API"]:
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}{api_prefix}/inbounds/get/{s_data['inbound_id']}"
+                    try:
+                        async with session.get(get_url, headers=headers, timeout=5) as resp:
+                            if resp.status == 200 and "application/json" in resp.headers.get("Content-Type", ""):
+                                res_json = await resp.json()
+                                s_data["working_api"] = api_prefix
+                                break
+                    except Exception:
+                        continue
+                    
+                if not res_json or not res_json.get("success"):
+                    logging.warning(f"⚠️ Сервер {s_key} пропущен при продлении (не отвечает).")
+                    continue
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
+                
+                client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not client:
+                    continue
+
+                # Расчет времени продления
+                client_expiry = client.get("expiryTime", 0)
+                if client_expiry > current_time_ms:
+                    new_expiry = client_expiry + custom_days_ms
+                else:
+                    new_expiry = current_time_ms + custom_days_ms
+
+                final_expiry_seconds = max(final_expiry_seconds, int(new_expiry / 1000))
+                client_uuid = client['id']
+                
+                if not client_sub_id:
+                    client_sub_id = client.get("subId", secrets.token_hex(8))
+
+                # 4. Продлеваем ЭТОТ конкретный сервер
+                working_api = s_data.get("working_api", "/panel/api")
+                update_url = f"{s_data['panel_url']}{s_data['base_path']}{working_api}/inbounds/updateClient/{client_uuid}"
+                client_data = {
+                    "id": str(s_data['inbound_id']),
+                    "settings": json.dumps({"clients": [{
+                        "id": client_uuid, "email": email, "limitIp": client.get("limitIp", 2),
+                        "totalGB": client.get("totalGB", 0), "expiryTime": new_expiry,
+                        "enable": True, "tgId": user_id, "subId": client_sub_id
+                    }]})
+                }
+                async with session.post(update_url, headers=headers, data=client_data, timeout=5) as resp:
+                    update_resp = await resp.json()
+                
+                if update_resp.get("success", False):
+                    updated_servers_count += 1
+
+            except Exception as e:
+                logging.error(f"Ошибка продления на сервере {s_key}: {e}")
+                continue
+
+    if updated_servers_count > 0:
+        add_or_update_user(user_id, "", expiry_time=final_expiry_seconds)
+        return client_sub_id
+        
+    return False
+
 
 
 
