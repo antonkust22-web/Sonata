@@ -141,6 +141,7 @@ async def get_vpn_config_manual(user_id, username=""):
     SNI_PL = "www.sony.com"
     # ----------------------------------------------------
 
+   
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -149,101 +150,106 @@ async def get_vpn_config_manual(user_id, username=""):
     expiry_time_ms = 0
     config_links = []
 
-    # ====================================================
-    # ШАГ 1: ВЫПОЛНЯЕМ ОРИГИНАЛЬНЫЙ ЗАПРОС К ФИНЛЯНДИИ
-    # ====================================================
-    try:
-        email_fi = f"🇫🇮_Финляндия_#{user_id}".replace(" ", "_")
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+    # Создаем ЕДИНУЮ сессию на всю функцию, чтобы не было ошибки "Session is closed"
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        
+        # ====================================================
+        # ШАГ 1: ВЫПОЛНЯЕМ ЗАПРОС К ФИНЛЯНДИИ
+        # ====================================================
+        try:
+            email_fi = f"🇫🇮_Финляндия_#{user_id}".replace(" ", "_")
             # 1. Логин FI
             await session.post(f"{PANEL_URL}{BASE_PATH}/login", data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
             
             # 2. Получение данных инбаунда FI
             async with session.get(f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}", headers={"Accept": "application/json"}, timeout=10) as resp:
-                res_json_fi = await resp.json()
-                
-            if res_json_fi.get("success"):
-                settings_fi = json.loads(res_json_fi["obj"]["settings"])
-                clients_fi = settings_fi.get("clients", [])
-                current_client_fi = next((c for c in clients_fi if c.get("tgId") == user_id), None)
-                if not current_client_fi:
-                    current_client_fi = next((c for c in clients_fi if c.get("email") == f"user_{user_id}"), None)
+                # Проверяем тип контента перед чтением JSON, чтобы не падать
+                if resp.status == 200 and "application/json" in resp.headers.get("Content-Type", ""):
+                    res_json_fi = await resp.json()
+                    
+                    if res_json_fi.get("success"):
+                        settings_fi = json.loads(res_json_fi["obj"]["settings"])
+                        clients_fi = settings_fi.get("clients", [])
+                        current_client_fi = next((c for c in clients_fi if c.get("tgId") == user_id), None)
+                        if not current_client_fi:
+                            current_client_fi = next((c for c in clients_fi if c.get("email") == f"user_{user_id}"), None)
 
-                if current_client_fi:
-                    client_uuid = current_client_fi.get("id", client_uuid)
-                    sub_id = current_client_fi.get("subId", sub_id)
-                    expiry_time_ms = current_client_fi.get("expiryTime", 0)
+                        if current_client_fi:
+                            client_uuid = current_client_fi.get("id", client_uuid)
+                            sub_id = current_client_fi.get("subId", sub_id)
+                            expiry_time_ms = current_client_fi.get("expiryTime", 0)
 
-                # 3. Создание или обновление клиента в FI
-                if not current_client_fi:
-                    add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                    client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_fi, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        # 3. Создание или обновление клиента в FI
+                        if not current_client_fi:
+                            add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                            client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_fi, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        else:
+                            add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                            client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_fi, "limitIp": current_client_fi.get("limitIp", 2), "totalGB": current_client_fi.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        
+                        async with session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10) as add_resp:
+                            await add_resp.text()
+
+                        # Формируем VLESS ссылку Финляндии
+                        my_port_fi = res_json_fi["obj"]["port"]
+                        safe_remark_fi = urllib.parse.quote("🇫🇮 Финляндия?Premium")
+                        config_links.append(f"vless://{client_uuid}@78.17.1.43:{my_port_fi}?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38&sid=32b6a4ff54ef1812&spx=%2F#{safe_remark_fi}")
                 else:
-                    add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-                    client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_fi, "limitIp": current_client_fi.get("limitIp", 2), "totalGB": current_client_fi.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                
-                async with session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10) as resp:
-                    await resp.text()
+                    logging.error(f"Панель Финляндии вернула не-JSON ответ (ошибка 404/500).")
+        except Exception as e:
+            logging.error(f"Ошибка на шаге Финляндии: {e}")
 
-                # Формируем прямую VLESS ссылку для Финляндии
-                my_port_fi = res_json_fi["obj"]["port"]
-                safe_remark_fi = urllib.parse.quote("🇫🇮 Финляндия?Premium")
-                config_links.append(f"vless://{client_uuid}@78.17.1.43:{my_port_fi}?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38&sid=32b6a4ff54ef1812&spx=%2F#{safe_remark_fi}")
-    except Exception as e:
-        logging.error(f"Ошибка на шаге Финляндии: {e}")
-
-    # ====================================================
-    # ШАГ 2: ПООЧЕРЕДНО ВЫПОЛНЯЕМ ЗАПРОС К ПОЛЬШЕ (Используем те же UUID и subId)
-    # ====================================================
-    try:
-        email_pl = f"🇵🇱_Польша_#{user_id}".replace(" ", "_")
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        # ====================================================
+        # ШАГ 2: ВЫПОЛНЯЕМ ЗАПРОС К ПОЛЬШЕ (В той же активной сессии session)
+        # ====================================================
+        try:
+            email_pl = f"🇵🇱_Польша_#{user_id}".replace(" ", "_")
             # 1. Логин PL
             await session.post(f"{PANEL_URL_PL}{BASE_PATH_PL}/login", data={"username": PANEL_USER_PL, "password": PANEL_PASSWORD_PL}, timeout=10)
             
-            # 2. Получение данных инбаунда PL (ВНИМАНИЕ: тут путь /xui/API/ для 3X-UI)
+            # 2. Получение данных инбаунда PL (используем пути /xui/API/ для 3X-UI)
             async with session.get(f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/get/{INBOUND_ID_PL}", headers={"Accept": "application/json"}, timeout=10) as resp:
-                res_json_pl = await resp.json()
-                
-            if res_json_pl.get("success"):
-                settings_pl = json.loads(res_json_pl["obj"]["settings"])
-                clients_pl = settings_pl.get("clients", [])
-                current_client_pl = next((c for c in clients_pl if c.get("tgId") == user_id), None)
+                if resp.status == 200 and "application/json" in resp.headers.get("Content-Type", ""):
+                    res_json_pl = await resp.json()
+                    
+                    if res_json_pl.get("success"):
+                        settings_pl = json.loads(res_json_pl["obj"]["settings"])
+                        clients_pl = settings_pl.get("clients", [])
+                        current_client_pl = next((c for c in clients_pl if c.get("tgId") == user_id), None)
 
-                # 3. Создание или обновление клиента в PL с сохранением финских ключей
-                if not current_client_pl:
-                    add_url_pl = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/addClient"
-                    client_data_pl = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_pl, "limitIp": 2, "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        # 3. Создание или обновление клиента в PL с сохранением финских ключей
+                        if not current_client_pl:
+                            add_url_pl = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/addClient"
+                            client_data_pl = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_pl, "limitIp": 2, "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        else:
+                            add_url_pl = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/updateClient/{client_uuid}"
+                            client_data_pl = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_pl, "limitIp": current_client_pl.get("limitIp", 2), "totalGB": current_client_pl.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
+                        
+                        async with session.post(add_url_pl, headers={"Accept": "application/json"}, data=client_data_pl, timeout=10) as add_resp_pl:
+                            await add_resp_pl.text()
+
+                        # Формируем VLESS ссылку Польши
+                        my_port_pl = res_json_pl["obj"]["port"]
+                        safe_remark_pl = urllib.parse.quote("🇵🇱 Польша?Premium")
+                        config_links.append(f"vless://{client_uuid}@{IP_PL}:{my_port_pl}?type=tcp&security=reality&sni={SNI_PL}&fp=chrome&pbk={PBK_PL}&sid={SID_PL}&spx=%2F#{safe_remark_pl}")
                 else:
-                    add_url_pl = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/updateClient/{client_uuid}"
-                    client_data_pl = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email_pl, "limitIp": current_client_pl.get("limitIp", 2), "totalGB": current_client_pl.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                
-                async with session.post(add_url_pl, headers={"Accept": "application/json"}, data=client_data_pl, timeout=10) as resp:
-                    await resp.text()
-
-                # Формируем прямую VLESS ссылку для Польши
-                my_port_pl = res_json_pl["obj"]["port"]
-                safe_remark_pl = urllib.parse.quote("🇵🇱 Польша?Premium")
-                config_links.append(f"vless://{client_uuid}@{IP_PL}:{my_port_pl}?type=tcp&security=reality&sni={SNI_PL}&fp=chrome&pbk={PBK_PL}&sid={SID_PL}&spx=%2F#{safe_remark_pl}")
-    except Exception as e:
-        logging.error(f"Ошибка на шаге Польши: {e}")
+                    logging.error(f"Панель Польши вернула не-JSON ответ (ошибка 404).")
+        except Exception as e:
+            logging.error(f"Ошибка на шаге Польши: {e}")
 
     # ====================================================
     # ШАГ 3: СКЛЕИВАНИЕ РЕЗУЛЬТАТОВ И СОХРАНЕНИЕ В БАЗУ
     # ====================================================
-    # Формируем ЕДИНУЮ ссылку подписки на порту 2096 Польши. Она выдаст оба сервера, так как subId совпадает!
     sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
     subscription_web_url = f"http://{IP_PL}:2096/sub/{sub_id}#{sub_remark}"
 
-    # Склеиваем прямые VLESS ссылки через перенос строки (если хоть один сервер ответил)
     config_link = "\n".join(config_links) if config_links else None
 
-    # Записываем данные в SQLite3
+    # Записываем данные в локальную SQLite3
     expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
     add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
     
     return config_link, subscription_web_url
-
 
 
 
