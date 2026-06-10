@@ -124,25 +124,38 @@ def get_user_from_db(user_id):
 
 
 # ====================================================
-# ФУНКЦИЯ 1: РАБОТА ТОЛЬКО С ФИНЛЯНДИЕЙ (Оригинальная логика)
+# ФУНКЦИЯ 1: ФИНЛЯНДИЯ (С ручным извлечением куки сессии)
 # ====================================================
 async def get_vpn_config_fi_only(user_id):
-    """Шаг 1: Работает автономно со старым сервером Финляндии"""
     email = f"🇫🇮_Финляндия_#{user_id}".replace(" ", "_")
-    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Дефолтные значения на случай, если юзера еще нет в панели
     client_uuid = str(uuid.uuid4())
     sub_id = secrets.token_hex(8)
     expiry_time_ms = 0
     config_link = None
 
     try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            await session.post(f"{PANEL_URL}{BASE_PATH}/login", data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10)
-            
-            async with session.get(f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}", headers={"Accept": "application/json"}, timeout=10) as resp:
+        async with aiohttp.ClientSession(connector=connector) as session:
+            # 1. Логин в Финляндию
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as login_resp:
+                await login_resp.text()
+                # Вытаскиваем куки вручную из заголовков ответа
+                cookies = login_resp.headers.getall("Set-Cookie", [])
+                if not cookies:
+                    logging.error("❌ Финляндия: Не удалось получить сессионную куку при логине!")
+                    return client_uuid, sub_id, expiry_time_ms, config_link
+                
+                # Собираем чистую строку для заголовка Cookie
+                session_cookie = cookies[0].split(";")[0]
+
+            # Создаем строгие заголовки с авторизацией
+            headers = {"Accept": "application/json", "Cookie": session_cookie}
+
+            # 2. Получение данных инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if res_json.get("success"):
@@ -157,6 +170,7 @@ async def get_vpn_config_fi_only(user_id):
                     sub_id = current_client.get("subId", sub_id)
                     expiry_time_ms = current_client.get("expiryTime", 0)
 
+                # 3. Создание или обновление клиента
                 if not current_client:
                     add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                     client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
@@ -164,7 +178,7 @@ async def get_vpn_config_fi_only(user_id):
                     add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2), "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
                 
-                async with session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10) as add_resp:
+                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as add_resp:
                     await add_resp.text()
 
                 my_port = res_json["obj"]["port"]
@@ -172,16 +186,15 @@ async def get_vpn_config_fi_only(user_id):
                 config_link = f"vless://{client_uuid}@78.17.1.43:{my_port}?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38&sid=32b6a4ff54ef1812&spx=%2F#{safe_remark}"
 
     except Exception as e:
-        logging.error(f"Ошибка на шаге Финляндии (Изолированная): {e}")
+        logging.error(f"Ошибка на шаге Финляндии: {e}")
         
     return client_uuid, sub_id, expiry_time_ms, config_link
 
 
 # ====================================================
-# ФУНКЦИЯ 2: РАБОТА ТОЛЬКО С ПОЛЬШЕЙ (Данные вписаны)
+# ФУНКЦИЯ 2: ПОЛЬША (С ручным извлечением куки сессии)
 # ====================================================
 async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
-    """Шаг 2: Работает только со вторым сервером Польши, переиспользуя ключи"""
     PANEL_URL_PL = "http://78.17.152.36:10096"
     BASE_PATH_PL = "/XWYB6HCgL7NBchJqxo"
     PANEL_USER_PL = "Soul"
@@ -193,17 +206,27 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
     SNI_PL = "://sony.com"
     
     email = f"🇵🇱_Польша_#{user_id}".replace(" ", "_")
-    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     config_link = None
 
     try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            await session.post(f"{PANEL_URL_PL}{BASE_PATH_PL}/login", data={"username": PANEL_USER_PL, "password": PANEL_PASSWORD_PL}, timeout=10)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            # 1. Логин в Польшу
+            login_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/login"
+            async with session.post(login_url, data={"username": PANEL_USER_PL, "password": PANEL_PASSWORD_PL}, timeout=10) as login_resp:
+                await login_resp.text()
+                cookies = login_resp.headers.getall("Set-Cookie", [])
+                if not cookies:
+                    logging.error("❌ Польша: Не удалось получить сессионную куку при логине!")
+                    return config_link
+                
+                session_cookie = cookies[0].split(";")[0]
+
+            headers = {"Accept": "application/json", "Cookie": session_cookie}
             
-            # ЖЕЛЕЗОБЕТОННЫЙ ПУТЬ ДЛЯ СОВРЕМЕННОГО 3X-UI В DOCKER (/xui/API/)
+            # 2. Получение данных инбаунда через путь 3X-UI (/xui/API/)
             get_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/get/{INBOUND_ID_PL}"
-            async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
+            async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if res_json.get("success"):
@@ -211,7 +234,7 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
                 clients = settings.get("clients", [])
                 current_client = next((c for c in clients if c.get("tgId") == user_id), None)
 
-                # Добавление или обновление клиента
+                # 3. Добавление или обновление клиента
                 if not current_client:
                     add_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/addClient"
                     client_data = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
@@ -219,7 +242,7 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
                     add_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/updateClient/{client_uuid}"
                     client_data = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2), "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
                 
-                async with session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10) as add_resp:
+                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as add_resp:
                     await add_resp.text()
 
                 my_port = res_json["obj"]["port"]
@@ -232,35 +255,30 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
     return config_link
 
 
-
-
 # ====================================================
-# ФУНКЦИЯ 3: ГЛАВНЫЙ МЕНЕДЖЕР ОБЪЕДИНЕНИЯ (Вызывается ботом)
+# ФУНКЦИЯ 3: ОБЪЕДИНЯЮЩИЙ МЕНЕДЖЕР
 # ====================================================
 async def get_vpn_config_manual(user_id, username=""):
-    """Шаг 3: Последовательно вызывает обе функции и собирает общую мульти-подписку"""
-    
-    # 1. Запускаем Финляндию, вытаскиваем из неё ключи и прямую ссылку
+    # 1. Вызываем Финляндию
     client_uuid, sub_id, expiry_time_ms, config_fi = await get_vpn_config_fi_only(user_id)
     
-    # 2. Запускаем Польшу, принудительно передавая ей UUID и sub_id из Финляндии
+    # 2. Вызываем Польшу
     config_pl = await get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms)
     
-    # 3. Склеиваем одиночные конфигурации через перенос строки
     configs = []
     if config_fi: configs.append(config_fi)
     if config_pl: configs.append(config_pl)
     config_link = "\n".join(configs) if configs else None
     
-    # 4. Формируем единую ссылку на подписку через порт 2096 Польши
-    sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+    # Ссылка на подписку через Docker-порт подписок Польши
+    sub_remark = urllib.parse.quote("🚀 Sonata VPN")
     subscription_web_url = f"http://78.17.152{sub_id}#{sub_remark}"
     
-    # 5. Записываем актуальный статус и ссылки в локальную базу SQLite3 (users.db)
     expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
     add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
     
     return config_link, subscription_web_url
+
 
 
 
