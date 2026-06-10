@@ -182,8 +182,6 @@ async def get_vpn_config_fi_only(user_id):
 # ====================================================
 async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
     """Шаг 2: Работает только со вторым сервером Польши, переиспользуя ключи"""
-    
-    # ВПИСАННЫЕ ДАННЫЕ ВАШЕГО НОВОГО СЕРВЕРА
     PANEL_URL_PL = "http://78.17.152.36:10096"
     BASE_PATH_PL = "/XWYB6HCgL7NBchJqxo"
     PANEL_USER_PL = "Soul"
@@ -192,7 +190,7 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
     IP_PL = "78.17.152.36"
     PBK_PL = "58f69803e5"
     SID_PL = "zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q"
-    SNI_PL = "www.sony.com"
+    SNI_PL = "://sony.com"
     
     email = f"🇵🇱_Польша_#{user_id}".replace(" ", "_")
     jar = aiohttp.CookieJar(unsafe=True)
@@ -203,8 +201,9 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             await session.post(f"{PANEL_URL_PL}{BASE_PATH_PL}/login", data={"username": PANEL_USER_PL, "password": PANEL_PASSWORD_PL}, timeout=10)
             
-            # Важно: Здесь используется путь /xui/API/ для поддержки Docker-панели 3X-UI
-            async with session.get(f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/get/{INBOUND_ID_PL}", headers={"Accept": "application/json"}, timeout=10) as resp:
+            # ИСПРАВЛЕНО НА СТРОГИЙ ВАРИАНТ ДЛЯ 3X-UI В DOCKER
+            get_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/get/{INBOUND_ID_PL}"
+            async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if res_json.get("success"):
@@ -225,11 +224,14 @@ async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
                 my_port = res_json["obj"]["port"]
                 safe_remark = urllib.parse.quote("🇵🇱 Польша?Premium")
                 config_link = f"vless://{client_uuid}@{IP_PL}:{my_port}?type=tcp&security=reality&sni={SNI_PL}&fp=chrome&pbk={PBK_PL}&sid={SID_PL}&spx=%2F#{safe_remark}"
+            else:
+                logging.error(f"Панель Польши вернула success=False: {res_json}")
 
     except Exception as e:
         logging.error(f"Ошибка на шаге Польши (Изолированная): {e}")
         
     return config_link
+
 
 
 # ====================================================
@@ -610,67 +612,44 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Вызываем нашу новую разделенную функцию синхронизации.
-        # Она поочередно проверит Финляндию и Польшу, склеит их и вернет (config_link, subscription_web_url)
+        # Вызываем менеджер синхронизации
         _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # Если менеджер панелей выдал нам ссылку подписки — значит, доступ ЕСТЬ!
         if sub_web_url and sub_web_url.startswith("http"):
             
-            # Для Happ критически важен протокол https. Если ссылка на http (из-за Docker),
-            # мы подменяем её исключительно для вызова приложения, чтобы Happ корректно её импортировал.
-            happ_target_url = sub_web_url
-            if happ_target_url.startswith("http://"):
-                happ_target_url = happ_target_url.replace("http://", "https://", 1)
-
-            # Собираем прямую ссылку для автоматического импорта в приложение Happ
+            # Happ требует https. Если у нас http из-за Docker — подменяем для ссылки приложения
+            happ_target_url = sub_web_url.replace("http://", "https://", 1) if sub_web_url.startswith("http://") else sub_web_url
             raw_happ_url = f"happ://import/{happ_target_url}"
-            
-            # Оборачиваем её через официальный API сервиса сокращения Яндекса (clck.ru)
-            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
-            try:
-                async with aiohttp.ClientSession() as session:
-                    # ИСПРАВЛЕНО: Корректный эндпоинт Яндекса требует передачи урла через параметр /--?url=
-                    enc_url = urllib.parse.quote(raw_happ_url)
-                    clck_api_url = f"https://clck.ru{enc_url}"
-                    
-                    async with session.get(clck_api_url, timeout=5) as resp:
-                        if resp.status == 200:
-                            safe_redirect_url = await resp.text()
-            except Exception as e:
-                logging.error(f"Не удалось сократить happ-ссылку через clck.ru: {e}")
-                # Если упало, выдаем прямую веб-ссылку, чтобы кнопка хотя бы открывала браузер
-                safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру под мультисерверную подписку
+            # Создаем инлайн-клавиатуру с ПРЯМЫМИ ссылками без урезки clck.ru
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)", url=raw_happ_url)],
                 [InlineKeyboardButton(text="🌐 Открыть подписку в браузере", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
             text = (
                 "<b>📥 Автоматическое подключение (Финляндия 🇫🇮 + Польша 🇵🇱):</b>\n\n"
-                "1. Установите приложение <b>Happ</b> из App Store или Google Play, если его еще нет.\n"
+                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
                 "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)»</b> ниже.\n"
-                "3. Смартфон автоматически откроет приложение Happ и добавит вашу единую подписку Sonata VPN.\n\n"
+                "3. Смартфон автоматически откроет Happ и добавит вашу подписку Sonata VPN.\n\n"
                 "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её в буфер</b>:\n"
+                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
                 f"<code>{sub_web_url}</code>\n\n"
-                "• Откройте приложение Happ, нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите пункт <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес.\n\n"
-                "<i>✨ Внутри приложения у вас автоматически появится список сразу из двух локаций!</i>"
+                "• Откройте Happ, нажмите значок <b>Плюс (➕)</b> ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
             )
 
-            # ИСПРАВЛЕНО: Заменили edit_caption на edit_text, чтобы не было ошибок "there is no caption in the message"
-            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+            # УМНАЯ ПРОВЕРКА: Редактируем caption, если в сообщении есть видео/фото, иначе редактируем текст
+            if callback.message.video or callback.message.photo:
+                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            else:
+                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            # Если панели не вернули ссылку (пользователь истек или отключен в панели)
             await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
