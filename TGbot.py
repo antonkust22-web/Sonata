@@ -631,16 +631,37 @@ def back_kb():
 
 # --- Хендлеры ---
 
+from aiogram.types import FSInputFile  # Добавьте этот импорт в самый верх файла
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Обычный быстрый вызов без await — sqlite3 отработает мгновенно
-    add_or_update_user(message.from_user.id, message.from_user.username or "Unknown")
-    await message.answer_video(
-        video=VIDEO_MAIN,
-        caption=text1,
-        reply_markup=main_kb(),
-        parse_mode="HTML"
-    )
+    user_id = message.from_user.id
+    username = message.from_user.username or "Unknown"
+    
+    # 1. Записываем в локальную SQLite3
+    add_or_update_user(user_id, username)
+    
+    # 2. СЕЙЧАС ЖЕ автоматически создаем аккаунты на серверах Финляндии и Польши
+    await get_vpn_config_manual(user_id, username)
+    
+    # 3. Отправляем видео напрямую с диска сервера (так оно никогда не устареет)
+    try:
+        video_file = FSInputFile("main.mp4")  # Укажите точное имя вашего файла вместо VIDEO_MAIN
+        await message.answer_video(
+            video=video_file,
+            caption=text1,
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить видео при старте, отправляю текст: {e}")
+        # Резервный вариант на случай, если файла на сервере тоже нет
+        await message.answer(
+            text=text1,
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+
 
 
 import math # Добавляем в самый верх файла для правильного подсчета дней
