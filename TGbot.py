@@ -45,7 +45,7 @@ BASE_PATH = "/XWYB6HCgL7NBchJqxo"
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
+VIDEO_MAIN = "BAACAgIAAxkBAAMNailcPwV0q8eFSyhltQtxQywU1sgAAh2qAAKFqEhJPIGIg3JS6007BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
@@ -132,13 +132,13 @@ async def get_vpn_config_manual(user_id, username=""):
     # НАСТРОЙКИ НОВОГО СЕРВЕРА ПОЛЬШИ (Впишите свои данные)
     PANEL_URL_PL = "http://78.17.152.36:10096"
     BASE_PATH_PL = "/XWYB6HCgL7NBchJqxo"
-    PANEL_USER_PL = "admin"
-    PANEL_PASSWORD_PL = "admin"
+    PANEL_USER_PL = "Soul"
+    PANEL_PASSWORD_PL = "Lodka1321"
     INBOUND_ID_PL = 1
     IP_PL = "78.17.152.36"
-    PBK_PL = "ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ_ПОЛЬШИ"
-    SID_PL = "ВАШ_SHORT_ID_ПОЛЬШИ"
-    SNI_PL = "yahoo.com"
+    PBK_PL = "58f69803e5"
+    SID_PL = "zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q"
+    SNI_PL = "www.sony.com"
     # ----------------------------------------------------
 
     jar = aiohttp.CookieJar(unsafe=True)
