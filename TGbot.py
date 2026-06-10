@@ -133,7 +133,7 @@ SERVERS_CONFIG = {
         "ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38",
         "sid": "32b6a4ff54ef1812",
-        "sni": "sony.com",  # Пишем чистый домен без ://
+        "sni": "www.sony.com",  # Пишем чистый домен без ://
         "flag": "🇫🇮",
         "name": "Финляндия"
     },
@@ -146,7 +146,7 @@ SERVERS_CONFIG = {
         "ip": "78.17.152.36",
         "pbk": "zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q",           # Возьмите из настроек Reality в панели Польши
         "sid": "56b1550292e606d7",                # Возьмите из настроек Reality в панели Польши
-        "sni": "sony.com",                      # Любой рабочий SNI для Польши (например, yahoo.com)
+        "sni": "www.sony.com",                      # Любой рабочий SNI для Польши (например, yahoo.com)
         "flag": "🇵🇱",
         "name": "Польша"
     }
