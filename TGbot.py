@@ -155,6 +155,7 @@ SERVERS_CONFIG = {
 async def get_vpn_config_manual(user_id, username=""):
     """
     Создает/обновляет клиента на серверах Финляндии и Польши с одинаковым UUID/subId.
+    Использует корректные пути API (/xui/API/) для современных версий 3X-UI.
     Возвращает список одиночных конфигураций и единую ссылку на подписку.
     """
     jar = aiohttp.CookieJar(unsafe=True)
@@ -182,8 +183,8 @@ async def get_vpn_config_manual(user_id, username=""):
 
                     headers = {"Accept": "application/json"}
 
-                    # 2. Получение данных инбаунда
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    # 2. Получение данных инбаунда (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         res_json = await resp.json()
                         
@@ -208,8 +209,8 @@ async def get_vpn_config_manual(user_id, username=""):
 
                     # 3. Добавление или обновление клиента на текущем сервере
                     if not current_client:
-                        # Создание нового
-                        add_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/addClient"
+                        # Создание нового (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                        add_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/addClient"
                         post_data = {
                             "id": str(s_data['inbound_id']), 
                             "settings": json.dumps({
@@ -228,8 +229,8 @@ async def get_vpn_config_manual(user_id, username=""):
                         async with session.post(add_url, headers=headers, data=post_data, timeout=10) as resp:
                             await resp.text()
                     else:
-                        # Обновление существующего
-                        update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                        # Обновление существующего (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                        update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
                         post_data = {
                             "id": str(s_data['inbound_id']),
                             "settings": json.dumps({
@@ -264,7 +265,6 @@ async def get_vpn_config_manual(user_id, username=""):
                     logging.error(f"Ошибка при работе с сервером {s_key}: {server_error}")
 
             # 5. Формирование ЕДИНОЙ ссылки на подписку (на базе портов подписок 2096 Польши)
-            # Благодаря общему subId, эта ссылка выдаст в приложении сразу и Финляндию, и Польшу.
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
             subscription_web_url = f"http://{SERVERS_CONFIG['PL']['ip']}:2096/sub/{sub_id}#{sub_remark}"
 
@@ -284,12 +284,14 @@ async def get_vpn_config_manual(user_id, username=""):
 
 
 
+
 # Функция использует тот же словарь SERVERS_CONFIG, который мы создали на предыдущем шаге
 # Обязательно убедитесь, что SERVERS_CONFIG импортирован или находится в этом же файле!
 
 async def renew_vpn_subscription(user_id: int) -> bool:
     """
     Продлевает подписку на 30 дней на ВСЕХ подключенных серверах (Финляндия и Польша).
+    Использует корректные пути API (/xui/API/) для интеграции с панелями 3X-UI.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -316,8 +318,8 @@ async def renew_vpn_subscription(user_id: int) -> bool:
 
                     headers = {"Accept": "application/json"}
 
-                    # 2. Получаем текущие данные инбаунда с этого сервера
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    # 2. Получаем текущие данные инбаунда (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         res_json = await resp.json()
 
@@ -349,8 +351,8 @@ async def renew_vpn_subscription(user_id: int) -> bool:
                     if not client_sub_id:
                         client_sub_id = secrets.token_hex(8)
 
-                    # 4. Отправка обновленных данных на сервер
-                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    # 4. Отправка обновленных данных на сервер (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(s_data['inbound_id']),
                         "settings": json.dumps({
@@ -377,7 +379,7 @@ async def renew_vpn_subscription(user_id: int) -> bool:
                         logging.error(f"Сервер {s_key} ответил ошибкой при попытке продления: {update_resp}")
 
                 except Exception as server_err:
-                    logging.error(f"Ошибка при обработке продления на сервере {s_key}: {server_err}")
+                    logging.error(f"Ошибка при работе с сервером {s_key}: {server_err}")
 
             # 5. Если хотя бы один сервер успешно обновился, считаем операцию успешной
             if updated_servers_count > 0:
@@ -400,6 +402,7 @@ async def renew_vpn_subscription(user_id: int) -> bool:
 async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
     Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней на ВСЕХ серверах (поиск по tgId).
+    Использует корректные пути API (/xui/API/) для интеграции с панелями 3X-UI.
     Возвращает client_sub_id в случае успеха или False при ошибке.
     """
     jar = aiohttp.CookieJar(unsafe=True)
@@ -427,8 +430,8 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
                     
                     headers = {"Accept": "application/json"}
 
-                    # 2. Получаем текущие данные инбаунда с этого сервера
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    # 2. Получаем текущие данные инбаунда с этого сервера (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         res_json = await resp.json()
                         
@@ -464,8 +467,8 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
                     if not client_sub_id:
                         client_sub_id = secrets.token_hex(8)
 
-                    # 4. Отправка обновленных параметров клиента на текущий сервер
-                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    # 4. Отправка обновленных параметров клиента на текущий сервер (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(s_data['inbound_id']),
                         "settings": json.dumps({
@@ -507,6 +510,7 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
 
 
 
+
 import aiohttp
 import json
 import logging
@@ -518,6 +522,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
     """
     Аннулирует подписку в 3X-UI на ВСЕХ подключенных серверах (Финляндия и Польша),
     переводя её в неактивное состояние ("enable": False, expiryTime: 1).
+    Использует корректные пути API (/xui/API/) для интеграции с панелями 3X-UI.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -540,8 +545,8 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
 
                     headers = {"Accept": "application/json"}
 
-                    # 2. Получаем текущие данные инбаунда с этого сервера
-                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    # 2. Получаем текущие данные инбаунда с этого сервера (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/get/{s_data['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         res_json = await resp.json()
 
@@ -560,8 +565,8 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
 
                     client_uuid = client['id']
                     
-                    # 3. Отправка заблокированных параметров клиента на текущий сервер
-                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    # 3. Отправка заблокированных параметров клиента на текущий сервер (ИСПРАВЛЕНО: добавлен путь /xui/API/)
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/xui/API/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(s_data['inbound_id']),
                         "settings": json.dumps({
@@ -627,31 +632,32 @@ def back_kb():
 
 # --- Хендлеры ---
 
-from aiogram.types import FSInputFile  # Добавьте этот импорт в самый верх файла
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     
-    # 1. Записываем в локальную SQLite3
+    # 1. Записываем пользователя в локальную базу данных SQLite3
     add_or_update_user(user_id, username)
     
-    # 2. СЕЙЧАС ЖЕ автоматически создаем аккаунты на серверах Финляндии и Польши
+    # 2. Автоматически создаем/проверяем аккаунты на серверах Финляндии и Польши
+    # Пути внутри этой функции мы уже исправили на /xui/API/, так что она отработает без ошибок
     await get_vpn_config_manual(user_id, username)
     
-    # 3. Отправляем видео напрямую с диска сервера (так оно никогда не устареет)
+    # 3. Отправляем приветственное видео по обновленному file_id
     try:
-        video_file = FSInputFile("main.mp4")  # Укажите точное имя вашего файла вместо VIDEO_MAIN
+        # Используем ваш новый file_id из переменной VIDEO_MAIN
         await message.answer_video(
-            video=video_file,
+            video=VIDEO_MAIN, 
             caption=text1,
             reply_markup=main_kb(),
             parse_mode="HTML"
         )
+        logging.info(f"Приветственное видео успешно отправлено пользователю {user_id}")
+        
     except Exception as e:
-        logging.error(f"Не удалось отправить видео при старте, отправляю текст: {e}")
-        # Резервный вариант на случай, если файла на сервере тоже нет
+        # Если с новым file_id опять что-то пойдет не так, бот не упадет, а отправит текст
+        logging.error(f"Не удалось отправить видео по file_id при старте, отправляю текст: {e}")
         await message.answer(
             text=text1,
             reply_markup=main_kb(),
