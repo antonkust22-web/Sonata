@@ -153,29 +153,42 @@ SERVERS_CONFIG = {
 }
 
 async def get_vpn_config_manual(user_id, username=""):
-    jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     client_uuid = str(uuid.uuid4())
     sub_id = secrets.token_hex(8)
     config_links = []
     expiry_time_ms = 0
-    success_count = 0  # Считаем, сколько серверов успешно ответили
+    success_count = 0  # Счетчик успешных серверов
     
-    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # Поочередно обходим сервера
+    async with aiohttp.ClientSession(connector=connector) as session:
+        # Поочередно опрашиваем наши сервера
         for s_key, s_data in SERVERS_CONFIG.items():
             try:
                 email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация на конкретном сервере
+                # 1. ПРИНУДИТЕЛЬНАЯ РУЧНАЯ АВТОРИЗАЦИЯ
                 login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
-                async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=7) as resp:
-                    await resp.text()
+                login_data = {"username": s_data['username'], "password": s_data['password']}
+                
+                async with session.post(login_url, data=login_data, timeout=7) as login_resp:
+                    await login_resp.text()
+                    # Вытаскиваем куки вручную из заголовков ответа панели
+                    cookies = login_resp.headers.getall("Set-Cookie", [])
+                    if not cookies:
+                        logging.error(f"❌ Сервер {s_key}: Не удалось получить куки авторизации. Проверьте логин/пароль!")
+                        continue
+                    
+                    # Формируем заголовок Cookie для последующих запросов
+                    cookie_header = "; ".join([c.split(";")[0] for c in cookies])
 
-                headers = {"Accept": "application/json"}
+                # Собираем строгие заголовки для работы с API инбаундов
+                headers = {
+                    "Accept": "application/json",
+                    "Cookie": cookie_header  # Намертво привязываем куку авторизации к запросу
+                }
 
-                # Умный автоподбор API путей именно под этот сервер
+                # 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА С АВТОПОДБОРОМ ПУТИ API
                 res_json = None
                 for api_prefix in ["/panel/api", "/xui/API"]:
                     get_url = f"{s_data['panel_url']}{s_data['base_path']}{api_prefix}/inbounds/get/{s_data['inbound_id']}"
@@ -189,26 +202,30 @@ async def get_vpn_config_manual(user_id, username=""):
                         continue
                 
                 if not res_json or not res_json.get("success"):
-                    logging.error(f"❌ Сервер {s_key} НЕ ответил на запрос данных инбаунда.")
-                    continue  # Ошибка на одном сервере БОЛЬШЕ НЕ ЛОМАЕТ остальной код!
+                    logging.error(f"❌ Серver {s_key} ответил отказом/404 на запрос инбаунда. Проверьте, активен ли Inbound ID {s_data['inbound_id']}.")
+                    continue  # Этот сервер не ответил, но мы продолжаем опрос остальных!
 
+                # Считываем настройки клиентов внутри инбаунда
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
-                # Ищем клиента
+                # Ищем пользователя по tgId или по старому email в базе панели
                 current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                 if not current_client:
                     old_email = f"user_{user_id}"
                     current_client = next((c for c in clients if c.get("email") == old_email), None)
 
+                # Если клиент уже существует, берем его параметры, чтобы не перезаписывать
                 if current_client:
                     client_uuid = current_client.get("id", client_uuid)
                     sub_id = current_client.get("subId", sub_id)
                     expiry_time_ms = max(expiry_time_ms, current_client.get("expiryTime", 0))
 
-                # 3. Создаем или обновляем аккаунт на ЭТОМ сервере
+                # 3. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА
                 working_api = s_data.get("working_api", "/panel/api")
+                
                 if not current_client:
+                    # Создаем нового пользователя
                     add_url = f"{s_data['panel_url']}{s_data['base_path']}{working_api}/inbounds/addClient"
                     post_data = {
                         "id": str(s_data['inbound_id']), 
@@ -220,6 +237,7 @@ async def get_vpn_config_manual(user_id, username=""):
                     async with session.post(add_url, headers=headers, data=post_data, timeout=5) as resp:
                         await resp.text()
                 else:
+                    # Обновляем существующего (продлеваем активность)
                     update_url = f"{s_data['panel_url']}{s_data['base_path']}{working_api}/inbounds/updateClient/{client_uuid}"
                     post_data = {
                         "id": str(s_data['inbound_id']),
@@ -232,7 +250,7 @@ async def get_vpn_config_manual(user_id, username=""):
                     async with session.post(update_url, headers=headers, data=post_data, timeout=5) as resp:
                         await resp.text()
 
-                # 4. Сохраняем рабочую VLESS ссылку ЭТОГО сервера
+                # 4. ФОРМИРОВАНИЕ ПРЯМОЙ КОНФИГУРАЦИИ VLESS
                 my_port = res_json["obj"]["port"]
                 remark = f"{s_data['flag']} {s_data['name']}?Premium"
                 config_link = (
@@ -244,14 +262,14 @@ async def get_vpn_config_manual(user_id, username=""):
                 success_count += 1
 
             except Exception as server_error:
-                logging.error(f"⚠️ Критическая изоляция ошибки сервера {s_key}: {server_error}")
+                logging.error(f"⚠️ Ошибка изоляции сессии сервера {s_key}: {server_error}")
                 continue
 
-    # 5. Формируем общую подписку на базе Польши
-    sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+    # 5. ФОРМИРОВАНИЕ ЕДИНОЙ ССЫЛКИ ПОДПИСКИ НА БАЗЕ СЕРВЕРА ПОЛЬШИ (ПОРТ 2096)
+    sub_remark = urllib.parse.quote("🚀 Sonata VPN")
     subscription_web_url = f"http://{SERVERS_CONFIG['PL']['ip']}:2096/sub/{sub_id}#{sub_remark}"
 
-    # Если хотя бы один сервер успешно считался/создался, пишем данные в локальную SQLite3
+    # Если хотя бы один из серверов успешно ответил — пишем данные в локальную БД бота
     if success_count > 0:
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
         all_configs_str = "\n".join(config_links)
@@ -259,6 +277,7 @@ async def get_vpn_config_manual(user_id, username=""):
         return all_configs_str, subscription_web_url
         
     return None, None
+
 
 
 
