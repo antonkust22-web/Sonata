@@ -45,7 +45,7 @@ BASE_PATH = "/XWYB6HCgL7NBchJqxo"
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
+VIDEO_MAIN = "BAACAgIAAxkBAAMNailcPwV0q8eFSyhltQtxQywU1sgAAh2qAAKFqEhJPIGIg3JS6007BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
