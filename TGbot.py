@@ -123,161 +123,64 @@ def get_user_from_db(user_id):
 
 
 
-# ====================================================
-# ФУНКЦИЯ 1: ФИНЛЯНДИЯ (С ручным извлечением куки сессии)
-# ====================================================
-async def get_vpn_config_fi_only(user_id):
-    email = f"🇫🇮_Финляндия_#{user_id}".replace(" ", "_")
-    connector = aiohttp.TCPConnector(ssl=False)
-    
-    client_uuid = str(uuid.uuid4())
-    sub_id = secrets.token_hex(8)
-    expiry_time_ms = 0
-    config_link = None
+def generate_fixed_uuid(user_id: int) -> str:
+    """Генерирует уникальный, но всегда одинаковый UUID для конкретного пользователя на основе его Telegram ID"""
+    hash_object = hashlib.md5(str(user_id).encode())
+    return str(uuid.UUID(hash_object.hexdigest()))
 
-    try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в Финляндию
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as login_resp:
-                await login_resp.text()
-                # Вытаскиваем куки вручную из заголовков ответа
-                cookies = login_resp.headers.getall("Set-Cookie", [])
-                if not cookies:
-                    logging.error("❌ Финляндия: Не удалось получить сессионную куку при логине!")
-                    return client_uuid, sub_id, expiry_time_ms, config_link
-                
-                # Собираем чистую строку для заголовка Cookie
-                session_cookie = cookies[0].split(";")[0]
+def generate_fixed_sub_id(user_id: int) -> str:
+    """Генерирует уникальный 16-символьный subId для подписки на основе Telegram ID"""
+    hash_object = hashlib.sha256(str(user_id).encode())
+    return hash_object.hexdigest()[:16]
 
-            # Создаем строгие заголовки с авторизацией
-            headers = {"Accept": "application/json", "Cookie": session_cookie}
-
-            # 2. Получение данных инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
-                
-            if res_json.get("success"):
-                settings = json.loads(res_json["obj"]["settings"])
-                clients = settings.get("clients", [])
-                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-                if not current_client:
-                    current_client = next((c for c in clients if c.get("email") == f"user_{user_id}"), None)
-
-                if current_client:
-                    client_uuid = current_client.get("id", client_uuid)
-                    sub_id = current_client.get("subId", sub_id)
-                    expiry_time_ms = current_client.get("expiryTime", 0)
-
-                # 3. Создание или обновление клиента
-                if not current_client:
-                    add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                    client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                else:
-                    add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-                    client_data = {"id": str(INBOUND_ID), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2), "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                
-                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as add_resp:
-                    await add_resp.text()
-
-                my_port = res_json["obj"]["port"]
-                safe_remark = urllib.parse.quote("🇫🇮 Финляндия?Premium")
-                config_link = f"vless://{client_uuid}@78.17.1.43:{my_port}?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38&sid=32b6a4ff54ef1812&spx=%2F#{safe_remark}"
-
-    except Exception as e:
-        logging.error(f"Ошибка на шаге Финляндии: {e}")
-        
-    return client_uuid, sub_id, expiry_time_ms, config_link
-
-
-# ====================================================
-# ФУНКЦИЯ 2: ПОЛЬША (С ручным извлечением куки сессии)
-# ====================================================
-async def get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms):
-    PANEL_URL_PL = "http://78.17.152.36:10096"
-    BASE_PATH_PL = "/XWYB6HCgL7NBchJqxo"
-    PANEL_USER_PL = "Soul"
-    PANEL_PASSWORD_PL = "Lodka1321"
-    INBOUND_ID_PL = 1
-    IP_PL = "78.17.152.36"
-    PBK_PL = "58f69803e5"
-    SID_PL = "zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q"
-    SNI_PL = "://sony.com"
-    
-    email = f"🇵🇱_Польша_#{user_id}".replace(" ", "_")
-    connector = aiohttp.TCPConnector(ssl=False)
-    config_link = None
-
-    try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            # 1. Логин в Польшу
-            login_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/login"
-            async with session.post(login_url, data={"username": PANEL_USER_PL, "password": PANEL_PASSWORD_PL}, timeout=10) as login_resp:
-                await login_resp.text()
-                cookies = login_resp.headers.getall("Set-Cookie", [])
-                if not cookies:
-                    logging.error("❌ Польша: Не удалось получить сессионную куку при логине!")
-                    return config_link
-                
-                session_cookie = cookies[0].split(";")[0]
-
-            headers = {"Accept": "application/json", "Cookie": session_cookie}
-            
-            # 2. Получение данных инбаунда через путь 3X-UI (/xui/API/)
-            get_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/get/{INBOUND_ID_PL}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
-                
-            if res_json.get("success"):
-                settings = json.loads(res_json["obj"]["settings"])
-                clients = settings.get("clients", [])
-                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-
-                # 3. Добавление или обновление клиента
-                if not current_client:
-                    add_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/addClient"
-                    client_data = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                else:
-                    add_url = f"{PANEL_URL_PL}{BASE_PATH_PL}/xui/API/inbounds/updateClient/{client_uuid}"
-                    client_data = {"id": str(INBOUND_ID_PL), "settings": json.dumps({"clients": [{"id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2), "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-                
-                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as add_resp:
-                    await add_resp.text()
-
-                my_port = res_json["obj"]["port"]
-                safe_remark = urllib.parse.quote("🇵🇱 Польша?Premium")
-                config_link = f"vless://{client_uuid}@{IP_PL}:{my_port}?type=tcp&security=reality&sni={SNI_PL}&fp=chrome&pbk={PBK_PL}&sid={SID_PL}&spx=%2F#{safe_remark}"
-
-    except Exception as e:
-        logging.error(f"Ошибка на шаге Польши (Изолированная): {e}")
-        
-    return config_link
-
-
-# ====================================================
-# ФУНКЦИЯ 3: ОБЪЕДИНЯЮЩИЙ МЕНЕДЖЕР
-# ====================================================
 async def get_vpn_config_manual(user_id, username=""):
-    # 1. Вызываем Финляндию
-    client_uuid, sub_id, expiry_time_ms, config_fi = await get_vpn_config_fi_only(user_id)
+    """
+    НОВАЯ АРХИТЕКТУРА: Мгновенная локальная генерация конфигураций БЕЗ запросов к API панелей.
+    Никаких зависаний, кук и ошибок 404.
+    """
+    # 1. Генерируем железно фиксированные ключи для этого пользователя
+    client_uuid = generate_fixed_uuid(user_id)
+    sub_id = generate_fixed_sub_id(user_id)
     
-    # 2. Вызываем Польшу
-    config_pl = await get_vpn_config_pl_only(user_id, client_uuid, sub_id, expiry_time_ms)
+    # 2. Локально собираем ссылки (Данные берутся из настроек ваших инбаундов в браузере)
+    config_links = []
     
-    configs = []
-    if config_fi: configs.append(config_fi)
-    if config_pl: configs.append(config_pl)
-    config_link = "\n".join(configs) if configs else None
+    # Ссылка Финляндии (Укажите порт и ключи Reality из вашей финской панели)
+    safe_remark_fi = urllib.parse.quote("🇫🇮 Финляндия Premium")
+    config_links.append(
+        f"vless://{client_uuid}@78.17.1.43:443"  # Укажите порт финского Reality инбаунда
+        f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
+        f"&pbk=MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38&sid=32b6a4ff54ef1812&spx=%2F"
+        f"#{safe_remark_fi}"
+    )
     
-    # Ссылка на подписку через Docker-порт подписок Польши
+    # Ссылка Польши (Данные из вашей новой польской панели)
+    safe_remark_pl = urllib.parse.quote("🇵🇱 Польша Premium")
+    config_links.append(
+        f"vless://{client_uuid}@78.17.152.36:443"  # Укажите порт польского Reality инбаунда
+        f"?type=tcp&security=reality&sni=://sony.com&fp=chrome"
+        f"&pbk=58f69803e5&sid=zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q&spx=%2F"
+        f"#{safe_remark_pl}"
+    )
+    
+    # 3. Склеиваем ссылки в одну общую строку
+    config_link = "\n".join(config_links)
+    
+    # 4. Формируем единую ссылку на подписку через порт 2096 Польши
     sub_remark = urllib.parse.quote("🚀 Sonata VPN")
     subscription_web_url = f"http://78.17.152{sub_id}#{sub_remark}"
     
-    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+    # 5. Записываем в локальную SQLite3 (Оставляем подписку активной на 30 дней для теста, если юзер новый)
+    db_data = get_user_from_db(user_id)
+    if db_data and len(db_data) > 3 and db_data[3] > 0:
+        expiry_seconds = db_data[3]  # Если в БД уже есть оплаченное время — сохраняем его
+    else:
+        expiry_seconds = int(time.time()) + (30 * 24 * 3600)  # Новым выдаем 30 дней для теста
+        
     add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
     
     return config_link, subscription_web_url
+
 
 
 
@@ -628,46 +531,60 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import hashlib
+import uuid
+import urllib.parse
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Вспомогательные функции генерации (если вы еще не добавили их в файл)
+def generate_fixed_uuid(user_id: int) -> str:
+    hash_object = hashlib.md5(str(user_id).encode())
+    return str(uuid.UUID(hash_object.hexdigest()))
+
+def generate_fixed_sub_id(user_id: int) -> str:
+    hash_object = hashlib.sha256(str(user_id).encode())
+    return hash_object.hexdigest()[:16]
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Вызываем менеджер синхронизации серверов
-        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Мгновенно рассчитываем ваши постоянные ключи по формуле
+        my_uuid = generate_fixed_uuid(user_id)
+        my_sub = generate_fixed_sub_id(user_id)
         
-        if sub_web_url and sub_web_url.startswith("http"):
-            
-            # Разрешенная клавиатура со стандартным HTTP-протоколом (Telegram её пропустит на 100%)
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ В БРАУЗЕРЕ", url=sub_web_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-            ])
+        # Формируем ссылку на подписку, которая пойдет в Happ
+        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+        sub_web_url = f"http://78.17.152{my_sub}#{sub_remark}"
 
-            text = (
-                "<b>📥 Подключение VPN (Финляндия 🇫🇮 + Польша 🇵🇱):</b>\n\n"
-                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                "2. Нажмите пальцем на ссылку ниже, чтобы <b>мгновенно скопировать её</b>:\n\n"
-                f"<code>{sub_web_url}</code>\n\n"
-                "3. Откройте приложение Happ.\n"
-                "4. В правом верхнем углу нажмите значок <b>Плюс (➕)</b> ➔ выберите пункт <b>«Добавить по ссылке» (Add by URL)</b>.\n"
-                "5. Вставьте скопированный адрес и сохраните.\n\n"
-                "<i>✨ В приложении автоматически появится единая подписка Sonata Premium, внутри которой будут доступны сразу обе страны!</i>"
-            )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ В БРАУЗЕРЕ", url=sub_web_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
 
-            # Безопасное редактирование: если в меню видео - правим описание, если текст - правим текст
-            if callback.message.video or callback.message.photo:
-                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-            else:
-                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-            
+        # Этот текст выведет ключи, которые вам нужно скопировать в панели в браузере
+        text = (
+            "<b>🔑 КЛЮЧИ ДЛЯ ВАШИХ ПАНЕЛЕЙ (СКОПИРУЙТЕ ИХ):</b>\n\n"
+            f"• <b>UUID (ID клиента):</b> <code>{my_uuid}</code>\n"
+            f"• <b>Subscription ID (subId):</b> <code>{my_sub}</code>\n\n"
+            "-----------------------------------------\n\n"
+            "<b>📥 Инструкция для подключения в Happ:</b>\n"
+            "1. Нажмите пальцем на ссылку ниже, чтобы скопировать её:\n"
+            f"<code>{sub_web_url}</code>\n\n"
+            "2. Откройте приложение Happ ➔ Нажмите <b>Плюс (➕)</b> ➔ <b>«Добавить по ссылке» (Add by URL)</b> и вставьте её."
+        )
+
+        if callback.message.video or callback.message.photo:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
-
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+            
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
 
 
 
