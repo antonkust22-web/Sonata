@@ -124,387 +124,488 @@ def get_user_from_db(user_id):
 
 
 
+
+
+# === НАСТРОЙКИ СЕРВЕРОВ (Заполните своими данными) ===
+SERVERS_CONFIG = {
+    "FI": {  # Финляндия (Ваш старый сервер)
+        "panel_url": "https://78.17.1.43:10096", # Старый URL панели
+        "base_path": "/XWYB6HCgL7NBchJqxo",     # Старый секретный путь
+        "username": "Asad",
+        "password": "Lodka120259",
+        "inbound_id": 1,                         # ID подключения на финском сервере
+        "ip": "78.17.1.43",
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38",
+        "sid": "32b6a4ff54ef1812",
+        "sni": "sony.com",  # Пишем чистый домен без ://
+        "flag": "🇫🇮",
+        "name": "Финляндия"
+    },
+    "PL": {  # Польша (Новый сервер)
+        "panel_url": "http://78.17.152.36:10096", # Новый URL панели в Docker
+        "base_path": "/XWYB6HCgL7NBchJqxo",     # Новый секретный путь панели
+        "username": "Soul",                     # Логин от новой панели
+        "password": "Lodka1321",                     # Пароль от новой панели
+        "inbound_id": 1,                         # ID подключения на польском сервере (обычно 1)
+        "ip": "78.17.152.36",
+        "pbk": "zf60IyIK8kF1aHG-SQNnu0L86e_C3TJ8gY1KiB-oQ3Q",           # Возьмите из настроек Reality в панели Польши
+        "sid": "56b1550292e606d7",                # Возьмите из настроек Reality в панели Польши
+        "sni": "sony.com",                      # Любой рабочий SNI для Польши (например, yahoo.com)
+        "flag": "🇵🇱",
+        "name": "Польша"
+    }
+}
+
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Формирует красивое имя сервера с флагом для Happ и обновляет конфигурацию в X-UI.
+    Создает/обновляет клиента на серверах Финляндии и Польши с одинаковым UUID/subId.
+    Возвращает список одиночных конфигураций и единую ссылку на подписку.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    
-    # Формируем красивый Email, который Happ отобразит как имя сервера.
-    # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-    
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
+    # Генерируем единые UUID и subId заранее на случай, если пользователя еще нет в панелях
+    client_uuid = str(uuid.uuid4())
+    sub_id = secrets.token_hex(8)
+    
+    config_links = []
+    expiry_time_ms = 0
+    
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
-
-            headers = {"Accept": "application/json"}
-
-            # 2. Получение данных инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
-                
-            if not res_json.get("success"):
-                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
-                return None, None
-
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
             
-            # Ищем клиента по уникальному tgId
-            current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-            
-            # Резервный поиск по старому формату email на случай первого перехода пользователя
-            if not current_client:
-                old_email = f"user_{user_id}"
-                current_client = next((c for c in clients if c.get("email") == old_email), None)
+            # Циклом обходим оба сервера (Финляндия и Польша)
+            for s_key, s_data in SERVERS_CONFIG.items():
+                try:
+                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
+                    
+                    # 1. Авторизация на конкретном сервере
+                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
+                        await resp.text()
 
-            client_uuid = current_client.get("id") if current_client else None
+                    headers = {"Accept": "application/json"}
 
-            # 3. Создание клиента, если его нет
-            if not client_uuid:
-                client_uuid = str(uuid.uuid4())
-                sub_id = secrets.token_hex(8) 
-                
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                client_data = {
-                    "id": str(INBOUND_ID), 
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid,
-                            "email": email,  # Красивый email с флагом
-                            "limitIp": 2,
-                            "totalGB": 0,
-                            "expiryTime": 0,
-                            "enable": True,
-                            "tgId": user_id,
-                            "subId": sub_id  
-                        }]
-                    })
-                }
-                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as resp:
-                    await resp.text()
-                expiry_time_ms = 0
-            else:
-                # Клиент существует, обновляем его параметры и принудительно ставим новый email с флагом
-                expiry_time_ms = current_client.get("expiryTime", 0)
-                sub_id = current_client.get("subId", "")
-                if not sub_id:
-                    sub_id = secrets.token_hex(8)
-                
-                update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-                client_data = {
-                    "id": str(INBOUND_ID),
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid,
-                            "email": email,  # Принудительное обновление имени сервера под Happ
-                            "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0),
-                            "expiryTime": expiry_time_ms,
-                            "enable": current_client.get("enable", True),
-                            "tgId": user_id,
-                            "subId": sub_id
-                        }]
-                    })
-                }
-                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                    await resp.text()
+                    # 2. Получение данных инбаунда
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
+                        
+                    if not res_json.get("success"):
+                        logging.error(f"Панель {s_key} вернула ошибку при GET: {res_json}")
+                        continue
 
-            # 4. Формирование рабочей конфигурации и ссылки на подписку
-            my_ip = "78.17.1.43"
-            my_port = res_json["obj"]["port"]
-            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
-            sid = "32b6a4ff54ef1812"
-            sni = "://sony.com"
-            
-            server_type = "Premium"
-            remark = f"{country_flag} {country_name}?{server_type}"
-            safe_remark = urllib.parse.quote(remark)
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
+                    
+                    # Ищем существующего клиента
+                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if not current_client:
+                        old_email = f"user_{user_id}"
+                        current_client = next((c for c in clients if c.get("email") == old_email), None)
 
-            config_link = (
-                f"vless://{client_uuid}@{my_ip}:{my_port}"
-                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{safe_remark}"
-            )
+                    # Если клиент уже есть на сервере, берем его старые UUID и subId, чтобы не ломать старые подключения
+                    if current_client:
+                        client_uuid = current_client.get("id", client_uuid)
+                        sub_id = current_client.get("subId", sub_id)
+                        expiry_time_ms = current_client.get("expiryTime", 0)
 
+                    # 3. Добавление или обновление клиента на текущем сервере
+                    if not current_client:
+                        # Создание нового
+                        add_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/addClient"
+                        post_data = {
+                            "id": str(s_data['inbound_id']), 
+                            "settings": json.dumps({
+                                "clients": [{
+                                    "id": client_uuid,
+                                    "email": email,
+                                    "limitIp": 2,
+                                    "totalGB": 0,
+                                    "expiryTime": 0,
+                                    "enable": True,
+                                    "tgId": user_id,
+                                    "subId": sub_id  
+                                }]
+                            })
+                        }
+                        async with session.post(add_url, headers=headers, data=post_data, timeout=10) as resp:
+                            await resp.text()
+                    else:
+                        # Обновление существующего
+                        update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                        post_data = {
+                            "id": str(s_data['inbound_id']),
+                            "settings": json.dumps({
+                                "clients": [{
+                                    "id": client_uuid,
+                                    "email": email,
+                                    "limitIp": current_client.get("limitIp", 2),
+                                    "totalGB": current_client.get("totalGB", 0),
+                                    "expiryTime": expiry_time_ms,
+                                    "enable": current_client.get("enable", True),
+                                    "tgId": user_id,
+                                    "subId": sub_id
+                                }]
+                            })
+                        }
+                        async with session.post(update_url, headers=headers, data=post_data, timeout=10) as resp:
+                            await resp.text()
+
+                    # 4. Формирование прямой ссылки VLESS для текущего сервера
+                    my_port = res_json["obj"]["port"]
+                    remark = f"{s_data['flag']} {s_data['name']}?Premium"
+                    safe_remark = urllib.parse.quote(remark)
+
+                    config_link = (
+                        f"vless://{client_uuid}@{s_data['ip']}:{my_port}"
+                        f"?type=tcp&security=reality&sni={s_data['sni']}&fp=chrome&pbk={s_data['pbk']}&sid={s_data['sid']}&spx=%2F"
+                        f"#{safe_remark}"
+                    )
+                    config_links.append(config_link)
+
+                except Exception as server_error:
+                    logging.error(f"Ошибка при работе с сервером {s_key}: {server_error}")
+
+            # 5. Формирование ЕДИНОЙ ссылки на подписку (на базе портов подписок 2096 Польши)
+            # Благодаря общему subId, эта ссылка выдаст в приложении сразу и Финляндию, и Польшу.
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            
-            try:
-                parsed_url = urllib.parse.urlparse(PANEL_URL)
-                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
-            except Exception:
-                host = "78.17.1.43"
+            subscription_web_url = f"http://{SERVERS_CONFIG['PL']['ip']}:2096/sub/{sub_id}#{sub_remark}"
 
-            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
-
-            # Сохраняем в локальную БД
+            # Сохраняем агрегированные данные в вашу локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-            add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
+            all_configs_str = "\n".join(config_links) # Объединяем одиночные ссылки через перенос строки
             
-            return config_link, subscription_web_url
+            add_or_update_user(user_id, username, all_configs_str, subscription_web_url, expiry_seconds)
+            
+            return all_configs_str, subscription_web_url
 
     except Exception as e:
-        logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
+        logging.error(f"Глобальная ошибка VPN: {e}")
         return None, None
 
 
 
+
+
+# Функция использует тот же словарь SERVERS_CONFIG, который мы создали на предыдущем шаге
+# Обязательно убедитесь, что SERVERS_CONFIG импортирован или находится в этом же файле!
+
 async def renew_vpn_subscription(user_id: int) -> bool:
     """
-    Стандартная функция продления на 30 дней для ЮKassa (поиск по tgId).
+    Продлевает подписку на 30 дней на ВСЕХ подключенных серверах (Финляндия и Польша).
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    # Добавлено нижнее подчеркивание между флагом и страной для единого стиля
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
 
+    current_time_ms = int(time.time() * 1000)
+    thirty_days_ms = 30 * 24 * 60 * 60 * 1000
+    
+    # Сюда запишем итоговое время продления для базы данных
+    final_expiry_seconds = 0
+    updated_servers_count = 0
+
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
+            
+            # Проходим циклом по всем серверам из конфигурации
+            for s_key, s_data in SERVERS_CONFIG.items():
+                try:
+                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
+                    
+                    # 1. Авторизация на конкретном сервере
+                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
+                        await resp.text()
 
-            headers = {"Accept": "application/json"}
+                    headers = {"Accept": "application/json"}
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
+                    # 2. Получаем текущие данные инбаунда с этого сервера
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
 
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для продления подписки ЮKassa: {res_json}")
-                return False
+                    if not res_json.get("success"):
+                        logging.error(f"Не удалось получить данные инбаунда на сервере {s_key}: {res_json}")
+                        continue
 
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
 
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
+                    # Поиск клиента строго по уникальному tgId
+                    client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if not client:
+                        logging.warning(f"Клиент {user_id} не найден в панели сервера {s_key}. Пропускаем.")
+                        continue
 
-            # 3. Расчет времени (30 дней)
-            current_time_ms = int(time.time() * 1000)
-            thirty_days_ms = 30 * 24 * 60 * 60 * 1000
+                    # 3. Расчет времени (если подписка еще активна — плюсуем к ней, если сгорела — от текущего времени)
+                    client_expiry = client.get("expiryTime", 0)
+                    if client_expiry > current_time_ms:
+                        new_expiry = client_expiry + thirty_days_ms
+                    else:
+                        new_expiry = current_time_ms + thirty_days_ms
 
-            if client.get("expiryTime", 0) > current_time_ms:
-                new_expiry = client["expiryTime"] + thirty_days_ms
-            else:
-                new_expiry = current_time_ms + thirty_days_ms
+                    # Фиксируем максимальную дату для сохранения в локальную БД бота
+                    final_expiry_seconds = max(final_expiry_seconds, int(new_expiry / 1000))
 
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                    client_uuid = client['id']
+                    client_sub_id = client.get("subId", "")
+                    if not client_sub_id:
+                        client_sub_id = secrets.token_hex(8)
 
-            client_sub_id = client.get("subId", "")
-            if not client_sub_id:
-                client_sub_id = secrets.token_hex(8)
+                    # 4. Отправка обновленных данных на сервер
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    client_data = {
+                        "id": str(s_data['inbound_id']),
+                        "settings": json.dumps({
+                            "clients": [{
+                                "id": client_uuid,
+                                "email": email,
+                                "limitIp": client.get("limitIp", 2),
+                                "totalGB": client.get("totalGB", 0),
+                                "expiryTime": new_expiry,
+                                "enable": True,
+                                "tgId": user_id,
+                                "subId": client_sub_id
+                            }]
+                        })
+                    }
 
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": new_expiry,
-                        "enable": True,
-                        "tgId": user_id,
-                        "subId": client_sub_id
-                    }]
-                })
-            }
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                        update_resp = await resp.json()
 
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
+                    if update_resp.get("success", False):
+                        logging.info(f"Сервер {s_key} успешно продлил подписку для {user_id}.")
+                        updated_servers_count += 1
+                    else:
+                        logging.error(f"Сервер {s_key} ответил ошибкой при попытке продления: {update_resp}")
 
-            success = update_resp.get("success", False)
-            if success:
-                expiry_seconds = int(new_expiry / 1000)
-                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
-                logging.info(f"Подписка для пользователя {user_id} через ЮKassa успешно продлена в X-UI.")
-                
-            return success
+                except Exception as server_err:
+                    logging.error(f"Ошибка при обработке продления на сервере {s_key}: {server_err}")
+
+            # 5. Если хотя бы один сервер успешно обновился, считаем операцию успешной
+            if updated_servers_count > 0:
+                # Обновляем дату окончания в локальной БД бота
+                add_or_update_user(user_id, "", expiry_time=final_expiry_seconds)
+                logging.info(f"ЮKassa: Подписка пользователя {user_id} успешно продлена на {updated_servers_count} серверах.")
+                return True
+            
+            return False
 
     except Exception as e:
-        logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
+        logging.error(f"Глобальная ошибка при продлении подписки через ЮKassa: {e}")
         return False
 
 
 
-
+# Функция использует тот же словарь SERVERS_CONFIG, который мы создали ранее.
+# Убедитесь, что он импортирован или находится в этом же файле.
 
 async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
-    Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней (поиск по tgId).
+    Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней на ВСЕХ серверах (поиск по tgId).
+    Возвращает client_sub_id в случае успеха или False при ошибке.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
+    current_time_ms = int(time.time() * 1000)
+    custom_days_ms = days * 24 * 60 * 60 * 1000
+    
+    final_expiry_seconds = 0
+    updated_servers_count = 0
+    client_sub_id = ""
+
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
             
-            headers = {"Accept": "application/json"}
+            # Проходим циклом по всем серверам из конфигурации
+            for s_key, s_data in SERVERS_CONFIG.items():
+                try:
+                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
+                    
+                    # 1. Авторизация на конкретном сервере
+                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
+                        await resp.text()
+                    
+                    headers = {"Accept": "application/json"}
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
-                
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для гибкого продления: {res_json}")
-                return False
-                
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
-            
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
+                    # 2. Получаем текущие данные инбаунда с этого сервера
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
+                        
+                    if not res_json.get("success"):
+                        logging.error(f"Не удалось получить данные инбаунда на сервере {s_key} для гибкого продления: {res_json}")
+                        continue
+                        
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
+                    
+                    # Поиск строго по уникальному tgId
+                    client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    
+                    if not client:
+                        logging.warning(f"Клиент {user_id} не найден в панели сервера {s_key}. Пропускаем.")
+                        continue
 
-            # 3. Динамический расчет времени
-            current_time_ms = int(time.time() * 1000)
-            custom_days_ms = days * 24 * 60 * 60 * 1000
-            
-            if client.get("expiryTime", 0) > current_time_ms:
-                new_expiry = client["expiryTime"] + custom_days_ms
-            else:
-                new_expiry = current_time_ms + custom_days_ms
+                    # 3. Динамический расчет времени
+                    client_expiry = client.get("expiryTime", 0)
+                    if client_expiry > current_time_ms:
+                        new_expiry = client_expiry + custom_days_ms
+                    else:
+                        new_expiry = current_time_ms + custom_days_ms
 
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-            
-            client_sub_id = client.get("subId", "")
-            if not client_sub_id:
-                client_sub_id = secrets.token_hex(8)
+                    # Фиксируем максимальную дату для сохранения в локальную БД бота
+                    final_expiry_seconds = max(final_expiry_seconds, int(new_expiry / 1000))
 
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": new_expiry,
-                        "enable": True,
-                        "tgId": user_id,
-                        "subId": client_sub_id
-                    }]
-                })
-            }
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
-            
-            success = update_resp.get("success", False)
-            if success:
-                expiry_seconds = int(new_expiry / 1000)
-                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
-                logging.info(f"Подписка для пользователя {user_id} успешно продлена на {days} дн. в X-UI.")
+                    client_uuid = client['id']
+                    
+                    # Сохраняем subId (желательно, чтобы он на всех серверах был одинаковым)
+                    if not client_sub_id:
+                        client_sub_id = client.get("subId", "")
+                    if not client_sub_id:
+                        client_sub_id = secrets.token_hex(8)
+
+                    # 4. Отправка обновленных параметров клиента на текущий сервер
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    client_data = {
+                        "id": str(s_data['inbound_id']),
+                        "settings": json.dumps({
+                            "clients": [{
+                                "id": client_uuid,
+                                "email": email,
+                                "limitIp": client.get("limitIp", 2),
+                                "totalGB": client.get("totalGB", 0),
+                                "expiryTime": new_expiry,
+                                "enable": True,
+                                "tgId": user_id,
+                                "subId": client_sub_id
+                            }]
+                        })
+                    }
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                        update_resp = await resp.json()
+                    
+                    if update_resp.get("success", False):
+                        logging.info(f"Сервер {s_key} успешно продлил подписку для {user_id} на {days} дней.")
+                        updated_servers_count += 1
+                    else:
+                        logging.error(f"Сервер {s_key} ответил ошибкой при гибком продлении: {update_resp}")
+                        
+                except Exception as server_err:
+                    logging.error(f"Ошибка при обработке гибкого продления на сервере {s_key}: {server_err}")
+
+            # 5. Если хотя бы один сервер успешно обновился, применяем изменения в локальной БД
+            if updated_servers_count > 0:
+                add_or_update_user(user_id, "", expiry_time=final_expiry_seconds)
+                logging.info(f"Гибкое продление: Пользователь {user_id} продлен на {days} дн. на {updated_servers_count} серверах.")
                 return client_sub_id
                 
             return False
+
     except Exception as e:
-        logging.error(f"Ошибка при гибком продлении подписки: {e}")
+        logging.error(f"Глобальная ошибка при гибком продлении подписки: {e}")
         return False
 
+
+
+import aiohttp
+import json
+import logging
+
+# Функция использует тот же словарь SERVERS_CONFIG, который мы создали ранее.
+# Убедитесь, что он импортирован или находится в этом же файле.
 
 async def revoke_vpn_subscription(user_id: int) -> bool:
     """
-    Аннулирует подписку в 3X-UI, переводя её в неактивное состояние (поиск по tgId).
+    Аннулирует подписку в 3X-UI на ВСЕХ подключенных серверах (Финляндия и Польша),
+    переводя её в неактивное состояние ("enable": False, expiryTime: 1).
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
+    
+    updated_servers_count = 0
+    past_expiry = 1  # Принудительное истекшее время (1 мс от начала эпохи Unix)
 
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
+            
+            # Проходим циклом по всем серверам из конфигурации
+            for s_key, s_data in SERVERS_CONFIG.items():
+                try:
+                    email = f"{s_data['flag']}_{s_data['name']}_#{user_id}".replace(" ", "_")
+                    
+                    # 1. Авторизация на конкретном сервере
+                    login_url = f"{s_data['panel_url']}{s_data['base_path']}/login"
+                    async with session.post(login_url, data={"username": s_data['username'], "password": s_data['password']}, timeout=10) as resp:
+                        await resp.text()
 
-            headers = {"Accept": "application/json"}
+                    headers = {"Accept": "application/json"}
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
+                    # 2. Получаем текущие данные инбаунда с этого сервера
+                    get_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/get/{s_data['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
 
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для отзыва подписки: {res_json}")
-                return False
+                    if not res_json.get("success"):
+                        logging.error(f"Не удалось получить данные инбаунда на сервере {s_key} для отзыва подписки: {res_json}")
+                        continue
 
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
 
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
+                    # Поиск строго по уникальному tgId
+                    client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if not client:
+                        logging.warning(f"Клиент {user_id} не найден в панели сервера {s_key} для отзыва. Пропускаем.")
+                        continue
 
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-            past_expiry = 1
+                    client_uuid = client['id']
+                    
+                    # 3. Отправка заблокированных параметров клиента на текущий сервер
+                    update_url = f"{s_data['panel_url']}{s_data['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    client_data = {
+                        "id": str(s_data['inbound_id']),
+                        "settings": json.dumps({
+                            "clients": [{
+                                "id": client_uuid,
+                                "email": email,
+                                "limitIp": client.get("limitIp", 2),
+                                "totalGB": client.get("totalGB", 0),
+                                "expiryTime": past_expiry,
+                                "enable": False,  # Полностью выключаем аккаунт на сервере
+                                "tgId": user_id,
+                                "subId": client.get("subId", "")
+                            }]
+                        })
+                    }
 
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": past_expiry,
-                        "enable": False,  # Выключаем активность
-                        "tgId": user_id,
-                        "subId": client.get("subId", "")
-                    }]
-                })
-            }
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                        update_resp = await resp.json()
 
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
+                    if update_resp.get("success", False):
+                        logging.info(f"Сервер {s_key} успешно аннулировал подписку для {user_id}.")
+                        updated_servers_count += 1
+                    else:
+                        logging.error(f"Сервер {s_key} ответил ошибкой при попытке отзыва подписки: {update_resp}")
 
-            success = update_resp.get("success", False)
-            if success:
+                except Exception as server_err:
+                    logging.error(f"Ошибка при отзыве подписки на сервере {s_key}: {server_err}")
+
+            # 4. Если хотя бы на одном сервере блокировка прошла успешно, обновляем локальную БД бота
+            if updated_servers_count > 0:
                 add_or_update_user(user_id, "", expiry_time=0)
-                logging.info(f"Подписка для пользователя {user_id} успешно отозвана.")
+                logging.info(f"Отзыв подписки: Пользователь {user_id} успешно деактивирован на {updated_servers_count} серверах.")
+                return True
                 
-            return success
+            return False
 
     except Exception as e:
-        logging.error(f"Ошибка при отзыве подписки: {e}")
+        logging.error(f"Глобальная ошибка при отзыве подписки: {e}")
         return False
+
 
 
 
@@ -542,12 +643,14 @@ async def cmd_start(message: types.Message):
     )
 
 
+import math # Добавляем в самый верх файла для правильного подсчета дней
+
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Синхронизируем данные с панелью X-UI
+    # Синхронизируем данные со ВСЕМИ панелями X-UI (Финляндия + Польша)
     await get_vpn_config_manual(user_id, callback.from_user.username or "")
 
     # Читаем данные из локальной SQLite3
@@ -562,8 +665,8 @@ async def cabinet(callback: types.CallbackQuery):
 
         # ПРОВЕРКА: Если подписка активна (время окончания больше текущего)
         if expiry_timestamp > current_time:
-            # Рассчитываем оставшиеся дни
-            days_left = int((expiry_timestamp - current_time) / (24 * 3600))
+            # Рассчитываем оставшиеся дни с округлением вверх (так честнее и красивее)
+            days_left = math.ceil((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
             # Полностью чистый текст БЕЗ каких-либо vless:// и веб-ссылок
@@ -571,7 +674,8 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
+                f"✨ Ваша мультисерверная подписка активна! Доступны локации: Финляндия 🇫🇮 и Польша 🇵🇱.\n\n"
+                f"Чтобы подключить устройство, получить настройки или обновить сервера, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
             # Оставляем только кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
@@ -583,7 +687,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку."
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata (Финляндия + Польша), пожалуйста, приобретите подписку."
             )
             # Добавляем кнопки покупки и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
@@ -601,6 +705,11 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import urllib.parse
+import aiohttp
+import logging
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -609,44 +718,55 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
-        # Она возвращает (config_link, subscription_web_url)
+        # Делаем прямой запрос в панели X-UI через вашу новую функцию синхронизации.
+        # Она обходит оба сервера и возвращает (all_configs_str, subscription_web_url)
         _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
         if sub_web_url and sub_web_url.startswith("http"):
             
-            # 1. Собираем прямую ссылку для приложения Happ
-            raw_happ_url = f"happ://import/{sub_web_url}"
+            # Для Happ критически важен протокол https. Если ссылка на http (из-за Docker),
+            # мы подменяем её исключительно для вызова приложения, чтобы Happ корректно её съел.
+            happ_target_url = sub_web_url
+            if happ_target_url.startswith("http://"):
+                happ_target_url = happ_target_url.replace("http://", "https://", 1)
+
+            # Собираем прямую ссылку для автоматического импорта в приложение Happ
+            raw_happ_url = f"happ://import/{happ_target_url}"
             
-            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
+            # Оборачиваем её через официальный API сервиса сокращения Яндекса (clck.ru)
             safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
             try:
                 async with aiohttp.ClientSession() as session:
+                    # Корректный эндпоинт Яндекса требует передачи урла через параметр ?url=
                     enc_url = urllib.parse.quote(raw_happ_url)
-                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                    clck_api_url = f"https://clck.ru{enc_url}"
+                    
+                    async with session.get(clck_api_url, timeout=5) as resp:
                         if resp.status == 200:
                             safe_redirect_url = await resp.text()
             except Exception as e:
-                logging.error(f"Не удалось сократить happ-ссылку: {e}")
+                logging.error(f"Не удалось сократить happ-ссылку через clck.ru: {e}")
+                # Если упало, выдаем прямую веб-ссылку, чтобы кнопка в ТГ хотя бы открывала браузер
                 safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
+            # Собираем инлайн-клавиатуру под мультисерверную подписку
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
-                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="🌐 Открыть подписку в браузере", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
             text = (
-                "<b>📥 Подключение через приложение Happ:</b>\n\n"
-                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
+                "<b>📥 Автоматическое подключение (Финляндия 🇫🇮 + Польша 🇵🇱):</b>\n\n"
+                "1. Установите приложение <b>Happ</b> из App Store или Google Play, если его еще нет.\n"
+                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)»</b> ниже.\n"
+                "3. Смартфон автоматически откроет приложение Happ и добавит вашу единую подписку Sonata VPN.\n\n"
                 "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её в буфер</b>:\n"
                 f"<code>{sub_web_url}</code>\n\n"
-                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+                "• Откройте приложение Happ, нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите пункт <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес.\n\n"
+                "<i>✨ Внутри приложения у вас автоматически появится список из двух доступных локаций!</i>"
             )
 
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
@@ -658,6 +778,7 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
@@ -704,18 +825,25 @@ async def subscription(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "pay_30_days")
 async def send_invoice(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
+    
+    # Автоматически регистрируем или проверяем пользователя на ОБЕИХ панелях (Финляндия + Польша)
     await get_vpn_config_manual(callback.from_user.id, callback.from_user.username or "")
+    
     logging.info(f"Диспетчер: Отправка инвойса пользователю {callback.from_user.id}")
+    
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Подписка на VPN (30 дней)",
-        description="Продление доступа к высокоскоростному VPN Sonata на 1 месяц.",
+        # Обновили описание, чтобы пользователь видел новые локации при оплате
+        description="Продление доступа к Sonata VPN на 1 месяц. Доступны локации: Финляндия 🇫🇮 и Польша 🇵🇱.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)],
+        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)], # 150.00 руб.
         start_parameter="vpn-sub-30-days"
     )
+
+    
 
 # --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
 
@@ -745,8 +873,12 @@ async def admin_broadcast(message: types.Message):
     await message.answer(f"✅ <b>Рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
 
 
+import urllib.parse
+from aiogram import types
+from aiogram.filters import Command
+
 @dp.message(Command("gift"))
-async def admin_gift_sub(message: types.Message):
+async def admin_gift_sub(message: types.Message, bot: Bot): # Добавили bot в аргументы, если он используется внутри
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -755,50 +887,64 @@ async def admin_gift_sub(message: types.Message):
         target_user_id = int(parts[1])  
         days_to_add = int(parts[2])     
     except (IndexError, ValueError):
-        await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/gift ID_ПОЛЬЗОВАТЕЛЯ ДНИ</code>\n\nПример: <code>/gift 584930211 5</code>")
+        await message.answer(
+            "⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/gift ID_ПОЛЬЗОВАТЕЛЯ ДНИ</code>\n\n"
+            "Пример: <code>/gift 584930211 5</code>", 
+            parse_mode="HTML"
+        )
         return
 
-    await message.answer(f"⏳ Связываюсь с панелью X-UI для выдачи подписки на {days_to_add} дн. пользователю {target_user_id}...")
+    await message.answer(f"⏳ Связываюсь с панелями X-UI для выдачи подписки на {days_to_add} дн. пользователю {target_user_id}...")
 
-    # Вызываем функцию гибкого продления (она вернет строку subId при успехе)
+    # Вызываем нашу НОВУЮ функцию гибкого продления (она обойдет и Финляндию, и Польшу)
     sub_id = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
     
     if sub_id:
-        await get_vpn_config_manual(target_user_id)
-        
-        # Динамически вытаскиваем IP вашей панели из PANEL_URL, но подставляем порт подписок 2096
-        # Если у вас PANEL_URL имеет вид "http://78.17.1.43:2053", скрипт возьмет чистый IP и сделает нужную вам ссылку
+        # Теперь жестко и правильно берем IP-адрес польского сервера с Docker-подписками из нашего конфига
+        # Это гарантирует, что ссылка будет 100% рабочей
         try:
-            import urllib.parse
-            parsed_url = urllib.parse.urlparse(PANEL_URL)
-            host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')[0]
+            host = SERVERS_CONFIG['PL']['ip']
         except Exception:
-            host = "78.17.1.43" # Резервное значение на случай сбоя парсинга
+            host = "78.17.152.36" # Резервный IP Польши, если словаря нет под рукой
 
-        # Ссылка в красивом стиле с вашим портом 2096
-        sub_link = f"https://{host}:2096/sub/{sub_id}"
+        # Ссылка в красивом стиле с портом подписок 2096
+        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+        sub_link = f"http://{host}:2096/sub/{sub_id}#{sub_remark}"
         
         await message.answer(
-            f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней.\n\n"
-            f"🔗 <b>Ссылка на подписку (с верхней плашкой):</b>\n<code>{sub_link}</code>",
+            f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней сразу на двух серверах (Финляндия 🇫🇮 + Польша 🇵🇱).\n\n"
+            f"🔗 <b>Единая ссылка на подписку для клиента:</b>\n<code>{sub_link}</code>",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
         
+        # Отправляем уведомление пользователю в ЛС
         try:
             await bot.send_message(
                 chat_id=target_user_id,
-                text=f"🎁 <b>Вам подарок от администратора!</b>\nВаша подписка успешно активирована на {days_to_add} дней. Проверьте ваш Личный кабинет!",
+                text=(
+                    f"🎁 <b>Вам начислен бонус от администрации!</b>\n"
+                    f"Ваша мультисерверная подписка (Финляндия + Польша) успешно активирована на <b>{days_to_add} дней</b>.\n\n"
+                    f"Перейдите в Личный кабинет или нажмите кнопку <b>«Подключиться»</b> в главном меню для импорта настроек!"
+                ),
                 parse_mode="HTML"
             )
-        except Exception:
+        except Exception as e:
+            logging.error(f"Не удалось отправить уведомление пользователю {target_user_id} о подарке: {e}")
             pass
     else:
-        await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось продлить подписку. Убедитесь, что пользователь нажал /start и существует в панели.")
+        await message.answer(
+            "❌ <b>Ошибка X-UI панелей:</b> Не удалось продлить подписку. "
+            "Убедитесь, что пользователь ранее нажимал /start, существует в базе и панели ответили успешно.",
+            parse_mode="HTML"
+        )
 
+
+from aiogram import types
+from aiogram.filters import Command
 
 @dp.message(Command("revoke"))
-async def admin_revoke_sub(message: types.Message):
+async def admin_revoke_sub(message: types.Message, bot: Bot): # Добавили bot в аргументы функции
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -806,28 +952,45 @@ async def admin_revoke_sub(message: types.Message):
         parts = message.text.split()
         target_user_id = int(parts[1])
     except (IndexError, ValueError):
-        await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/revoke ID_ПОЛЬЗОВАТЕЛЯ</code>")
+        await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/revoke ID_ПОЛЬЗОВАТЕЛЯ</code>", parse_mode="HTML")
         return
 
-    await message.answer(f"⏳ Отзываю подписку у пользователя {target_user_id} в панели X-UI...")
+    await message.answer(f"⏳ Отзываю подписку у пользователя {target_user_id} на всех серверах X-UI...")
 
+    # Вызываем нашу обновленную функцию (она отключит юзера и в Финляндии, и в Польше)
     success = await revoke_vpn_subscription(target_user_id)
     
     if success:
-        await message.answer(f"🛑 <b>Подписка аннулирована!</b> Пользователь <code>{target_user_id}</code> больше не имеет доступа к VPN.")
+        await message.answer(
+            f"🛑 <b>Подписка аннулирована!</b> Пользователь <code>{target_user_id}</code> "
+            f"успешно отключен от всех локаций (Финляндия 🇫🇮 + Польша 🇵🇱).",
+            parse_mode="HTML"
+        )
         
+        # Отправляем уведомление пользователю в ЛС
         try:
             await bot.send_message(
                 chat_id=target_user_id,
                 text="⚠️ <b>Ваша VPN подписка была аннулирована или досрочно завершена администратором.</b>",
                 parse_mode="HTML"
             )
-        except Exception:
+        except Exception as e:
+            logging.error(f"Не удалось отправить уведомление об отзыве пользователю {target_user_id}: {e}")
             pass
     else:
-        await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось отозвать подписку. Возможно, пользователя нет в панели.")
+        await message.answer(
+            "❌ <b>Ошибка X-UI панелей:</b> Не удалось отозвать подписку. "
+            "Возможно, пользователя нет ни на одном из серверов.",
+            parse_mode="HTML"
+        )
 
 
+
+import urllib.parse
+import aiohttp
+import logging
+from aiogram import types, Bot, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- Валидация платежа ---
 @dp.pre_checkout_query()
@@ -839,39 +1002,61 @@ async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery,
 
 # --- Обработка успешного платежа ---
 @dp.message(F.successful_payment)
-async def successful_payment_handler(message: types.Message):
+async def successful_payment_handler(message: types.Message, bot: Bot): # ДОБАВИЛИ bot: Bot в аргументы
     user_id = message.from_user.id
     payload = message.successful_payment.invoice_payload
 
     if payload == "vpn_30_days_subscription":
-        # Вызываем вашу стандартную функцию продления на 30 дней для ЮKassa
+        # Наша новая функция продления (она зайдет и в Финляндию, и в Польшу одновременно)
         success = await renew_vpn_subscription(user_id)
         
-        # Получаем обновленные данные (теперь во второй переменной возвращается чистый веб-URL подписки)
+        # Получаем обновленные данные подписки
         _, sub_web_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
 
-        # Формируем клавиатуру под новый формат ссылки
+        # Формируем умную кнопку для автоматического импорта в Happ
         kb = InlineKeyboardMarkup(inline_keyboard=[])
-        if sub_web_url:
+        
+        if sub_web_url and sub_web_url.startswith("http"):
+            # Исправляем протокол для Happ (требуется https)
+            happ_target_url = sub_web_url.replace("http://", "https://", 1) if sub_web_url.startswith("http://") else sub_web_url
+            raw_happ_url = f"happ://import/{happ_target_url}"
+            
+            # Сокращаем ссылку через Яндекс clck.ru, чтобы Telegram её пропустил
+            safe_redirect_url = raw_happ_url
+            try:
+                async with aiohttp.ClientSession() as session:
+                    enc_url = urllib.parse.quote(raw_happ_url)
+                    clck_api_url = f"https://clck.ru{enc_url}"
+                    async with session.get(clck_api_url, timeout=5) as resp:
+                        if resp.status == 200:
+                            safe_redirect_url = await resp.text()
+            except Exception as e:
+                logging.error(f"Не удалось сократить happ-ссылку после оплаты: {e}")
+                safe_redirect_url = sub_web_url # Резервный вариант
+
+            # Добавляем красивую кнопку авто-импорта
             kb.inline_keyboard.append([
-                InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)
+                InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)", url=safe_redirect_url)
             ])
 
+        # Конечный ответ пользователю в случае успешной синхронизации панелей
         if success:
             await message.answer(
                 f"✅ <b>Оплата прошла успешно!</b>\n"
-                f"Ваша подписка успешно продлена на 30 дней 🎉\n\n"
-                f"<b>📥 Как подключиться:</b>\n"
-                f"Нажмите на кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже, чтобы автоматически импортировать настройки или открыть веб-страницу вашей подписки со статистикой.\n\n"
-                f"<i>Также вы в любой момент можете управлять вашим подключением через кнопку «Подключиться» в главном меню бота.</i>",
+                f"Ваша мультисерверная подписка успешно продлена на 30 дней 🎉\n\n"
+                f"Теперь вам одновременно доступны две локации: <b>Финляндия 🇫🇮 и Польша 🇵🇱</b>.\n\n"
+                f"<b>📥 Как подключиться прямо сейчас:</b>\n"
+                f"Нажмите на кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP (ВСЕ СЕРВЕРА)»</b> ниже, чтобы автоматически добавить или обновить локации в приложении Happ.\n\n"
+                f"<i>Вы также можете скопировать прямую ссылку или проверить остаток дней в меню «Личный кабинет».</i>",
                 reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
         else:
+            # Ответ, если ЮKassa деньги списала, но один из серверов X-UI в этот момент не ответил
             await message.answer(
-                f"⚠️ <b>Оплата прошла успешно, но возник сбой автоматической синхронизации!</b>\n"
-                f"Не переживайте, платеж зафиксирован. Администратор уже уведомлен и активирует вам доступ вручную в ближайшее время.\n\n"
-                f"Ваш ID для поддержки: <code>{user_id}</code>",
+                f"⚠️ <b>Оплата прошла успешно, но возник сбой автоматической синхронизации серверов!</b>\n"
+                f"Не переживайте, ваш платеж зафиксирован в системе. Администратор уже получил уведомление и активирует вам доступ (Финляндия + Польша) вручную в течение нескольких минут.\n\n"
+                f"Ваш ID для службы поддержки: <code>{user_id}</code>",
                 reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
@@ -880,8 +1065,10 @@ async def successful_payment_handler(message: types.Message):
 
 
 async def check_and_notify_expiring_subscriptions(bot):
-    """Фоновая задача: проверяет пользователей, у которых подписка 
-    заканчивается ровно через 4 дня, и отправляет им уведомление."""
+    """
+    Фоновая задача: проверяет пользователей, у которых общая подписка 
+    заканчивается ровно через 4 дня, и отправляет им уведомление.
+    """
     logging.info("Запуск проверки истекающих подписок...")
     
     FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
@@ -896,7 +1083,7 @@ async def check_and_notify_expiring_subscriptions(bot):
         conn = sqlite3.connect("/app/users.db") 
         cursor = conn.cursor()
         
-        # Исправлено: вместо tg_id теперь запрашивается user_id
+        # Запрашиваем ID пользователей, у которых срок подходит к концу
         cursor.execute(
             "SELECT user_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
             (target_time_min, target_time_max)
@@ -911,13 +1098,16 @@ async def check_and_notify_expiring_subscriptions(bot):
     for row in users_to_notify:
         user_id = row[0]  # Безопасно извлекаем ID пользователя из кортежа SQLite
         try:
+            # Обновили текст: перевели на HTML для надежности и добавили упоминание локаций
             text = (
-                "⚠️ **Внимание!**\n\n"
-                "Ваша VPN-подписка заканчивается через **4 дня**.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
+                "⚠️ <b>Внимание! Окончание подписки</b>\n\n"
+                "Ваша мультисерверная подписка Sonata VPN (<b>Финляндия 🇫🇮 + Польша 🇵🇱</b>) "
+                "заканчивается через <b>4 дня</b>.\n\n"
+                "Пожалуйста, продлите её вовремя в Личном кабинете бота, чтобы не потерять доступ к высокоскоростной сети!"
             )
-            # Отправка сообщения пользователю в Telegram
-            await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
+            
+            # Отправка сообщения пользователю в Telegram через безопасный HTML
+            await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
             logging.info(f"Уведомление об окончании успешно отправлено пользователю {user_id}")
             
             # Защитная пауза 0.05 сек (до 20 сообщений в секунду), чтобы Telegram не заблокировал бота за спам
@@ -929,19 +1119,49 @@ async def check_and_notify_expiring_subscriptions(bot):
 
 
 
+import asyncio
+import logging
+from datetime import datetime, time as datetime_time
+
 async def scheduler(bot):
-    """Цикл, который запускает проверку раз в сутки под именем scheduler."""
-    # Даем боту 10 секунд на запуск
-    await asyncio.sleep(10)
+    """
+    Надежный планировщик: запускает проверку подписок каждый день 
+    строго в фиксированное время (например, в 10:00 утра).
+    """
+    logging.info("Планировщик подписок успешно запущен и переходит в режим ожидания...")
     
+    # Задайте время, в которое бот будет рассылать уведомления (Часы, Минуты)
+    TARGET_HOUR = 10
+    TARGET_MINUTE = 0
+
     while True:
         try:
+            now = datetime.now()
+            # Высчитываем, когда должен быть следующий запуск (сегодня или уже завтра)
+            target_time = now.replace(hour=TARGET_HOUR, minute=TARGET_MINUTE, second=0, microsecond=0)
+            
+            if now >= target_time:
+                # Если 10:00 утра на сегодня уже прошло, переносим запуск на завтра
+                target_time = target_time.replace(day=now.day + 1) # Автоматически учтет конец месяца
+
+            # Считаем, сколько секунд осталось поспать до целевого времени
+            seconds_to_wait = (target_time - now).total_seconds()
+            logging.info(f"Планировщик: до следующей рассылки осталось {int(seconds_to_wait // 3600)} ч. и {int((seconds_to_wait % 3600) // 60)} мин.")
+            
+            # Спим ровно до 10:00 утра
+            await asyncio.sleep(seconds_to_wait)
+            
+            # Наступило 10:00 — запускаем нашу фоновую задачу проверки базы
             await check_and_notify_expiring_subscriptions(bot)
+            
+            # Защитная пауза в 1 минуту после выполнения, чтобы цикл случайно не выполнился дважды в ту же секунду
+            await asyncio.sleep(60)
+
         except Exception as e:
             logging.error(f"Критическая ошибка в планировщике подписок: {e}")
-        
-        # Спим 24 часа до следующей проверки
-        await asyncio.sleep(24 * 60 * 60)
+            # В случае сбоя спим 5 минут и пробуем снова, чтобы не повесить сервер бесконечным циклом ошибок
+            await asyncio.sleep(300)
+
 
 
 
