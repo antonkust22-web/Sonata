@@ -126,15 +126,13 @@ def get_user_from_db(user_id):
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Адаптированная функция для ОБНОВЛЕННЫХ панелей 3X-UI.
-    Корректно обрабатывает сессии, куки и динамические URL подписки.
-    Встроен тест отладки для выявления редиректов.
+    Адаптированная функция строго под API 3X-UI v3.3.0.
+    Использует новые эндпоинты /panel/api/inbounds/ и правильный формат JSON-запросов.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
-    # Включаем строгую поддержку куки-сессий для новых версий 3X-UI
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -145,7 +143,7 @@ async def get_vpn_config_manual(user_id, username=""):
             secret_path = BASE_PATH.strip('/')
             panel_prefix = f"{base_url}/{secret_path}" if secret_path else base_url
 
-            # Настройка заголовков (Новая панель требует эмуляции браузера)
+            # Настройка заголовков под стандарты v3.3.0
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json, text/plain, */*",
@@ -153,49 +151,48 @@ async def get_vpn_config_manual(user_id, username=""):
                 "Referer": f"{panel_prefix}/"
             }
 
-            # ШАГ 1: Инициализация сессии (Важно для новых панелей!)
-            # Просто заходим на страницу входа, чтобы получить начальные Cookie сессии
+            # ШАГ 1: Инициализация сессии
             try:
                 async with session.get(f"{panel_prefix}/login", headers=headers, timeout=5) as resp:
                     await resp.text()
             except Exception as e:
-                logging.warning(f"Первичный запрос к логину не удался (возможно, не критично): {e}")
+                logging.warning(f"Первичный запрос к логину не удался: {e}")
 
-            # ШАГ 2: Логин в новую панель
+            # ШАГ 2: Авторизация
             login_url = f"{panel_prefix}/login"
             login_data = {"username": PANEL_USER, "password": PANEL_PASSWORD}
             
             async with session.post(login_url, headers=headers, data=login_data, timeout=10) as resp:
+                # В v3.3.0 успешный логин возвращает статус 200 и json {"success": true}
+                if resp.status != 200:
+                    logging.error(f"Панель вернула статус {resp.status} при авторизации.")
+                    return None, None
                 
-                # 🛑 НАЧАЛО ОТЛАДОЧНОГО ТЕСТА 🛑
-                print("\n" + "="*50)
-                print("СТАТУС ОТВЕТА ПАНЕЛИ НА ЛОГИН:", resp.status)
-                print("КОНЕЧНЫЙ URL ОТВЕТА (ПРОИЗОШЕЛ ЛИ РЕДИРЕКТ):", resp.url)
                 try:
-                    parsed_panel_url = urllib.parse.urlparse(PANEL_URL)
-                    print("КУКИ ПОСЛЕ ЛОГИНА:", session.cookie_jar.filter_cookies(parsed_panel_url))
-                except Exception as ce:
-                    print("Не удалось прочитать куки в тесте:", ce)
-                print("="*50 + "\n")
-                # 🛑 КОНЕЦ ОТЛАДОЧНОГО ТЕСТА 🛑
-
-                login_res = await resp.json() if "application/json" in resp.headers.get("Content-Type", "") else None
-                
-                # Проверяем успешность логина (в новых панелях возвращается JSON с success: true)
-                if login_res and not login_res.get("success"):
-                    logging.error(f"Ошибка авторизации в новой панели: {login_res}")
+                    login_res = await resp.json()
+                    if not login_res.get("success"):
+                        logging.error(f"Ошибка авторизации в панели 3.3.0: {login_res}")
+                        return None, None
+                except Exception:
+                    logging.error("Панель не вернула JSON при авторизации.")
                     return None, None
 
-            # ШАГ 3: Получение данных инбаунда
-            get_url = f"{panel_prefix}/panel/api/inbounds/get/{INBOUND_ID}"
+            # ШАГ 3: Получение данных инбаунда (ИСПРАВЛЕННЫЙ ЭНДПОИНТ ДЛЯ v3.3.0)
+            # В версии 3.3.0 путь изменился с /panel/api/inbounds/get/{id} на /panel/api/inbounds/{id}
+            get_url = f"{panel_prefix}/panel/api/inbounds/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
+                if resp.status != 200:
+                    logging.error(f"Ошибка GET инбаунда. Статус: {resp.status}")
+                    return None, None
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Панель вернула ошибку при получении инбаунда: {res_json}")
+                logging.error(f"Панель вернула success=False при получении инбаунда: {res_json}")
                 return None, None
 
-            settings = json.loads(res_json["obj"]["settings"])
+            # Парсим настройки инбаунда
+            obj_data = res_json.get("obj", {})
+            settings = json.loads(obj_data.get("settings", "{}"))
             clients = settings.get("clients", [])
             
             # Ищем клиента по tgId или email
@@ -206,14 +203,18 @@ async def get_vpn_config_manual(user_id, username=""):
 
             client_uuid = current_client.get("id") if current_client else None
 
-            # ШАГ 4: Создание клиента, если его нет
+            # ШАГ 4: Создание или обновление клиента (ИСПРАВЛЕНО ПОД v3.3.0)
+            # В версии 3.3.0 методы addClient и updateClient принимают данные в формате JSON (application/json)
+            headers["Content-Type"] = "application/json"
+
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 sub_id = secrets.token_hex(8) 
                 
                 add_url = f"{panel_prefix}/panel/api/inbounds/addClient"
-                client_data = {
-                    "id": str(INBOUND_ID), 
+                # Формируем JSON структуру, которую ждет API v3.3.0
+                client_payload = {
+                    "id": int(INBOUND_ID), 
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
@@ -227,25 +228,25 @@ async def get_vpn_config_manual(user_id, username=""):
                         }]
                     })
                 }
-                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as resp:
+                async with session.post(add_url, headers=headers, json=client_payload, timeout=10) as resp:
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Клиент существует, обновляем его параметры
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
                 if not sub_id:
                     sub_id = secrets.token_hex(8)
                 
+                # В версии 3.3.0 для обновления используется UUID клиента прямо в URL
                 update_url = f"{panel_prefix}/panel/api/inbounds/updateClient/{client_uuid}"
-                client_data = {
-                    "id": str(INBOUND_ID),
+                client_payload = {
+                    "id": int(INBOUND_ID),
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
                             "email": email,
                             "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 0,
+                            "totalGB": current_client.get("totalGB", 0),
                             "expiryTime": expiry_time_ms,
                             "enable": current_client.get("enable", True),
                             "tgId": user_id,
@@ -253,12 +254,12 @@ async def get_vpn_config_manual(user_id, username=""):
                         }]
                     })
                 }
-                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                async with session.post(update_url, headers=headers, json=client_payload, timeout=10) as resp:
                     await resp.text()
 
-            # ШАГ 5: Формирование рабочей конфигурации Reality
+            # ШАГ 5: Формирование Reality конфигурации
             my_ip = "78.17.1.43"
-            my_port = res_json["obj"]["port"]
+            my_port = obj_data.get("port")
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
             sni = "://sony.com"
@@ -273,19 +274,16 @@ async def get_vpn_config_manual(user_id, username=""):
                 f"#{safe_remark}"
             )
 
-            # Формирование ссылки подписки (Новый стандарт 3X-UI)
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            
             try:
                 parsed_url = urllib.parse.urlparse(base_url)
                 host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
             except Exception:
                 host_with_port = "78.17.1.43:10096"
 
-            # Новые панели отдают подписку через секретный веб-путь
             subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
 
-            # Сохраняем в локальную БД бота
+            # Сохранение в локальную БД бота
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
