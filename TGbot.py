@@ -127,11 +127,11 @@ def get_user_from_db(user_id):
 async def get_vpn_config_manual(user_id, username=""):
     """
     Формирует красивое имя сервера с флагом для Happ и обновляет конфигурацию в X-UI.
+    Версия с автоматическим исправлением сломанных путей панели.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     
-    # Формируем красивый Email. Заменяем пробелы на нижнее подчеркивание.
     email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
     jar = aiohttp.CookieJar(unsafe=True)
@@ -139,12 +139,26 @@ async def get_vpn_config_manual(user_id, username=""):
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # Тщательно очищаем PANEL_URL и BASE_PATH от лишних слешей во избежание дублирования URL
-            base_url = PANEL_URL.rstrip('/')
-            secret_path = BASE_PATH.strip('/')
             
-            # Полный префикс панели (например: https://78.17.1)
-            panel_prefix = f"{base_url}/{secret_path}" if secret_path else base_url
+            # --- ЖЕСТКАЯ ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ХОСТА (ЗАЩИТА ОТ ОШИБОК) ---
+            # Даже если в PANEL_URL или BASE_PATH попал мусор вроде /panel/api/inbounds/get/1, 
+            # этот блок оставит только чистый IP, порт и секретный ключ XWYB6HCgL7NBchJqxo.
+            
+            # Полная склейка того, что сейчас у вас в переменных
+            raw_full_url = f"{PANEL_URL}/{BASE_PATH}".replace("//", "/").replace("https:/", "https://")
+            
+            # Парсим URL и вытаскиваем строго https://78.17.1.43:10096
+            parsed = urllib.parse.urlparse(raw_full_url)
+            clean_host = parsed.netloc if parsed.netloc else "78.17.1.43:10096"
+            base_url = f"https://{clean_host}"
+            
+            # Вытаскиваем только первый сегмент пути (секретный ключ XWYB6HCgL7NBchJqxo)
+            path_parts = [p for p in parsed.path.split('/') if p]
+            secret_path = path_parts[0] if path_parts else "XWYB6HCgL7NBchJqxo"
+            
+            # Итоговый ПРАВИЛЬНЫЙ префикс: https://78.17.1.43:10096/XWYB6HCgL7NBchJqxo
+            panel_prefix = f"{base_url}/{secret_path}"
+            # --------------------------------------------------------------
 
             # 1. Логин в панель (Запрос уйдет строго на .../XWYB6HCgL7NBchJqxo/login)
             login_url = f"{panel_prefix}/login"
@@ -165,10 +179,7 @@ async def get_vpn_config_manual(user_id, username=""):
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             
-            # Ищем клиента по уникальному tgId
             current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-            
-            # Резервный поиск по старому формату email
             if not current_client:
                 old_email = f"user_{user_id}"
                 current_client = next((c for c in clients if c.get("email") == old_email), None)
@@ -200,7 +211,6 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Клиент существует, обновляем его параметры
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
                 if not sub_id:
@@ -214,7 +224,7 @@ async def get_vpn_config_manual(user_id, username=""):
                             "id": client_uuid,
                             "email": email,
                             "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0),
+                            "totalGB": 0,
                             "expiryTime": expiry_time_ms,
                             "enable": current_client.get("enable", True),
                             "tgId": user_id,
@@ -243,26 +253,17 @@ async def get_vpn_config_manual(user_id, username=""):
             )
 
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            
-            # Извлекаем хост и порт для ссылки подписки прямо из PANEL_URL
-            try:
-                parsed_url = urllib.parse.urlparse(base_url)
-                host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
-            except Exception:
-                host_with_port = "78.17.1.43:10096"
+            subscription_web_url = f"https://{clean_host}/{secret_path}/sub/{sub_id}#{sub_remark}"
 
-            # Ссылка подписки теперь формируется с корректным портом и секретным путем панели
-            subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
-
-            # Сохраняем в локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
             return config_link, subscription_web_url
 
     except Exception as e:
-        logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
+        logging.error(f"Ошибка VPN: {e}")
         return None, None
+
 
 
 
