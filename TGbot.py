@@ -124,9 +124,11 @@ def get_user_from_db(user_id):
 
 
 
+import re  # Добавьте этот импорт в самый верх файла, если его еще нет
+
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Финальная версия под спецификацию 3X-UI v3.3.0 на основе настроек панели.
+    Версия для 3X-UI v3.3.0 с автоматическим парсингом CSRF-токена для обхода 403 Forbidden.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
@@ -137,52 +139,66 @@ async def get_vpn_config_manual(user_id, username=""):
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # Четко разделяем базовый URL (IP:Порт) и секретный путь на основе вашего скриншота
-            base_url = PANEL_URL.rstrip('/')  # https://78.17.1.43:10096
-            secret_path = BASE_PATH.strip('/')  # XWYB6HCgL7NBchJqxo
-            
-            # В версии 3.3.0 API-авторизация и запросы инбаундов идут СТРОГО через корень или полный префикс.
-            # Собираем правильный префикс для API запросов панели
+            base_url = PANEL_URL.rstrip('/')
+            secret_path = BASE_PATH.strip('/')
             panel_prefix = f"{base_url}/{secret_path}"
 
+            # Базовые заголовки браузера
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-                "Content-Type": "application/x-www-form-urlencoded", # Возвращаем стандартный формат для v3.3.0
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
                 "Origin": base_url,
                 "Referer": f"{panel_prefix}/login"
             }
 
-            # ШАГ 1: Получаем сессионную куку (заходим на страницу логина)
+            # ШАГ 1: Заходим на страницу логина и вытаскиваем секретный CSRF-токен
+            csrf_token = ""
             try:
                 async with session.get(f"{panel_prefix}/login", headers={"User-Agent": headers["User-Agent"]}, timeout=5) as resp:
-                    await resp.text()
+                    html_content = await resp.text()
+                    
+                    # Ищем мета-тег csrf-token в коде страницы панели v3.3.0
+                    match = re.search(r'name="csrf-token"\s+content="([^"]+)"', html_content)
+                    if not match:
+                        # Резервный поиск, если кавычки расположены в другом порядке
+                        match = re.search(r'content="([^"]+)"\s+name="csrf-token"', html_content)
+                        
+                    if match:
+                        csrf_token = match.group(1)
             except Exception as e:
-                logging.warning(f"Не удалось инициализировать куки сессии: {e}")
+                logging.warning(f"Не удалось прочитать страницу логина для CSRF: {e}")
 
-            # ШАГ 2: Авторизация (Логин)
+            # ШАГ 2: Авторизация с передачей токена в заголовках
             login_url = f"{panel_prefix}/login"
             login_data = {"username": PANEL_USER, "password": PANEL_PASSWORD}
             
-            async with session.post(login_url, headers=headers, data=login_data, timeout=10) as resp:
+            # Делаем копию заголовков и добавляем туда валидный CSRF и тип контента формы
+            login_headers = headers.copy()
+            login_headers["Content-Type"] = "application/x-www-form-urlencoded"
+            if csrf_token:
+                login_headers["X-CSRF-Token"] = csrf_token  # Передаем токен для прохождения проверки 403
+
+            async with session.post(login_url, headers=login_headers, data=login_data, timeout=10) as resp:
                 if resp.status != 200:
-                    logging.error(f"Панель отклонила запрос авторизации. Статус: {resp.status}")
+                    logging.error(f"Панель отклонила запрос авторизации. Статус: {resp.status}. Проверьте PANEL_USER и PANEL_PASSWORD.")
                     return None, None
                 
                 try:
                     login_res = await resp.json()
                     if login_res and not login_res.get("success"):
-                        logging.error(f"Неверный логин или пароль в боте для панели: {login_res}")
+                        logging.error(f"Ошибка данных авторизации: {login_res}")
                         return None, None
                 except Exception:
-                    # Если панель вернула чистый статус 200 без JSON — сессия создана успешно
+                    # Если JSON нет, но статус 200 — сессия успешно создана
                     pass
 
-            # Изменяем тип контента на JSON для последующих API-запросов к инбаундам
+            # Меняем заголовок на JSON для выполнения стандартных API команд к инбаундам
             headers["Content-Type"] = "application/json"
+            if csrf_token:
+                headers["X-CSRF-Token"] = csrf_token
 
-            # ШАГ 3: Получение данных инбаунда (Маршрут строго под v3.3.0 без слова /get/)
+            # ШАГ 3: Получение данных инбаунда (Маршрут v3.3.0 без слова /get/)
             get_url = f"{panel_prefix}/panel/api/inbounds/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 if resp.status != 200:
@@ -273,6 +289,12 @@ async def get_vpn_config_manual(user_id, username=""):
             )
 
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+            try:
+                parsed_url = urllib.parse.urlparse(base_url)
+                host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
+            except Exception:
+                host_with_port = "78.17.1.43:10096"
+
             subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
 
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
@@ -283,6 +305,7 @@ async def get_vpn_config_manual(user_id, username=""):
     except Exception as e:
         logging.error(f"Критическая ошибка VPN API: {e}")
         return None, None
+
 
 
 
