@@ -128,6 +128,7 @@ async def get_vpn_config_manual(user_id, username=""):
     """
     Адаптированная функция для ОБНОВЛЕННЫХ панелей 3X-UI.
     Корректно обрабатывает сессии, куки и динамические URL подписки.
+    Встроен тест отладки для выявления редиректов.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
@@ -161,11 +162,23 @@ async def get_vpn_config_manual(user_id, username=""):
                 logging.warning(f"Первичный запрос к логину не удался (возможно, не критично): {e}")
 
             # ШАГ 2: Логин в новую панель
-            # Передаем данные строго в формате x-www-form-urlencoded, как требует новая панель
             login_url = f"{panel_prefix}/login"
             login_data = {"username": PANEL_USER, "password": PANEL_PASSWORD}
             
             async with session.post(login_url, headers=headers, data=login_data, timeout=10) as resp:
+                
+                # 🛑 НАЧАЛО ОТЛАДОЧНОГО ТЕСТА 🛑
+                print("\n" + "="*50)
+                print("СТАТУС ОТВЕТА ПАНЕЛИ НА ЛОГИН:", resp.status)
+                print("КОНЕЧНЫЙ URL ОТВЕТА (ПРОИЗОШЕЛ ЛИ РЕДИРЕКТ):", resp.url)
+                try:
+                    parsed_panel_url = urllib.parse.urlparse(PANEL_URL)
+                    print("КУКИ ПОСЛЕ ЛОГИНА:", session.cookie_jar.filter_cookies(parsed_panel_url))
+                except Exception as ce:
+                    print("Не удалось прочитать куки в тесте:", ce)
+                print("="*50 + "\n")
+                # 🛑 КОНЕЦ ОТЛАДОЧНОГО ТЕСТА 🛑
+
                 login_res = await resp.json() if "application/json" in resp.headers.get("Content-Type", "") else None
                 
                 # Проверяем успешность логина (в новых панелях возвращается JSON с success: true)
@@ -232,7 +245,7 @@ async def get_vpn_config_manual(user_id, username=""):
                             "id": client_uuid,
                             "email": email,
                             "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0),
+                            "totalGB": 0,
                             "expiryTime": expiry_time_ms,
                             "enable": current_client.get("enable", True),
                             "tgId": user_id,
@@ -281,6 +294,7 @@ async def get_vpn_config_manual(user_id, username=""):
     except Exception as e:
         logging.error(f"Критическая ошибка VPN API: {e}")
         return None, None
+
 
 
 
