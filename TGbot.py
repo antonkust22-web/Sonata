@@ -35,17 +35,17 @@ logging.basicConfig(
 
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "https://78.17.1.43:10096"
+PANEL_URL = "https://78.17.1.43:2053"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
 INBOUND_ID = 1
-BASE_PATH = "/XWYB6HCgL7NBchJqxo/"
+BASE_PATH = "/bqPVI4YlUguDhw0MvD"
 
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPNaixA-bVTtAqZhYEQq_U85iC1z8sAAlOjAALqaWBJAAHhG-hzI7fyPAQ"
+VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
@@ -124,14 +124,15 @@ def get_user_from_db(user_id):
 
 
 
-import re  # Добавьте этот импорт в самый верх файла, если его еще нет
-
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Версия для 3X-UI v3.3.0 с автоматическим парсингом CSRF-токена для обхода 403 Forbidden.
+    Формирует красивое имя сервера с флагом для Happ и обновляет конфигурацию в X-UI.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
+    
+    # Формируем красивый Email, который Happ отобразит как имя сервера.
+    # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
     email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
     jar = aiohttp.CookieJar(unsafe=True)
@@ -139,101 +140,47 @@ async def get_vpn_config_manual(user_id, username=""):
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            base_url = PANEL_URL.rstrip('/')
-            secret_path = BASE_PATH.strip('/')
-            panel_prefix = f"{base_url}/{secret_path}"
+            # 1. Логин в панель
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
+                await resp.text()
 
-            # Базовые заголовки браузера
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-                "Origin": base_url,
-                "Referer": f"{panel_prefix}/login"
-            }
+            headers = {"Accept": "application/json"}
 
-            # ШАГ 1: Заходим на страницу логина и вытаскиваем секретный CSRF-токен
-            csrf_token = ""
-            try:
-                async with session.get(f"{panel_prefix}/login", headers={"User-Agent": headers["User-Agent"]}, timeout=5) as resp:
-                    html_content = await resp.text()
-                    
-                    # Ищем мета-тег csrf-token в коде страницы панели v3.3.0
-                    match = re.search(r'name="csrf-token"\s+content="([^"]+)"', html_content)
-                    if not match:
-                        # Резервный поиск, если кавычки расположены в другом порядке
-                        match = re.search(r'content="([^"]+)"\s+name="csrf-token"', html_content)
-                        
-                    if match:
-                        csrf_token = match.group(1)
-            except Exception as e:
-                logging.warning(f"Не удалось прочитать страницу логина для CSRF: {e}")
-
-            # ШАГ 2: Авторизация с передачей токена в заголовках
-            login_url = f"{panel_prefix}/login"
-            login_data = {"username": PANEL_USER, "password": PANEL_PASSWORD}
-            
-            # Делаем копию заголовков и добавляем туда валидный CSRF и тип контента формы
-            login_headers = headers.copy()
-            login_headers["Content-Type"] = "application/x-www-form-urlencoded"
-            if csrf_token:
-                login_headers["X-CSRF-Token"] = csrf_token  # Передаем токен для прохождения проверки 403
-
-            async with session.post(login_url, headers=login_headers, data=login_data, timeout=10) as resp:
-                if resp.status != 200:
-                    logging.error(f"Панель отклонила запрос авторизации. Статус: {resp.status}. Проверьте PANEL_USER и PANEL_PASSWORD.")
-                    return None, None
-                
-                try:
-                    login_res = await resp.json()
-                    if login_res and not login_res.get("success"):
-                        logging.error(f"Ошибка данных авторизации: {login_res}")
-                        return None, None
-                except Exception:
-                    # Если JSON нет, но статус 200 — сессия успешно создана
-                    pass
-
-            # Меняем заголовок на JSON для выполнения стандартных API команд к инбаундам
-            headers["Content-Type"] = "application/json"
-            if csrf_token:
-                headers["X-CSRF-Token"] = csrf_token
-
-            # ШАГ 3: Получение данных инбаунда (Маршрут v3.3.0 без слова /get/)
-            get_url = f"{panel_prefix}/panel/api/inbounds/{INBOUND_ID}"
+            # 2. Получение данных инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
-                if resp.status != 200:
-                    logging.error(f"Ошибка получения инбаунда v3.3.0. Статус: {resp.status}")
-                    return None, None
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Панель вернула ошибку (success=False): {res_json}")
+                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
                 return None, None
 
-            obj_data = res_json.get("obj", {})
-            settings = json.loads(obj_data.get("settings", "{}"))
+            settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             
-            # Ищем клиента по tgId или email
+            # Ищем клиента по уникальному tgId
             current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+            
+            # Резервный поиск по старому формату email на случай первого перехода пользователя
             if not current_client:
                 old_email = f"user_{user_id}"
                 current_client = next((c for c in clients if c.get("email") == old_email), None)
 
             client_uuid = current_client.get("id") if current_client else None
 
-            # ШАГ 4: Добавление или обновление клиента
+            # 3. Создание клиента, если его нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
                 sub_id = secrets.token_hex(8) 
                 
-                add_url = f"{panel_prefix}/panel/api/inbounds/addClient"
-                client_payload = {
-                    "id": int(INBOUND_ID), 
+                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                client_data = {
+                    "id": str(INBOUND_ID), 
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,
+                            "email": email,  # Красивый email с флагом
                             "limitIp": 2,
                             "totalGB": 0,
                             "expiryTime": 0,
@@ -243,24 +190,25 @@ async def get_vpn_config_manual(user_id, username=""):
                         }]
                     })
                 }
-                async with session.post(add_url, headers=headers, json=client_payload, timeout=10) as resp:
+                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as resp:
                     await resp.text()
                 expiry_time_ms = 0
             else:
+                # Клиент существует, обновляем его параметры и принудительно ставим новый email с флагом
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
                 if not sub_id:
                     sub_id = secrets.token_hex(8)
                 
-                update_url = f"{panel_prefix}/panel/api/inbounds/updateClient/{client_uuid}"
-                client_payload = {
-                    "id": int(INBOUND_ID),
+                update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                client_data = {
+                    "id": str(INBOUND_ID),
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,
+                            "email": email,  # Принудительное обновление имени сервера под Happ
                             "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 0,
+                            "totalGB": current_client.get("totalGB", 0),
                             "expiryTime": expiry_time_ms,
                             "enable": current_client.get("enable", True),
                             "tgId": user_id,
@@ -268,14 +216,14 @@ async def get_vpn_config_manual(user_id, username=""):
                         }]
                     })
                 }
-                async with session.post(update_url, headers=headers, json=client_payload, timeout=10) as resp:
+                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
                     await resp.text()
 
-            # ШАГ 5: Ссылка конфигурации и веб-подписки
+            # 4. Формирование рабочей конфигурации и ссылки на подписку
             my_ip = "78.17.1.43"
-            my_port = obj_data.get("port")
-            pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
-            sid = "32b6a4ff54ef1812"
+            my_port = res_json["obj"]["port"]
+            pbk = "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc"
+            sid = "f2cfb510fbaa"
             sni = "://sony.com"
             
             server_type = "Premium"
@@ -289,25 +237,24 @@ async def get_vpn_config_manual(user_id, username=""):
             )
 
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+            
             try:
-                parsed_url = urllib.parse.urlparse(base_url)
-                host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
+                parsed_url = urllib.parse.urlparse(PANEL_URL)
+                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
             except Exception:
-                host_with_port = "78.17.1.43:10096"
+                host = "78.17.1.43"
 
-            subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
+            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
 
+            # Сохраняем в локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
             return config_link, subscription_web_url
 
     except Exception as e:
-        logging.error(f"Критическая ошибка VPN API: {e}")
+        logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
         return None, None
-
-
-
 
 
 
@@ -1045,5 +992,4 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
 
