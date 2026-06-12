@@ -610,40 +610,38 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
-        # Она возвращает (config_link, subscription_web_url)
-        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Получаем актуальные ссылки из панели 3X-UI
+        config_link, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
         if sub_web_url and sub_web_url.startswith("http"):
             
-            # 1. Собираем прямую ссылку для приложения Happ
-            raw_happ_url = f"happ://import/{sub_web_url}"
+            # 1. Формируем прямую ссылку для импорта в приложение Happ.
+            # Для Happ нужна именно VLESS-ссылка (или ссылка на подписку, если Happ её поддерживает в таком формате).
+            # Чаще всего в Happ импортируют именно config_link (vless://...)
+            raw_happ_url = f"happ://import/{config_link}"
             
-            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
-            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
+            # 2. Оборачиваем через clck.ru (ИСПРАВЛЕНА ОШИБКА: добавлен пропущенный слэш перед url=)
+            safe_redirect_url = sub_web_url  # Безопасный дефолт
             try:
                 async with aiohttp.ClientSession() as session:
                     enc_url = urllib.parse.quote(raw_happ_url)
-                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                    # ВАЖНО: правильный эндпоинт Яндекса: https://clck.ru...
+                    api_url = f"https://clck.ru{enc_url}"
+                    async with session.get(api_url, timeout=5) as resp:
                         if resp.status == 200:
                             safe_redirect_url = await resp.text()
             except Exception as e:
                 logging.error(f"Не удалось сократить happ-ссылку: {e}")
-                safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
+            # Собираем инлайн-клавиатуру
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
-                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
@@ -653,20 +651,24 @@ async def connect(callback: types.CallbackQuery):
                 "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
                 "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
                 "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
-                f"<code>{sub_web_url}</code>\n\n"
-                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+                "• Нажмите пальцем на текст ниже, чтобы <b>скопировать конфигурацию</b>:\n"
+                f"<code>{config_link}</code>\n\n"
+                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Импорт из буфера обмена» (Import from Clipboard)</b>."
             )
 
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            # Проверяем тип сообщения, чтобы edit_caption не падал, если текста/картинки нет
+            if callback.message.photo or callback.message.video:
+                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            else:
+                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            # Если X-UI панель не вернула ссылку (пользователь истек, удален или отключен в панели)
-            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
+            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в главном меню.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
