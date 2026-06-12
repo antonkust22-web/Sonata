@@ -131,8 +131,7 @@ async def get_vpn_config_manual(user_id, username=""):
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     
-    # Формируем красивый Email, который Happ отобразит как имя сервера.
-    # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
+    # Формируем красивый Email. Заменяем пробелы на нижнее подчеркивание.
     email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
     jar = aiohttp.CookieJar(unsafe=True)
@@ -140,15 +139,22 @@ async def get_vpn_config_manual(user_id, username=""):
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            # Тщательно очищаем PANEL_URL и BASE_PATH от лишних слешей во избежание дублирования URL
+            base_url = PANEL_URL.rstrip('/')
+            secret_path = BASE_PATH.strip('/')
+            
+            # Полный префикс панели (например: https://78.17.1)
+            panel_prefix = f"{base_url}/{secret_path}" if secret_path else base_url
+
+            # 1. Логин в панель (Запрос уйдет строго на .../XWYB6HCgL7NBchJqxo/login)
+            login_url = f"{panel_prefix}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
 
             headers = {"Accept": "application/json"}
 
             # 2. Получение данных инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            get_url = f"{panel_prefix}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -162,7 +168,7 @@ async def get_vpn_config_manual(user_id, username=""):
             # Ищем клиента по уникальному tgId
             current_client = next((c for c in clients if c.get("tgId") == user_id), None)
             
-            # Резервный поиск по старому формату email на случай первого перехода пользователя
+            # Резервный поиск по старому формату email
             if not current_client:
                 old_email = f"user_{user_id}"
                 current_client = next((c for c in clients if c.get("email") == old_email), None)
@@ -174,13 +180,13 @@ async def get_vpn_config_manual(user_id, username=""):
                 client_uuid = str(uuid.uuid4())
                 sub_id = secrets.token_hex(8) 
                 
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                add_url = f"{panel_prefix}/panel/api/inbounds/addClient"
                 client_data = {
                     "id": str(INBOUND_ID), 
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,  # Красивый email с флагом
+                            "email": email,
                             "limitIp": 2,
                             "totalGB": 0,
                             "expiryTime": 0,
@@ -194,19 +200,19 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Клиент существует, обновляем его параметры и принудительно ставим новый email с флагом
+                # Клиент существует, обновляем его параметры
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
                 if not sub_id:
                     sub_id = secrets.token_hex(8)
                 
-                update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                update_url = f"{panel_prefix}/panel/api/inbounds/updateClient/{client_uuid}"
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,  # Принудительное обновление имени сервера под Happ
+                            "email": email,
                             "limitIp": current_client.get("limitIp", 2),
                             "totalGB": current_client.get("totalGB", 0),
                             "expiryTime": expiry_time_ms,
@@ -238,13 +244,15 @@ async def get_vpn_config_manual(user_id, username=""):
 
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
             
+            # Извлекаем хост и порт для ссылки подписки прямо из PANEL_URL
             try:
-                parsed_url = urllib.parse.urlparse(PANEL_URL)
-                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
+                parsed_url = urllib.parse.urlparse(base_url)
+                host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
             except Exception:
-                host = "78.17.1.43"
+                host_with_port = "78.17.1.43:10096"
 
-            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
+            # Ссылка подписки теперь формируется с корректным портом и секретным путем панели
+            subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
 
             # Сохраняем в локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
@@ -255,6 +263,7 @@ async def get_vpn_config_manual(user_id, username=""):
     except Exception as e:
         logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
         return None, None
+
 
 
 
