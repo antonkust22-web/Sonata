@@ -3,6 +3,8 @@ import logging
 import json
 import uuid
 import time
+import urllib.parse
+import secrets
 import os
 import subprocess
 import sqlite3  # Используем стандартный встроенный sqlite3
@@ -120,50 +122,83 @@ def get_user_from_db(user_id):
     return row
 
 
-import urllib.parse
-import secrets  # Добавлено для генерации случайного subId
+
 
 async def get_vpn_config_manual(user_id, username=""):
-    email = f"user_{user_id}"
+    """
+    Адаптированная функция для ОБНОВЛЕННЫХ панелей 3X-UI.
+    Корректно обрабатывает сессии, куки и динамические URL подписки.
+    """
+    country_flag = "🇫🇮"
+    country_name = "Финляндия"
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
     
-    # Включаем принудительное сохранение кук сессии для работы по IP (аналог requests.Session)
+    # Включаем строгую поддержку куки-сессий для новых версий 3X-UI
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
+            # Очищаем базовые пути
+            base_url = PANEL_URL.rstrip('/')
+            secret_path = BASE_PATH.strip('/')
+            panel_prefix = f"{base_url}/{secret_path}" if secret_path else base_url
 
+            # Настройка заголовков (Новая панель требует эмуляции браузера)
             headers = {
-                "Accept": "application/json"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": base_url,
+                "Referer": f"{panel_prefix}/"
             }
 
-            # 2. Получение данных инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            # ШАГ 1: Инициализация сессии (Важно для новых панелей!)
+            # Просто заходим на страницу входа, чтобы получить начальные Cookie сессии
+            try:
+                async with session.get(f"{panel_prefix}/login", headers=headers, timeout=5) as resp:
+                    await resp.text()
+            except Exception as e:
+                logging.warning(f"Первичный запрос к логину не удался (возможно, не критично): {e}")
+
+            # ШАГ 2: Логин в новую панель
+            # Передаем данные строго в формате x-www-form-urlencoded, как требует новая панель
+            login_url = f"{panel_prefix}/login"
+            login_data = {"username": PANEL_USER, "password": PANEL_PASSWORD}
+            
+            async with session.post(login_url, headers=headers, data=login_data, timeout=10) as resp:
+                login_res = await resp.json() if "application/json" in resp.headers.get("Content-Type", "") else None
+                
+                # Проверяем успешность логина (в новых панелях возвращается JSON с success: true)
+                if login_res and not login_res.get("success"):
+                    logging.error(f"Ошибка авторизации в новой панели: {login_res}")
+                    return None, None
+
+            # ШАГ 3: Получение данных инбаунда
+            get_url = f"{panel_prefix}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
+                logging.error(f"Панель вернула ошибку при получении инбаунда: {res_json}")
                 return None, None
 
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             
-            # Находим существующего клиента
-            current_client = next((c for c in clients if c.get("email") == email), None)
+            # Ищем клиента по tgId или email
+            current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+            if not current_client:
+                old_email = f"user_{user_id}"
+                current_client = next((c for c in clients if c.get("email") == old_email), None)
+
             client_uuid = current_client.get("id") if current_client else None
 
-            # 3. Создание клиента, если его нет
+            # ШАГ 4: Создание клиента, если его нет
             if not client_uuid:
                 client_uuid = str(uuid.uuid4())
-                # Генерируем случайный уникальный subId из 16 символов, чтобы работала ссылка подписки
                 sub_id = secrets.token_hex(8) 
                 
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+                add_url = f"{panel_prefix}/panel/api/inbounds/addClient"
                 client_data = {
                     "id": str(INBOUND_ID), 
                     "settings": json.dumps({
@@ -175,7 +210,7 @@ async def get_vpn_config_manual(user_id, username=""):
                             "expiryTime": 0,
                             "enable": True,
                             "tgId": user_id,
-                            "subId": sub_id  # Записываем сгенерированный subId
+                            "subId": sub_id  
                         }]
                     })
                 }
@@ -183,75 +218,171 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
-                # Клиент существует, вытаскиваем его параметры времени и subId из панели
+                # Клиент существует, обновляем его параметры
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
-                
-                # Защита: если у старого клиента subId пустой, генерируем его на лету
                 if not sub_id:
                     sub_id = secrets.token_hex(8)
-                    # Обновляем клиента в панели, чтобы прописать ему subId
-                    update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-                    client_data = {
-                        "id": str(INBOUND_ID),
-                        "settings": json.dumps({
-                            "clients": [{
-                                "id": client_uuid,
-                                "email": email,
-                                "limitIp": current_client.get("limitIp", 2),
-                                "totalGB": current_client.get("totalGB", 0),
-                                "expiryTime": expiry_time_ms,
-                                "enable": current_client.get("enable", True),
-                                "tgId": user_id,
-                                "subId": sub_id
-                            }]
-                        })
-                    }
-                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                        await resp.text()
+                
+                update_url = f"{panel_prefix}/panel/api/inbounds/updateClient/{client_uuid}"
+                client_data = {
+                    "id": str(INBOUND_ID),
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid,
+                            "email": email,
+                            "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0),
+                            "expiryTime": expiry_time_ms,
+                            "enable": current_client.get("enable", True),
+                            "tgId": user_id,
+                            "subId": sub_id
+                        }]
+                    })
+                }
+                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                    await resp.text()
 
-            # 4. Формирование рабочей конфигурации и ссылки на подписку
+            # ШАГ 5: Формирование рабочей конфигурации Reality
             my_ip = "78.17.1.43"
             my_port = res_json["obj"]["port"]
             pbk = "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38"
             sid = "32b6a4ff54ef1812"
-           
-            sni = "www.sony.com"
-            country_flag = "🇫🇮"
-            country_name = "Финляндия"
+            sni = "://sony.com"
+            
             server_type = "Premium"
             remark = f"{country_flag} {country_name}?{server_type}"
-            
             safe_remark = urllib.parse.quote(remark)
 
-            # Одиночная VLESS ссылка (сохраняем для структуры БД)
             config_link = (
                 f"vless://{client_uuid}@{my_ip}:{my_port}"
                 f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
                 f"#{safe_remark}"
             )
 
-                        # Название для плашки подписки (как "Сейв ВПН" на скрине)
+            # Формирование ссылки подписки (Новый стандарт 3X-UI)
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
             
-            # Формируем URL подписки с явным указанием имени группы
-            subscription_url = f"{PANEL_URL}{BASE_PATH}/sub/{sub_id}#{sub_remark}"
-            happ_url = f"happ://import/{subscription_url}"
+            try:
+                parsed_url = urllib.parse.urlparse(base_url)
+                host_with_port = parsed_url.netloc if parsed_url.netloc else "78.17.1.43:10096"
+            except Exception:
+                host_with_port = "78.17.1.43:10096"
 
-            
-            # Сохраняем/обновляем данные в нашей локальной БД sqlite3
+            # Новые панели отдают подписку через секретный веб-путь
+            subscription_web_url = f"https://{host_with_port}/{secret_path}/sub/{sub_id}#{sub_remark}"
+
+            # Сохраняем в локальную БД бота
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-            add_or_update_user(user_id, username, config_link, happ_url, expiry_seconds)
+            add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
-            return config_link, happ_url
+            return config_link, subscription_web_url
 
     except Exception as e:
-        logging.error(f"Ошибка VPN: {e}")
+        logging.error(f"Критическая ошибка VPN API: {e}")
         return None, None
 
 
-async def renew_vpn_subscription(user_id):
-    email = f"user_{user_id}"
+
+
+async def renew_vpn_subscription(user_id: int) -> bool:
+    """
+    Стандартная функция продления на 30 дней для ЮKassa (поиск по tgId).
+    """
+    country_flag = "🇫🇮"
+    country_name = "Финляндия"
+    # Добавлено нижнее подчеркивание между флагом и страной для единого стиля
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+
+    try:
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            # 1. Авторизация в панели
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
+                await resp.text()
+
+            headers = {"Accept": "application/json"}
+
+            # 2. Получаем текущие данные инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            async with session.get(get_url, headers=headers, timeout=10) as resp:
+                res_json = await resp.json()
+
+            if not res_json.get("success"):
+                logging.error(f"Не удалось получить данные инбаунда для продления подписки ЮKassa: {res_json}")
+                return False
+
+            settings = json.loads(res_json["obj"]["settings"])
+            clients = settings.get("clients", [])
+
+            # Поиск строго по уникальному tgId
+            client = next((c for c in clients if c.get("tgId") == user_id), None)
+            if not client:
+                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
+                return False
+
+            # 3. Расчет времени (30 дней)
+            current_time_ms = int(time.time() * 1000)
+            thirty_days_ms = 30 * 24 * 60 * 60 * 1000
+
+            if client.get("expiryTime", 0) > current_time_ms:
+                new_expiry = client["expiryTime"] + thirty_days_ms
+            else:
+                new_expiry = current_time_ms + thirty_days_ms
+
+            client_uuid = client['id']
+            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+
+            client_sub_id = client.get("subId", "")
+            if not client_sub_id:
+                client_sub_id = secrets.token_hex(8)
+
+            client_data = {
+                "id": str(INBOUND_ID),
+                "settings": json.dumps({
+                    "clients": [{
+                        "id": client_uuid,
+                        "email": email,
+                        "limitIp": client.get("limitIp", 2),
+                        "totalGB": client.get("totalGB", 0),
+                        "expiryTime": new_expiry,
+                        "enable": True,
+                        "tgId": user_id,
+                        "subId": client_sub_id
+                    }]
+                })
+            }
+
+            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                update_resp = await resp.json()
+
+            success = update_resp.get("success", False)
+            if success:
+                expiry_seconds = int(new_expiry / 1000)
+                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
+                logging.info(f"Подписка для пользователя {user_id} через ЮKassa успешно продлена в X-UI.")
+                
+            return success
+
+    except Exception as e:
+        logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
+        return False
+
+
+
+
+
+async def renew_vpn_subscription_flexible(user_id: int, days: int):
+    """
+    Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней (поиск по tgId).
+    """
+    country_flag = "🇫🇮"
+    country_name = "Финляндия"
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -262,9 +393,7 @@ async def renew_vpn_subscription(user_id):
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
             
-            headers = {
-                "Accept": "application/json"
-            }
+            headers = {"Accept": "application/json"}
 
             # 2. Получаем текущие данные инбаунда
             get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
@@ -272,30 +401,31 @@ async def renew_vpn_subscription(user_id):
                 res_json = await resp.json()
                 
             if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для продления подписки: {res_json}")
+                logging.error(f"Не удалось получить данные инбаунда для гибкого продления: {res_json}")
                 return False
                 
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
-            client = next((c for c in clients if c.get("email") == email), None)
+            
+            # Поиск строго по уникальному tgId
+            client = next((c for c in clients if c.get("tgId") == user_id), None)
             
             if not client:
-                logging.error(f"Клиент {email} не найден в панели X-UI.")
+                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
                 return False
 
-            # 3. Расчет времени (в миллисекундах)
+            # 3. Динамический расчет времени
             current_time_ms = int(time.time() * 1000)
-            thirty_days_ms = 30 * 24 * 60 * 60 * 1000
+            custom_days_ms = days * 24 * 60 * 60 * 1000
             
             if client.get("expiryTime", 0) > current_time_ms:
-                new_expiry = client["expiryTime"] + thirty_days_ms
+                new_expiry = client["expiryTime"] + custom_days_ms
             else:
-                new_expiry = current_time_ms + thirty_days_ms
+                new_expiry = current_time_ms + custom_days_ms
 
             client_uuid = client['id']
             update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
             
-            # Сохраняем текущий subId клиента при продлении, чтобы ссылка не ломалась
             client_sub_id = client.get("subId", "")
             if not client_sub_id:
                 client_sub_id = secrets.token_hex(8)
@@ -320,14 +450,87 @@ async def renew_vpn_subscription(user_id):
             
             success = update_resp.get("success", False)
             if success:
-                # Синхронизируем новую дату окончания подписки в локальную SQLite3
                 expiry_seconds = int(new_expiry / 1000)
                 add_or_update_user(user_id, "", expiry_time=expiry_seconds)
-                logging.info(f"Подписка для пользователя {user_id} успешно продлена в X-UI и SQLite3.")
+                logging.info(f"Подписка для пользователя {user_id} успешно продлена на {days} дн. в X-UI.")
+                return client_sub_id
+                
+            return False
+    except Exception as e:
+        logging.error(f"Ошибка при гибком продлении подписки: {e}")
+        return False
+
+
+async def revoke_vpn_subscription(user_id: int) -> bool:
+    """
+    Аннулирует подписку в 3X-UI, переводя её в неактивное состояние (поиск по tgId).
+    """
+    country_flag = "🇫🇮"
+    country_name = "Финляндия"
+    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+
+    try:
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            # 1. Авторизация в панели
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
+            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
+                await resp.text()
+
+            headers = {"Accept": "application/json"}
+
+            # 2. Получаем текущие данные инбаунда
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
+            async with session.get(get_url, headers=headers, timeout=10) as resp:
+                res_json = await resp.json()
+
+            if not res_json.get("success"):
+                logging.error(f"Не удалось получить данные инбаунда для отзыва подписки: {res_json}")
+                return False
+
+            settings = json.loads(res_json["obj"]["settings"])
+            clients = settings.get("clients", [])
+
+            # Поиск строго по уникальному tgId
+            client = next((c for c in clients if c.get("tgId") == user_id), None)
+            if not client:
+                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
+                return False
+
+            client_uuid = client['id']
+            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+            past_expiry = 1
+
+            client_data = {
+                "id": str(INBOUND_ID),
+                "settings": json.dumps({
+                    "clients": [{
+                        "id": client_uuid,
+                        "email": email,
+                        "limitIp": client.get("limitIp", 2),
+                        "totalGB": client.get("totalGB", 0),
+                        "expiryTime": past_expiry,
+                        "enable": False,  # Выключаем активность
+                        "tgId": user_id,
+                        "subId": client.get("subId", "")
+                    }]
+                })
+            }
+
+            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                update_resp = await resp.json()
+
+            success = update_resp.get("success", False)
+            if success:
+                add_or_update_user(user_id, "", expiry_time=0)
+                logging.info(f"Подписка для пользователя {user_id} успешно отозвана.")
                 
             return success
+
     except Exception as e:
-        logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
+        logging.error(f"Ошибка при отзыве подписки: {e}")
         return False
 
 
@@ -341,7 +544,7 @@ async def renew_vpn_subscription(user_id):
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ) РАЗРАБОТКА", callback_data="connect")],
+        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
@@ -365,21 +568,22 @@ async def cmd_start(message: types.Message):
         parse_mode="HTML"
     )
 
+
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Синхронизируем данные с панелью X-UI (чтобы обновить дату, если платеж прошел)
-    config, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+    # Синхронизируем данные с панелью X-UI
+    await get_vpn_config_manual(user_id, callback.from_user.username or "")
 
-    # Читаем данные из нашей надежной локальной SQLite3
+    # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
 
-    # Создаем клавиатуру для ЛК (кнопка Назад будет всегда)
+    # Создаем клавиатуру для ЛК
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    if db_data and db_data[1]:  # Если запись и ключ существуют в базе
+    if db_data and len(db_data) > 3:  # Если запись существует в базе
         expiry_timestamp = db_data[3] # Получаем Unix-время окончания из БД
         current_time = time.time()
 
@@ -389,28 +593,26 @@ async def cabinet(callback: types.CallbackQuery):
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
-            # ПОКАЗЫВАЕМ ТЕКСТ И КЛЮЧ
+            # Полностью чистый текст БЕЗ каких-либо vless:// и веб-ссылок
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
-                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"<b>Ваш ключ подключения VLESS:</b>\n"
-                f"<code>{db_data[1]}</code>\n\n"
-                f" Скопируйте этот ключ или перейдите в меню 'Подключиться' для быстрого импорта."
+                f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
-            # В активном кабинете оставляем только кнопку Назад
+            # Оставляем только кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
         else:
-            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА — ПРЯЧЕМ КЛЮЧ
+            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА
             status_text = "🔴 Не активна (требуется оплата)"
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
-                f"<b>Ваш ID:</b> <code>{user_id}</code>\n"
+                f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata и генерации вашего личного ключа, пожалуйста, приобретите подписку."
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку."
             )
-            # Сюда мы принудительно добавляем кнопку быстрой покупки тарифного плана
+            # Добавляем кнопки покупки и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
     else:
@@ -423,31 +625,71 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
+
+
+
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Проверяем статус в нашей локальной базе данных
-    db_data = get_user_from_db(user_id)
+    try:
+        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
+        # Она возвращает (config_link, subscription_web_url)
+        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        
+        # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
+        if sub_web_url and sub_web_url.startswith("http"):
+            
+            # 1. Собираем прямую ссылку для приложения Happ
+            raw_happ_url = f"happ://import/{sub_web_url}"
+            
+            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
+            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
+            try:
+                async with aiohttp.ClientSession() as session:
+                    enc_url = urllib.parse.quote(raw_happ_url)
+                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                        if resp.status == 200:
+                            safe_redirect_url = await resp.text()
+            except Exception as e:
+                logging.error(f"Не удалось сократить happ-ссылку: {e}")
+                safe_redirect_url = sub_web_url
 
-    # Если подписка оформлена и еще не закончилась
-    if db_data and db_data[3] > time.time():
-        _, happ_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-        if happ_url:
+            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
-            try:
-                await callback.message.edit_caption(caption="Нажмите кнопку ниже для импорта в Happ:", reply_markup=kb)
-            except TelegramBadRequest:
-                pass
+
+            text = (
+                "<b>📥 Подключение через приложение Happ:</b>\n\n"
+                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
+                "<b>💡 Если автоматический импорт не сработал:</b>\n"
+                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                f"<code>{sub_web_url}</code>\n\n"
+                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+            )
+
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            
         else:
-            await callback.answer("❌ Ошибка сервера: не удалось сгенерировать ссылку.", show_alert=True)
-    else:
-        # Если клиент пытается зайти без оплаты — выдаем предупреждение
-        await callback.answer("⚠️ Доступ заблокирован! Сначала приобретите подписку в меню 'Купить подписку'.", show_alert=True)
+            # Если X-UI панель не вернула ссылку (пользователь истек, удален или отключен в панели)
+            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка в обработчике connect: {e}")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
+
+
+
+
 
 @dp.callback_query(F.data == "back")
 async def back(callback: types.CallbackQuery):
@@ -502,32 +744,74 @@ async def send_invoice(callback: types.CallbackQuery, bot: Bot):
         start_parameter="vpn-sub-30-days"
     )
 
+# --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
+
+@dp.message(Command("send"))
+async def admin_broadcast(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    text_to_send = message.text.replace("/send", "").strip()
+    
+    if not text_to_send:
+        await message.answer("⚠️ <b>Ошибка:</b> Вы ввели пустую команду. Пишите так: <code>/send Ваш текст</code>")
+        return
+
+    all_users = get_all_users_from_db()
+    await message.answer(f"⏳ <b>Начата рассылка</b> для {len(all_users)} пользователей...")
+    
+    success_count = 0
+    for user_id in all_users:
+        try:
+            await bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
+            success_count += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+
+    await message.answer(f"✅ <b>Рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
+
+
 @dp.message(Command("gift"))
 async def admin_gift_sub(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
     try:
-        # Разделяем команду: /gift 123456789 5
         parts = message.text.split()
-        target_user_id = int(parts[1])  # ID пользователя
-        days_to_add = int(parts[2])     # Динамическое количество дней
+        target_user_id = int(parts[1])  
+        days_to_add = int(parts[2])     
     except (IndexError, ValueError):
         await message.answer("⚠️ <b>Неверный формат!</b> Пишите так:\n<code>/gift ID_ПОЛЬЗОВАТЕЛЯ ДНИ</code>\n\nПример: <code>/gift 584930211 5</code>")
         return
 
     await message.answer(f"⏳ Связываюсь с панелью X-UI для выдачи подписки на {days_to_add} дн. пользователю {target_user_id}...")
 
-    # ВАЖНО: Передаем days_to_add прямо в функцию продления!
-    success = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
+    # Вызываем функцию гибкого продления (она вернет строку subId при успехе)
+    sub_id = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
     
-    if success:
-        # Обновляем конфигурацию/ключ в локальной БД
+    if sub_id:
         await get_vpn_config_manual(target_user_id)
         
-        await message.answer(f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> продлен на {days_to_add} дней.")
+        # Динамически вытаскиваем IP вашей панели из PANEL_URL, но подставляем порт подписок 2096
+        # Если у вас PANEL_URL имеет вид "http://78.17.1.43:2053", скрипт возьмет чистый IP и сделает нужную вам ссылку
+        try:
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(PANEL_URL)
+            host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')[0]
+        except Exception:
+            host = "78.17.1.43" # Резервное значение на случай сбоя парсинга
+
+        # Ссылка в красивом стиле с вашим портом 2096
+        sub_link = f"https://{host}:2096/sub/{sub_id}"
         
-        # Уведомляем пользователя
+        await message.answer(
+            f"🎉 <b>Успех!</b> Доступ для <code>{target_user_id}</code> успешно продлен на {days_to_add} дней.\n\n"
+            f"🔗 <b>Ссылка на подписку (с верхней плашкой):</b>\n<code>{sub_link}</code>",
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        
         try:
             await bot.send_message(
                 chat_id=target_user_id,
@@ -537,7 +821,7 @@ async def admin_gift_sub(message: types.Message):
         except Exception:
             pass
     else:
-        await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось продлить подписку. Убедитесь, что пользователь нажал /start, существует в панели, или проверьте логи.")
+        await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось продлить подписку. Убедитесь, что пользователь нажал /start и существует в панели.")
 
 
 @dp.message(Command("revoke"))
@@ -546,7 +830,6 @@ async def admin_revoke_sub(message: types.Message):
         return
 
     try:
-        # Разделяем команду: /revoke 123456789
         parts = message.text.split()
         target_user_id = int(parts[1])
     except (IndexError, ValueError):
@@ -555,13 +838,11 @@ async def admin_revoke_sub(message: types.Message):
 
     await message.answer(f"⏳ Отзываю подписку у пользователя {target_user_id} в панели X-UI...")
 
-    # Вызываем функцию удаления/блокировки подписки
     success = await revoke_vpn_subscription(target_user_id)
     
     if success:
         await message.answer(f"🛑 <b>Подписка аннулирована!</b> Пользователь <code>{target_user_id}</code> больше не имеет доступа к VPN.")
         
-        # Уведомляем пользователя об отключении
         try:
             await bot.send_message(
                 chat_id=target_user_id,
@@ -572,69 +853,6 @@ async def admin_revoke_sub(message: types.Message):
             pass
     else:
         await message.answer("❌ <b>Ошибка X-UI панели:</b> Не удалось отозвать подписку. Возможно, пользователя нет в панели.")
-
-import time
-
-async def renew_vpn_subscription_flexible(user_id: int, days: int) -> bool:
-    """
-    Продлевает подписку клиента в 3X-UI на ТОЧНОЕ количество дней.
-    Если подписка уже активна — прибавляет дни к текущему концу.
-    Если истекла — прибавляет дни от текущего момента.
-    """
-    try:
-        # 1. Сначала получаем текущие данные клиента из X-UI по его email/id
-        client = await get_xui_client_by_email(f"user_{user_id}") # Замените на вашу функцию поиска клиента
-        if not client:
-            return False
-            
-        current_expiry = client.get("expiryTime", 0)
-        now_ms = int(time.time() * 1000)
-        ms_to_add = days * 24 * 60 * 60 * 1000
-
-        # Опеределяем от какой даты считать продление
-        if current_expiry > now_ms:
-            new_expiry = current_expiry + ms_to_add  # Добавляем к остатку подписки
-        else:
-            new_expiry = now_ms + ms_to_add          # Считаем с нуля от текущего момента
-
-        # 2. Делаем запрос к API X-UI для обновления (updateClient)
-        # Передаем новый expiryTime в параметры запроса к вашей панели
-        success = await api_update_client_expiry(client["id"], new_expiry) 
-        
-        # 3. Не забудьте обновить срок действия в вашей локальной SQLite!
-        # update_user_expiry_in_db(user_id, new_expiry)
-        
-        return success
-    except Exception as e:
-        print(f"Ошибка гибкого продления: {e}")
-        return False
-
-
-async def revoke_vpn_subscription(user_id: int) -> bool:
-    """
-    Аннулирует подписку в 3X-UI (ставит срок действия в прошлое или удаляет клиента).
-    Безопаснее всего поставить expiryTime = 1 (1 миллисекунда от 1970 года), 
-    тогда панель моментально отключит его, но настройки ключа не удалятся окончательно.
-    """
-    try:
-        client = await get_xui_client_by_email(f"user_{user_id}")
-        if not client:
-            return False
-            
-        # Устанавливаем срок действия в далекое прошлое (по сути отключаем)
-        past_expiry = 1 
-        
-        # Делаем запрос к API X-UI для обновления
-        success = await api_update_client_expiry(client["id"], past_expiry)
-        
-        # Также обнуляем или помечаем пользователя как неактивного в вашей SQLite
-        # db_set_user_inactive(user_id)
-        
-        return success
-    except Exception as e:
-        print(f"Ошибка отзыва подписки: {e}")
-        return False
-
 
 
 
@@ -653,27 +871,38 @@ async def successful_payment_handler(message: types.Message):
     payload = message.successful_payment.invoice_payload
 
     if payload == "vpn_30_days_subscription":
+        # Вызываем вашу стандартную функцию продления на 30 дней для ЮKassa
         success = await renew_vpn_subscription(user_id)
-        config, happ_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
+        
+        # Получаем обновленные данные (теперь во второй переменной возвращается чистый веб-URL подписки)
+        _, sub_web_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
 
+        # Формируем клавиатуру под новый формат ссылки
         kb = InlineKeyboardMarkup(inline_keyboard=[])
-        if happ_url:
-            kb.inline_keyboard.append([InlineKeyboardButton(text="⚡️ ОТКРЫТЬ В HAPP", url=happ_url)])
+        if sub_web_url:
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)
+            ])
 
         if success:
             await message.answer(
-                f"✅ <b>Оплата прошла успешно!</b>\nВаша подписка продлена на 30 дней.\n\n"
-                f"<b>Ваш новый ключ:</b>\n<code>{config}</code>",
-                reply_markup=kb if happ_url else None, 
+                f"✅ <b>Оплата прошла успешно!</b>\n"
+                f"Ваша подписка успешно продлена на 30 дней 🎉\n\n"
+                f"<b>📥 Как подключиться:</b>\n"
+                f"Нажмите на кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже, чтобы автоматически импортировать настройки или открыть веб-страницу вашей подписки со статистикой.\n\n"
+                f"<i>Также вы в любой момент можете управлять вашим подключением через кнопку «Подключиться» в главном меню бота.</i>",
+                reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
         else:
             await message.answer(
-                f"⚠️ <b>Оплата прошла успешно, но возник сбой синхронизации!</b>\n"
-                f"Администратор уже уведомлен. Ваш ID: <code>{user_id}</code>",
-                reply_markup=kb if happ_url else None, 
+                f"⚠️ <b>Оплата прошла успешно, но возник сбой автоматической синхронизации!</b>\n"
+                f"Не переживайте, платеж зафиксирован. Администратор уже уведомлен и активирует вам доступ вручную в ближайшее время.\n\n"
+                f"Ваш ID для поддержки: <code>{user_id}</code>",
+                reply_markup=kb if sub_web_url else None, 
                 parse_mode="HTML"
             )
+
 
 
 
@@ -790,6 +1019,5 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
 
 
