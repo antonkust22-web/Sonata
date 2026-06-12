@@ -45,7 +45,7 @@ BASE_PATH = "/XWYB6HCgL7NBchJqxo"
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPNaixA-bVTtAqZhYEQq_U85iC1z8sAAlOjAALqaWBJAAHhG-hzI7fyPAQ"
+VIDEO_MAIN = "BAACAgIAAxkBAAMLagtRYohK4W-WOfghGVIlBtWuyIoAAjWeAAL-Q1lIcZMozT4F8hw7BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
@@ -127,48 +127,28 @@ def get_user_from_db(user_id):
 async def get_vpn_config_manual(user_id, username=""):
     """
     Формирует красивое имя сервера с флагом для Happ и обновляет конфигурацию в X-UI.
-    Версия с автоматическим исправлением сломанных путей панели.
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+    # Формируем красивый Email, который Happ отобразит как имя сервера.
+    # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
+    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
     
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            
-            # --- ЖЕСТКАЯ ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ХОСТА (ЗАЩИТА ОТ ОШИБОК) ---
-            # Даже если в PANEL_URL или BASE_PATH попал мусор вроде /panel/api/inbounds/get/1, 
-            # этот блок оставит только чистый IP, порт и секретный ключ XWYB6HCgL7NBchJqxo.
-            
-            # Полная склейка того, что сейчас у вас в переменных
-            raw_full_url = f"{PANEL_URL}/{BASE_PATH}".replace("//", "/").replace("https:/", "https://")
-            
-            # Парсим URL и вытаскиваем строго https://78.17.1.43:10096
-            parsed = urllib.parse.urlparse(raw_full_url)
-            clean_host = parsed.netloc if parsed.netloc else "78.17.1.43:10096"
-            base_url = f"https://{clean_host}"
-            
-            # Вытаскиваем только первый сегмент пути (секретный ключ XWYB6HCgL7NBchJqxo)
-            path_parts = [p for p in parsed.path.split('/') if p]
-            secret_path = path_parts[0] if path_parts else "XWYB6HCgL7NBchJqxo"
-            
-            # Итоговый ПРАВИЛЬНЫЙ префикс: https://78.17.1.43:10096/XWYB6HCgL7NBchJqxo
-            panel_prefix = f"{base_url}/{secret_path}"
-            # --------------------------------------------------------------
-
-            # 1. Логин в панель (Запрос уйдет строго на .../XWYB6HCgL7NBchJqxo/login)
-            login_url = f"{panel_prefix}/login"
+            # 1. Логин в панель
+            login_url = f"{PANEL_URL}{BASE_PATH}/login"
             async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
                 await resp.text()
 
             headers = {"Accept": "application/json"}
 
             # 2. Получение данных инбаунда
-            get_url = f"{panel_prefix}/panel/api/inbounds/get/{INBOUND_ID}"
+            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
             async with session.get(get_url, headers=headers, timeout=10) as resp:
                 res_json = await resp.json()
                 
@@ -179,7 +159,10 @@ async def get_vpn_config_manual(user_id, username=""):
             settings = json.loads(res_json["obj"]["settings"])
             clients = settings.get("clients", [])
             
+            # Ищем клиента по уникальному tgId
             current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+            
+            # Резервный поиск по старому формату email на случай первого перехода пользователя
             if not current_client:
                 old_email = f"user_{user_id}"
                 current_client = next((c for c in clients if c.get("email") == old_email), None)
@@ -191,13 +174,13 @@ async def get_vpn_config_manual(user_id, username=""):
                 client_uuid = str(uuid.uuid4())
                 sub_id = secrets.token_hex(8) 
                 
-                add_url = f"{panel_prefix}/panel/api/inbounds/addClient"
+                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
                 client_data = {
                     "id": str(INBOUND_ID), 
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,
+                            "email": email,  # Красивый email с флагом
                             "limitIp": 2,
                             "totalGB": 0,
                             "expiryTime": 0,
@@ -211,20 +194,21 @@ async def get_vpn_config_manual(user_id, username=""):
                     await resp.text()
                 expiry_time_ms = 0
             else:
+                # Клиент существует, обновляем его параметры и принудительно ставим новый email с флагом
                 expiry_time_ms = current_client.get("expiryTime", 0)
                 sub_id = current_client.get("subId", "")
                 if not sub_id:
                     sub_id = secrets.token_hex(8)
                 
-                update_url = f"{panel_prefix}/panel/api/inbounds/updateClient/{client_uuid}"
+                update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
                 client_data = {
                     "id": str(INBOUND_ID),
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,
+                            "email": email,  # Принудительное обновление имени сервера под Happ
                             "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 0,
+                            "totalGB": current_client.get("totalGB", 0),
                             "expiryTime": expiry_time_ms,
                             "enable": current_client.get("enable", True),
                             "tgId": user_id,
@@ -253,18 +237,24 @@ async def get_vpn_config_manual(user_id, username=""):
             )
 
             sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            subscription_web_url = f"https://{clean_host}/{secret_path}/sub/{sub_id}#{sub_remark}"
+            
+            try:
+                parsed_url = urllib.parse.urlparse(PANEL_URL)
+                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
+            except Exception:
+                host = "78.17.1.43"
 
+            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
+
+            # Сохраняем в локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
             add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
             
             return config_link, subscription_web_url
 
     except Exception as e:
-        logging.error(f"Ошибка VPN: {e}")
+        logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
         return None, None
-
-
 
 
 
@@ -275,7 +265,7 @@ async def renew_vpn_subscription(user_id: int) -> bool:
     country_flag = "🇫🇮"
     country_name = "Финляндия"
     # Добавлено нижнее подчеркивание между флагом и страной для единого стиля
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -364,7 +354,7 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -450,7 +440,7 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
     """
     country_flag = "🇫🇮"
     country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
+    email = f"{country_flag}_{country_name}_{user_id}".replace(" ", "_")
 
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -611,38 +601,40 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Получаем актуальные ссылки из панели 3X-UI
-        config_link, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
+        # Она возвращает (config_link, subscription_web_url)
+        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
+        # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
         if sub_web_url and sub_web_url.startswith("http"):
             
-            # 1. Формируем прямую ссылку для импорта в приложение Happ.
-            # Для Happ нужна именно VLESS-ссылка (или ссылка на подписку, если Happ её поддерживает в таком формате).
-            # Чаще всего в Happ импортируют именно config_link (vless://...)
-            raw_happ_url = f"happ://import/{config_link}"
+            # 1. Собираем прямую ссылку для приложения Happ
+            raw_happ_url = f"happ://import/{sub_web_url}"
             
-            # 2. Оборачиваем через clck.ru (ИСПРАВЛЕНА ОШИБКА: добавлен пропущенный слэш перед url=)
-            safe_redirect_url = sub_web_url  # Безопасный дефолт
+            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
+            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
             try:
                 async with aiohttp.ClientSession() as session:
                     enc_url = urllib.parse.quote(raw_happ_url)
-                    # ВАЖНО: правильный эндпоинт Яндекса: https://clck.ru...
-                    api_url = f"https://clck.ru{enc_url}"
-                    async with session.get(api_url, timeout=5) as resp:
+                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
                         if resp.status == 200:
                             safe_redirect_url = await resp.text()
             except Exception as e:
                 logging.error(f"Не удалось сократить happ-ссылку: {e}")
+                safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру
+            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
@@ -652,24 +644,20 @@ async def connect(callback: types.CallbackQuery):
                 "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
                 "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
                 "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                "• Нажмите пальцем на текст ниже, чтобы <b>скопировать конфигурацию</b>:\n"
-                f"<code>{config_link}</code>\n\n"
-                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Импорт из буфера обмена» (Import from Clipboard)</b>."
+                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                f"<code>{sub_web_url}</code>\n\n"
+                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
             )
 
-            # Проверяем тип сообщения, чтобы edit_caption не падал, если текста/картинки нет
-            if callback.message.photo or callback.message.video:
-                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-            else:
-                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в главном меню.")
+            # Если X-UI панель не вернула ссылку (пользователь истек, удален или отключен в панели)
+            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
 
 
 
@@ -1004,3 +992,4 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
