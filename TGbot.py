@@ -127,20 +127,19 @@ def get_user_from_db(user_id):
 
 
 
-import uuid
-import json
-import logging
-import urllib.parse
-import zlib
-import base64
+
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Генерирует зашифрованную мульти-серверную ссылку happ://crypt3/ 
-    с Финляндией и Польшей в одном пакете под брендом вашего сервиса.
+    Регистрирует клиента на обоих серверах (идут уведомления)
+    и собирает мульти-серверную ссылку vless://sub/ для Happ.
     """
-    # ЖЕЛЕЗОБЕТОННЫЙ UUID: Всегда одинаковый для одного и того же человека
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+    
+    # Постоянный UUID на основе Telegram ID пользователя
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
+    sub_id = secrets.token_hex(8)
 
     # 1. Формируем чистую ссылку VLESS для Финляндии (Порт 43527)
     remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
@@ -150,43 +149,67 @@ async def get_vpn_config_manual(user_id, username=""):
     remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
     vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
-    # Склеиваем оба сервера через перенос строки, как это делает стандартный конфигуратор Happ
-    combined_configs = f"{vless_fi}\n{vless_pl}"
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        # --- ФИНЛЯНДИЯ (ИДЕТ УВЕДОМЛЕНИЕ О ВХОДЕ) ---
+        try:
+            login_fi = "https://78.17.1"
+            await session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=5)
+            
+            headers = {"Accept": "application/json"}
+            add_fi = "https://78.17.1"
+            payload_fi = {
+                "id": "1",
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid, "email": f"🇫🇮_Sonata_#{user_id}",
+                    "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                    "tgId": user_id, "subId": sub_id  
+                }]})
+            }
+            async with session.post(add_fi, headers=headers, data=payload_fi, timeout=5) as resp:
+                resp_text = await resp.text()
+                if "already exists" in resp_text:
+                    up_fi = f"https://78.17.1{client_uuid}"
+                    await session.post(up_fi, headers=headers, data=payload_fi, timeout=5)
+        except Exception as e:
+            logging.error(f"Ошибка Финляндии: {e}")
+
+        # --- ПОЛЬША (ИДЕТ УВЕДОМЛЕНИЕ О ВХОДЕ) ---
+        try:
+            login_pl = "http://78.17.152"
+            await session.post(login_pl, data={"username": "Soul", "password": "Lodka1321"}, timeout=5)
+            
+            add_pl = "http://78.17.152"
+            payload_pl = {
+                "id": "1",
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid, "email": f"🇵🇱_Sonata_#{user_id}",
+                    "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                    "tgId": user_id, "subId": sub_id  
+                }]})
+            }
+            async with session.post(add_pl, headers=headers, data=payload_pl, timeout=5) as resp:
+                resp_text = await resp.text()
+                if "already exists" in resp_text:
+                    up_pl = f"http://78.17.152{client_uuid}"
+                    await session.post(up_pl, headers=headers, data=payload_pl, timeout=5)
+        except Exception as e:
+            logging.error(f"Ошибка Польши: {e}")
+
+    # --- СКЛЕЙКА В МУЛЬТИ-ПОДПИСКУ VLESS ---
+    # Объединяем два ключа через перенос строки и кодируем в чистый Base64
+    combined_str = f"{vless_fi}\n{vless_pl}"
+    b64_str = base64.b64encode(combined_str.encode('utf-8')).decode('utf-8')
+    
+    # Стандартный xray-протокол мульти-подписки, который Happ понимает без веб-сайтов!
+    final_vless_sub = f"vless://sub/{b64_str}?title=🚀 Sonata VPN Premium"
 
     try:
-        # Формируем структуру подписки, чтобы Happ отобразил плашку вашего бренда
-        subscription_data = {
-            "name": "🚀 Sonata VPN Premium",  # Название вашей плашки в Happ
-            "urls": [vless_fi, vless_pl]
-        }
+        add_or_update_user(user_id, username, final_vless_sub, "vless_sub_mode", 0)
+    except Exception:
+        pass
         
-        # Переводим в JSON-строку для шифрования
-        json_str = json.dumps(subscription_data)
+    return final_vless_sub
 
-        # --- НАДЕЖНОЕ ШИФРОВАНИЕ В СТИЛЕ CRYPT3 ---
-        # 1. Сжимаем JSON-текст через zlib
-        compressed_data = zlib.compress(json_str.encode('utf-8'))
-        
-        # 2. Кодируем сжатые байты в стандартный Base64
-        b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
-        
-        # 3. Делаем строку безопасной для URL
-        safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
-        
-        # 4. Собираем финальный глубокий URL для Happ
-        happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
-        
-        # Сохраняем в локальную БД бота текстовый лог
-        try:
-            add_or_update_user(user_id, username, combined_configs, "crypt3_mode", 0)
-        except Exception as db_err:
-            logging.error(f"Ошибка записи в БД: {db_err}")
-            
-        return happ_crypt3_url
-
-    except Exception as e:
-        logging.error(f"Ошибка при шифровании пакета crypt3: {e}")
-        return None
 
 
 async def get_vpn_config_manual(user_id, username=""):
@@ -575,32 +598,37 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Формируем короткую, красивую ссылку на ваш FastAPI
-        # Укажите здесь порт вашего FastAPI (например, если он работает на порту 8000)
-        final_web_url = f"http://78.17.1{user_id}"
+        # Функция регистрирует юзера везде (придут уведомления) и возвращает готовую vless://sub/...
+        final_vless_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        
+        if final_vless_sub:
+            # Обычная кнопка назад без длинных URL (100% защита от багов Telegram)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
+            ])
 
-        # Возвращаем НАСТОЯЩУЮ синюю кнопку импорта! 
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_url)],
-            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
-        ])
+            text = (
+                "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
+                "Мы объединили две локации в одну умную мульти-ссылку:\n"
+                "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
+                "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
+                "<b>📥 Инструкция по установке:</b>\n"
+                "1. Нажмите пальцем на текст ниже, чтобы <b>скопировать её в один тап</b>:\n\n"
+                f"<code>{final_vless_sub}</code>\n\n"
+                "2. Откройте приложение <b>Happ</b>.\n"
+                "3. Нажмите значок <b>Плюс (➕)</b> в верхнем правом углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
+                "4. Вставьте скопированный адрес и подтвердите импорт.\n\n"
+                "🔥 Приложение само расшифрует строку и добавит в ваш список **сразу два сервера** под плашкой Sonata VPN Premium!"
+            )
 
-        text = (
-            "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
-            "Мы объединили и зашифровали для вас две локации в один пакет:\n"
-            "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
-            "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-            "<b>📥 Инструкция по установке:</b>\n"
-            "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-            "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            "3. Система автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
-        )
-
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
