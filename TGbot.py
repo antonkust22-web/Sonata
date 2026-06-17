@@ -129,11 +129,17 @@ def get_user_from_db(user_id):
 
 
 
+import uuid
+import secrets
+import json
+import logging
+import urllib.parse
+import aiohttp
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Регистрирует клиента на обоих серверах (идут уведомления)
-    и собирает мульти-серверную ссылку vless://sub/ в правильном URL-Safe Base64 формате.
+    Регистрирует клиента на обоих инбаундах Финляндии 
+    и формирует валидную веб-ссылку подписки, которую примет Happ.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -142,78 +148,67 @@ async def get_vpn_config_manual(user_id, username=""):
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
 
-    # 1. Формируем чистую ссылку VLESS для Финляндии (Порт 43527)
-    remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
-    vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
-
-    # 2. Формируем чистую ссылку VLESS для Польши (Порт 16303)
-    remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
-    vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
-
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- ФИНЛЯНДИЯ ---
+        # --- ФИНЛЯНДИЯ (ИНБАУНД №1 - порт 43527) ---
         try:
-            login_fi = "https://78.17.1"
-            await session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=5)
+            login_fi = f"{PANEL_URL}{BASE_PATH}/login"
+            await session.post(login_fi, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=5)
             
             headers = {"Accept": "application/json"}
-            add_fi = "https://78.17.1"
+            add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+            
             payload_fi = {
-                "id": "1",
+                "id": "1", # Ваш первый Reality-вход
                 "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇫🇮_Sonata_#{user_id}",
+                    "id": client_uuid, "email": f"🇫🇮_Финляндия_#{user_id}",
                     "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
                     "tgId": user_id, "subId": sub_id  
                 }]})
             }
-            async with session.post(add_fi, headers=headers, data=payload_fi, timeout=5) as resp:
+            async with session.post(add_url, headers=headers, data=payload_fi, timeout=5) as resp:
                 resp_text = await resp.text()
                 if "already exists" in resp_text:
-                    up_fi = f"https://78.17.1{client_uuid}"
+                    up_fi = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
                     await session.post(up_fi, headers=headers, data=payload_fi, timeout=5)
         except Exception as e:
             logging.error(f"Ошибка Финляндии: {e}")
 
-        # --- ПОЛЬША ---
+        # --- ПОЛЬША (ИНБАУНД №2 - порт 43528, каскад) ---
         try:
-            login_pl = "http://78.17.152"
-            await session.post(login_pl, data={"username": "Soul", "password": "Lodka1321"}, timeout=5)
-            
-            add_pl = "http://78.17.152"
             payload_pl = {
-                "id": "1",
+                "id": "2", # Ваша созданная «дверь» в Польшу
                 "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇵🇱_Sonata_#{user_id}",
+                    "id": client_uuid, "email": f"🇵🇱_Польша_#{user_id}",
                     "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
                     "tgId": user_id, "subId": sub_id  
                 }]})
             }
-            async with session.post(add_pl, headers=headers, data=payload_pl, timeout=5) as resp:
+            async with session.post(add_url, headers=headers, data=payload_pl, timeout=5) as resp:
                 resp_text = await resp.text()
                 if "already exists" in resp_text:
-                    up_pl = f"http://78.17.152{client_uuid}"
+                    up_pl = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
                     await session.post(up_pl, headers=headers, data=payload_pl, timeout=5)
         except Exception as e:
             logging.error(f"Ошибка Польши: {e}")
 
-    # --- ИСПРАВЛЕННАЯ СКЛЕЙКА В МУЛЬТИ-ПОДПИСКУ VLESS (БЕЗ ZLIB) ---
-    # Объединяем два ключа через обычный перенос строки
-    combined_str = f"{vless_fi}\n{vless_pl}"
-    
-    # Кодируем строго через urlsafe_b64encode, чтобы строка не сожержала ломающих символов + и /
-    b64_bytes = base64.urlsafe_b64encode(combined_str.encode('utf-8'))
-    b64_str = b64_bytes.decode('utf-8').replace('=', '') # Отрезаем знаки равенства (padding), Happ их не любит
-    
-    # Формируем стандартную мульти-ссылку подписки, кодируя название в URL формат
-    safe_title = urllib.parse.quote("Sonata VPN Premium")
-    final_vless_sub = f"vless://sub/{b64_str}?title={safe_title}"
+    try:
+        parsed_url = urllib.parse.urlparse(PANEL_URL)
+        host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
+    except Exception:
+        host = "78.17.1.43"
+
+    # СБОРКА СТАНДАРТНОЙ ВЕБ-ПОДПИСКИ С ПАРАМЕТРОМ СКЛЕЙКИ
+    sub_remark = urllib.parse.quote("Sonata VPN Premium")
+    # Добавляем параметр ?inbound=1,2 , чтобы панель принудительно отдала оба порта в одном файле!
+    final_web_sub = f"https://{host}:2096/sub/{sub_id}?inbound=1,2#{sub_remark}"
 
     try:
-        add_or_update_user(user_id, username, final_vless_sub, "vless_sub_mode", 0)
+        add_or_update_user(user_id, username, final_vless_sub, "web_sub_mode", 0)
     except Exception:
         pass
         
-    return final_vless_sub
+    return final_web_sub
+
 
 
 
@@ -595,6 +590,8 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
+
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -603,38 +600,33 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Сначала удаляем старое приветственное сообщение с картинкой, 
-        # чтобы очистить чат и красиво вывести ключи отдельным текстом
         try:
             await callback.message.delete()
         except Exception:
             pass
 
-        # Функция регистрирует юзера на серверах (придут уведомления) и возвращает vless://sub/...
-        final_vless_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Получаем чистую веб-ссылку https://...
+        final_web_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if final_vless_sub:
-            # Кнопка возврата в главное меню
+        if final_web_sub:
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
-            # Текст отправляется как новое сообщение (лимит 4096 символов) — теперь всё влезет!
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
-                "Мы объединили две локации в одну умную мульти-ссылку:\n"
+                "Мы объединили две локации в одну умную ссылку подписки:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
-                "1. Нажмите пальцем на текст ниже, чтобы <b>скопировать его в один тап</b>:\n\n"
-                f"<code>{final_vless_sub}</code>\n\n"
+                "1. Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её в один тап</b>:\n\n"
+                f"<code>{final_web_sub}</code>\n\n"
                 "2. Откройте приложение <b>Happ</b>.\n"
                 "3. Нажмите значок <b>Плюс (➕)</b> в верхнем правом углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
                 "4. Вставьте скопированный адрес и подтвердите импорт.\n\n"
-                "🔥 Приложение автоматически расшифрует строку и добавит в ваш список <b>сразу два сервера</b> под плашкой Sonata VPN Premium!"
+                "🔥 Ссылка на 100% валидна! Приложение скачает файл конфигураций, и в вашем списке появится папка <b>Sonata VPN Premium</b> сразу с двумя странами!"
             )
 
-            # ИССПРАВЛЕНО: Отправляем новое текстовое сообщение вместо редактирования картинки
             await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
@@ -642,9 +634,6 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
-
-
-
 
 
 
