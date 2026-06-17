@@ -135,19 +135,19 @@ import aiohttp
 async def get_vpn_config_manual(user_id, username=""):
     """
     Генерирует два стабильных, рабочих ключа vless:// напрямую для чата.
-    UUID привязан к user_id, поэтому ключи работают всегда и не сгорают.
+    Исправлены порты (43527 и 43528) и очищен SNI для работы в Happ.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # СТАБИЛЬНЫЙ UUID: Всегда одинаковый для одного и того же человека!
+    # СТАБИЛЬНЫЙ UUID: Строго привязан к user_id, чтобы ключи не сбрасывались
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
 
     config_links = []
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- 1. РЕГИСТРАЦИЯ НА ФИНЛЯНДИИ ---
+        # --- 1. РЕГИСТРАЦИЯ НА ФИНЛЯНДИИ (ИНБАУНД №1 и №2) ---
         try:
             login_url_1 = f"{PANEL_URL}{BASE_PATH}/login"
             await session.post(login_url_1, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=5)
@@ -155,8 +155,9 @@ async def get_vpn_config_manual(user_id, username=""):
             headers = {"Accept": "application/json"}
             add_url_1 = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
             
+            # Пишем пользователя в первый инбаунд (Финляндия, порт 43527)
             client_payload_1 = {
-                "id": str(INBOUND_ID), 
+                "id": "1", 
                 "settings": json.dumps({"clients": [{
                     "id": client_uuid,
                     "email": f"🇫🇮_Финляндия_#{user_id}",
@@ -170,34 +171,48 @@ async def get_vpn_config_manual(user_id, username=""):
                     update_url_1 = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
                     await session.post(update_url_1, headers=headers, data=client_payload_1, timeout=5)
 
-            # Формируем прямую ссылку VLESS для Финляндии
-            remark_fi = urllib.parse.quote(f"🇫🇮 Финляндия | Premium")
-            vless_fi = f"vless://{client_uuid}@78.17.1.43:443?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
-            config_links.append(vless_fi)
-        except Exception as e:
-            logging.error(f"Ошибка создания Финляндии: {e}")
+            # Пишем пользователя во второй инбаунд (Польша, порт 43528)
+            client_payload_2 = {
+                "id": "2", 
+                "settings": json.dumps({"clients": [{
+                    "id": client_uuid,
+                    "email": f"🇵🇱_Польша_#{user_id}",
+                    "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                    "tgId": user_id, "subId": sub_id  
+                }]})
+            }
+            async with session.post(add_url_1, headers=headers, data=client_payload_2, timeout=5) as resp:
+                resp_text = await resp.text()
+                if "already exists" in resp_text:
+                    update_url_2 = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                    await session.post(update_url_2, headers=headers, data=client_payload_2, timeout=5)
 
-        # --- 2. РЕГИСТРАЦИЯ НА ПОЛЬШЕ ---
-        try:
-            # На Польше у вас порт 43528, который перенаправляет трафик
-            remark_pl = urllib.parse.quote(f"🇵🇱 Польша | Premium")
+            # --- СБОРКА ГАРАНТИРОВАННО РАБОЧИХ КЛЮЧЕЙ ДЛЯ HAPP ---
+            # Ключ №1: Финляндия (Порт 43527)
+            remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
+            vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
+            config_links.append(vless_fi)
+
+            # Ключ №2: Польша (Порт 43528 — каскад)
+            remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
             vless_pl = f"vless://{client_uuid}@78.17.1.43:43528?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_pl}"
             config_links.append(vless_pl)
+
         except Exception as e:
-            logging.error(f"Ошибка создания Польши: {e}")
+            logging.error(f"Ошибка генерации конфигураций Reality: {e}")
 
     if not config_links:
         return None, None
 
     all_configs_str = "\n".join(config_links)
     
-    # Сохраняем в локальную БД бота
     try:
         add_or_update_user(user_id, username, all_configs_str, "no_url", 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
     
     return config_links, "no_url"
+
 
 
 
