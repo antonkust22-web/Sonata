@@ -567,8 +567,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
-import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -577,40 +575,33 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Получаем готовую зашифрованную ссылку happ://crypt3/...
-        happ_crypt_link = await get_vpn_config_manual(user_id, callback.from_user.username or "")
-        
-        if happ_crypt_link:
-            # Кодируем happ:// ссылку для безопасного веб-редиректа
-            encoded_happ_url = urllib.parse.quote(happ_crypt_link, safe='')
-            
-            # Собираем финальную ссылку-редиректор
-            final_web_url = f"https://redirect.cc{encoded_happ_url}"
+        # Формируем короткую, красивую ссылку на ваш FastAPI
+        # Укажите здесь порт вашего FastAPI (например, если он работает на порту 8000)
+        final_web_url = f"http://78.17.1{user_id}"
 
-            # Кнопка «Назад» (Обычная, без длинных ссылок, чтобы Telegram не ругался)
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
-            ])
+        # Возвращаем НАСТОЯЩУЮ синюю кнопку импорта! 
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_url)],
+            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
+        ])
 
-            # Зашиваем длинный URL в красивую текстовую гиперссылку <a>
-            text = (
-                "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
-                "Мы объединили и зашифровали для вас две локации в один пакет:\n"
-                "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
-                "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-                "<b>📥 Инструкция по установке:</b>\n"
-                "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-                f"2. ➔ <a href='{final_web_url}'><b>⚡️ НАЖМИТЕ СЮДА ДЛЯ ИМПОРТА В HAPP</b></a> ⚡️\n\n"
-                "3. Система безопасно откроет приложение и автоматически добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>!"
-            )
+        text = (
+            "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
+            "Мы объединили и зашифровали для вас две локации в один пакет:\n"
+            "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
+            "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
+            "<b>📥 Инструкция по установке:</b>\n"
+            "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
+            "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+            "3. Система автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
+        )
 
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else:
-            await callback.message.answer("⚠️ Не удалось зашифровать пакет конфигураций.")
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
@@ -897,6 +888,43 @@ async def scheduler(bot):
         # Спим 24 часа до следующей проверки
         await asyncio.sleep(24 * 60 * 60)
 
+
+from fastapi import FastAPI, Response
+from fastapi.responses import RedirectResponse
+
+# Если объект app уже создан в файле, эту строку писать не нужно:
+app = FastAPI()
+
+@app.get("/import/{user_id}")
+async def import_to_happ(user_id: int):
+    """
+    Эндпоинт на лету собирает crypt3 пакет для Happ 
+    и делает автоматический редирект.
+    """
+    # Тот же самый постоянный UUID пользователя
+    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
+
+    # Сборка оригинальных ключей серверов
+    vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#%F0%9F%87%AB%F0%9F%87%AE%20%D0%A4%D0%B8%D0%BD%D0%BB%D1%8F%D0%BD%D0%B4%D0%B8%D0%AF%20%7C%20Premium"
+    vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#%F0%9F%87%B5%F0%9F%87%B1%20%D0%9F%D0%BE%D0%BB%D1%8C%D1%88%D0%B0%20%7C%20Premium"
+
+    # Структура подписки для папки в Happ
+    subscription_data = {
+        "name": "🚀 Sonata VPN Premium",
+        "urls": [vless_fi, vless_pl]
+    }
+    
+    # Шифрование crypt3
+    json_str = json.dumps(subscription_data)
+    compressed_data = zlib.compress(json_str.encode('utf-8'))
+    b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
+    safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
+    
+    # Финальный глубокий URL для Happ
+    happ_url = f"happ://crypt3/{safe_crypto_str}"
+    
+    # Делаем моментальный редирект, который откроет Happ на смартфоне
+    return RedirectResponse(url=happ_url)
 
 
 
