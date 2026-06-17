@@ -223,29 +223,30 @@ SERVERS = [
 
 
 
-
 async def get_vpn_config_manual(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     config_links = []
-    sub_id = secrets.token_hex(8) 
+    # Генерируем случайный UUID для клиента
     client_uuid = str(uuid.uuid4())
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
+                # Имя клиента для панели X-UI
                 email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация в панели
+                # 1. Авторизация в панели сервера
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
 
                 headers = {"Accept": "application/json"}
                 
+                # Жёстко задаем порты инбаундов Reality для ваших серверов
                 srv_port = 443 if srv["id"] == "fi_1" else 2053
                 
-                # 2. Добавление/обновление клиента
+                # 2. Попытка добавить клиента напрямую
                 action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                 
                 client_payload = {
@@ -259,24 +260,26 @@ async def get_vpn_config_manual(user_id, username=""):
                             "expiryTime": 0,
                             "enable": True,
                             "tgId": user_id,
-                            "subId": sub_id
+                            "subId": secrets.token_hex(8)  # Случайный sub_id для совместимости
                         }]
                     })
                 }
                 
                 async with session.post(action_url, headers=headers, data=client_payload, timeout=5) as resp:
                     resp_text = await resp.text()
+                    # Если клиент уже существует, обновляем его параметры
                     if "already exists" in resp_text or resp.status == 400:
                         update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                         await session.post(update_url, headers=headers, data=client_payload, timeout=5)
 
-                # 3. Сборка ссылки конфигурации
+                # 3. Сборка прямой конфигурации vless://
                 remark = f"{srv['country_flag']} {srv['country_name']} | Premium"
                 safe_remark = urllib.parse.quote(remark)
+                clean_sni = srv['sni'].replace("://", "")
 
                 vless_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{srv_port}"
-                    f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
+                    f"?type=tcp&security=reality&sni={clean_sni}&fp=chrome"
                     f"&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
                     f"#{safe_remark}"
                 )
@@ -290,16 +293,16 @@ async def get_vpn_config_manual(user_id, username=""):
 
     all_configs_str = "\n".join(config_links)
     
-    # МАСКИРОВКА: Используем чисто буквенный хост "sonataserver", 
-    # чтобы обойти скрытые регулярки и обрезки IP-адресов в вашей системе
-    subscription_web_url = f"https://sonataserver:2096/sub/{sub_id}"
-
+    # Сохраняем пачку конфигураций в вашу локальную БД бота
     try:
-        add_or_update_user(user_id, username, all_configs_str, subscription_web_url, 0)
+        # Передаем заглушку в поле ссылки подписки, чтобы ничего не ломалось
+        add_or_update_user(user_id, username, all_configs_str, "no_url", 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
     
-    return all_configs_str, subscription_web_url
+    # Возвращаем список конфигураций (массив из двух строк vless)
+    return config_links, "no_url"
+
 
 
 
@@ -659,45 +662,52 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        configs_str, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Вызываем функцию, которая возвращает список прямых ключей vless
+        config_links, _ = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # РЕКОНСТРУКЦИЯ ССЫЛКИ "НА ЛЕТУ"
-        if sub_web_url:
-            # Отрезаем всё лишнее, оставляя только чистый sub_id (последние 16 символов hex)
-            # Это сработает, даже если строка пришла в виде "https://78.17.13ae815734dc74224"
-            clean_sub_id = sub_web_url.split('/')[-1].strip()
+        # Проверяем, что получили конфигурации и их действительно две (или хотя бы одна)
+        if config_links and len(config_links) > 0:
             
-            # На всякий случай убираем остатки сломанного IP, если он склеился с id
-            if "78.17.1" in clean_sub_id:
-                clean_sub_id = clean_sub_id.replace("78.17.1", "")
+            # Извлекаем ключи из списка
+            fi_key = config_links[0]  # Первый сервер (Финляндия)
             
-            # Собираем финальную боевую ссылку заново в изолированной переменной
-            clean_sub_url = f"https://78.17.1{clean_sub_id}"
+            # Проверяем, создался ли второй сервер (Польша)
+            pl_key = config_links[1] if len(config_links) > 1 else None
+
+            # Собираем красивый текст с инструкцией
+            text = (
+                "<b>📥 Подключение через приложение Happ:</b>\n\n"
+                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+                "2. Нажмите пальцем на <b>Ключ №1</b> ниже, чтобы скопировать его, откройте Happ, нажмите <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>.\n"
+                "3. Повторите процедуру для <b>Ключа №2</b>, чтобы у вас добавились обе страны! 🙌\n\n"
+                
+                "<b>🇫🇮 КЛЮЧ №1 (Финляндия):</b>\n"
+                f"<code>{fi_key}</code>\n\n"
+            )
+            
+            if pl_key:
+                text += (
+                    "<b>🇵🇱 КЛЮЧ №2 (Польша):</b>\n"
+                    f"<code>{pl_key}</code>\n\n"
+                )
+            else:
+                text += "<i>⚠️ Второй сервер (Польша) временно недоступен, обратитесь в поддержку.</i>\n\n"
+
+            text += "💡 После добавления ключей вы сможете переключаться между странами внутри приложения в любой момент!"
+
+            # Кнопка возврата в меню
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            ])
+
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            
         else:
-            await callback.message.answer("⚠️ Ошибка: подписка не найдена.")
-            return
-
-        # Создаем инлайн-кнопку с гарантированно правильным URL
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Открыть ссылку подписки", url=clean_sub_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
-
-        text = (
-            "<b>📥 Подключение через приложение Happ:</b>\n\n"
-            "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-            "2. Нажмите пальцем на ссылку ниже, чтобы <b>быстро скопировать её</b>:\n\n"
-            f"<code>{clean_sub_url}</code>\n\n"
-            "3. Откройте приложение Happ.\n"
-            "4. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
-            "5. Вставьте скопированный адрес и подтвердите импорт."
-        )
-
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            await callback.message.answer("⚠️ Не удалось сгенерировать ключи доступа. Сервера временно недоступны.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при выдаче ключей.")
 
 
 
