@@ -181,7 +181,7 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        "panel_url": "https://78.17.152.36:2053",
+        "panel_url": "http://78.17.152.36:2053",
         "base_path": "/root",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
@@ -214,34 +214,18 @@ async def get_vpn_config_manual(user_id, username=""):
                 await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
 
                 headers = {"Accept": "application/json"}
-                res_json = None
-
-                # 2. Перебор путей API
-                possible_urls = [
-                    f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}",
-                    f"{srv['panel_url']}/panel/api/inbounds/get/{srv['inbound_id']}",
-                    f"{srv['panel_url']}{srv['base_path']}/xui/API/inbounds/get/{srv['inbound_id']}"
-                ]
-
-                # Если по HTTPS не находит, пробуем те же пути по HTTP локально
-                if srv["panel_url"].startswith("https"):
-                    http_url_base = srv["panel_url"].replace("https://", "http://")
-                    possible_urls.append(f"{http_url_base}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}")
-
-                for url_option in possible_urls:
-                    try:
-                        async with session.get(url_option, headers=headers, timeout=4) as resp:
-                            if resp.status == 200:
-                                text_data = await resp.text()
-                                if text_data.strip().startswith("{"):
-                                    res_json = json.loads(text_data)
-                                    if res_json.get("success"):
-                                        break
-                    except Exception:
-                        continue
+                
+                # 2. Формируем точный путь API для каждого сервера отдельно
+                if srv["id"] == "de_1":
+                    get_url = f"{srv['panel_url']}/root/panel/api/inbounds/get/{srv['inbound_id']}"
+                else:
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                
+                async with session.get(get_url, headers=headers, timeout=5) as resp:
+                    res_json = await resp.json()
 
                 if not res_json or not res_json.get("success"):
-                    logging.error(f"Панель {srv['country_name']} отклонила все варианты API-путей. Проверьте ID инбаунда.")
+                    logging.error(f"Панель {srv['country_name']} отклонила API-запрос.")
                     continue
 
                 settings = json.loads(res_json["obj"]["settings"])
@@ -286,7 +270,6 @@ async def get_vpn_config_manual(user_id, username=""):
                 my_port = res_json["obj"]["port"]
                 remark = f"{srv['country_flag']} {srv['country_name']} | Premium"
                 safe_remark = urllib.parse.quote(remark)
-                clean_sni = srv['sni'].replace("://", "")
 
                 vless_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
@@ -304,7 +287,7 @@ async def get_vpn_config_manual(user_id, username=""):
 
     all_configs_str = "\n".join(config_links)
     
-    # Ссылка строго без лишних символов для передачи в роутер Telegram
+    # Формируем чистую и безопасную ссылку подписки на базе рабочего HTTPS Финляндии
     subscription_web_url = f"https://78.17.1{sub_id}"
 
     expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
@@ -670,43 +653,27 @@ async def connect(callback: types.CallbackQuery):
         
         if sub_web_url and sub_web_url.startswith("http"):
             clean_sub_url = sub_web_url.strip()
-            
-            # Напрямую упаковываем веб-ссылку для сокращателя clck.ru
-            safe_redirect_url = clean_sub_url  
-            try:
-                async with aiohttp.ClientSession() as session:
-                    enc_url = urllib.parse.quote(clean_sub_url, safe='')
-                    clck_url = f"https://clck.ru{enc_url}"
-                    async with session.get(clck_url, timeout=5) as resp:
-                        if resp.status == 200:
-                            res_text = await resp.text()
-                            if "clck.ru" in res_text:
-                                safe_redirect_url = res_text.strip()
-            except Exception as e:
-                logging.error(f"Не удалось сократить ссылку подписки: {e}")
 
-            # Собираем инлайн-клавиатуру (Все ссылки строго начинаются с https://)
+            # Клавиатура без сторонних сокращателей — только чистая и надежная ссылка подписки
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=f"https://clck.ru{urllib.parse.quote(f'happ://import/{clean_sub_url}', safe='')}")],
-                [InlineKeyboardButton(text="🌐 Открыть подписку", url=clean_sub_url)],
+                [InlineKeyboardButton(text="🌐 Открыть ссылку подписки", url=clean_sub_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
             text = (
                 "<b>📥 Подключение через приложение Happ:</b>\n\n"
                 "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                "2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "3. Смартфон автоматически предложит открыть приложение и импортировать вашу подписку Sonata.\n\n"
-                "<b>💡 Если автоматический импорт не сработал:</b>\n"
-                "• Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её</b>:\n"
+                "2. Нажмите пальцем на ссылку ниже, чтобы <b>быстро скопировать её</b>:\n\n"
                 f"<code>{clean_sub_url}</code>\n\n"
-                "• Откройте приложение Happ, нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
+                "3. Откройте приложение Happ.\n"
+                "4. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
+                "5. Вставьте скопированный адрес и подтвердите импорт."
             )
 
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            await callback.message.answer("⚠️ Не удалось сгенерировать подписку. Сервера временно недоступны.")
+            await callback.message.answer("⚠️ Не удалось сгенерировать подписку. Доступ заблокирован или сервера временно недоступны.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
