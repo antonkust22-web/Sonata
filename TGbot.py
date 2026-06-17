@@ -128,7 +128,6 @@ def get_user_from_db(user_id):
 
 
 
-
 import uuid
 import secrets
 import json
@@ -199,15 +198,16 @@ async def get_vpn_config_manual(user_id, username=""):
 
     # СБОРКА СТАНДАРТНОЙ ВЕБ-ПОДПИСКИ С ПАРАМЕТРОМ СКЛЕЙКИ
     sub_remark = urllib.parse.quote("Sonata VPN Premium")
-    # Добавляем параметр ?inbound=1,2 , чтобы панель принудительно отдала оба порта в одном файле!
+    # ИСПРАВЛЕНО: Теперь формируется чистая веб-ссылка подписки
     final_web_sub = f"https://{host}:2096/sub/{sub_id}?inbound=1,2#{sub_remark}"
 
     try:
-        add_or_update_user(user_id, username, final_vless_sub, "web_sub_mode", 0)
-    except Exception:
-        pass
+        add_or_update_user(user_id, username, "using_master_links", final_web_sub, 0)
+    except Exception as db_err:
+        logging.error(f"Ошибка записи в БД: {db_err}")
         
     return final_web_sub
+
 
 
 
