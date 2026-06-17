@@ -569,10 +569,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import aiohttp
-import urllib.parse
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -583,36 +579,28 @@ async def connect(callback: types.CallbackQuery):
         happ_crypt_link = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         if happ_crypt_link:
-            safe_redirect_url = happ_crypt_link  # Резервный вариант
+            # Кодируем happ:// ссылку, чтобы превратить её в безопасный веб-параметр
+            encoded_happ_url = urllib.parse.quote(happ_crypt_link, safe='')
             
-            # Оборачиваем её в красивый веб-редирект через clck.ru, чтобы Telegram одобрил кнопку
-            try:
-                async with aiohttp.ClientSession() as session:
-                    enc_url = urllib.parse.quote(happ_crypt_link, safe='')
-                    clck_url = f"https://clck.ru{enc_url}"
-                    async with session.get(clck_url, timeout=5) as resp:
-                        if resp.status == 200:
-                            res_text = await resp.text()
-                            if "clck.ru" in res_text:
-                                safe_redirect_url = res_text.strip()
-            except Exception as e:
-                logging.error(f"Не удалось сократить крипто-ссылку: {e}")
+            # Используем стабильный и бесплатный веб-редиректор, который Telegram пропускает на 100%
+            # При клике на эту кнопку сайт мгновенно перенаправит и запустит Happ на смартфоне
+            final_web_url = f"https://redirect.cc{encoded_happ_url}"
 
-            # Инлайн-кнопка в один клик
+            # Создаем кнопку в один клик
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP", url=safe_redirect_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP", url=final_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
             ])
 
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
-                "Мы объединили и зашифровали для вас две локации в один клик:\n"
+                "Мы объединили и зашифровали для вас две локации в один пакет:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
                 "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
                 "2. Нажмите синюю кнопку <b>«⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP»</b> ниже.\n"
-                "3. Смартфон автоматически запустит приложение и добавит обе страны в ваш список."
+                "3. Система безопасно откроет приложение и добавит обе страны в ваш список под вашей фирменной плашкой!"
             )
 
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
@@ -622,6 +610,7 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
