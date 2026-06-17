@@ -7,6 +7,7 @@ import time
 import urllib.parse
 import secrets
 import os
+import zlib
 import subprocess
 import sqlite3  # Используем стандартный встроенный sqlite3
 
@@ -126,10 +127,17 @@ def get_user_from_db(user_id):
 
 
 
+import uuid
+import json
+import logging
+import urllib.parse
+import zlib
+import base64
+
 async def get_vpn_config_manual(user_id, username=""):
     """
     Генерирует зашифрованную мульти-серверную ссылку happ://crypt3/ 
-    с Финляндией и Польшей в одном пакете. Без использования подписок панелей.
+    с Финляндией и Польшей в одном пакете под брендом вашего сервиса.
     """
     # ЖЕЛЕЗОБЕТОННЫЙ UUID: Всегда одинаковый для одного и того же человека
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
@@ -142,24 +150,88 @@ async def get_vpn_config_manual(user_id, username=""):
     remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
     vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
-    # Склеиваем оба сервера через перенос строки
+    # Склеиваем оба сервера через перенос строки, как это делает стандартный конфигуратор Happ
     combined_configs = f"{vless_fi}\n{vless_pl}"
 
     try:
-        # --- ПРОФЕССИОНАЛЬНОЕ ШИФРОВАНИЕ В СТИЛЕ CRYPT3 ---
-        # 1. Сжимаем текст через zlib (стандарт де-факто для Happ/Xray подписок)
-        compressed_data = zlib.compress(combined_configs.encode('utf-8'))
+        # Формируем структуру подписки, чтобы Happ отобразил плашку вашего бренда
+        subscription_data = {
+            "name": "🚀 Sonata VPN Premium",  # Название вашей плашки в Happ
+            "urls": [vless_fi, vless_pl]
+        }
         
-        # 2. Кодируем сжатые байты в Base64
+        # Переводим в JSON-строку для шифрования
+        json_str = json.dumps(subscription_data)
+
+        # --- НАДЕЖНОЕ ШИФРОВАНИЕ В СТИЛЕ CRYPT3 ---
+        # 1. Сжимаем JSON-текст через zlib
+        compressed_data = zlib.compress(json_str.encode('utf-8'))
+        
+        # 2. Кодируем сжатые байты в стандартный Base64
         b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
         
-        # 3. Делаем строку безопасной для URL (заменяем ломающие спецсимволы)
+        # 3. Делаем строку безопасной для URL
         safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
         
         # 4. Собираем финальный глубокий URL для Happ
         happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
         
-        # Сохраняем в локальную БД бота текстовый лог (для истории)
+        # Сохраняем в локальную БД бота текстовый лог
+        try:
+            add_or_update_user(user_id, username, combined_configs, "crypt3_mode", 0)
+        except Exception as db_err:
+            logging.error(f"Ошибка записи в БД: {db_err}")
+            
+        return happ_crypt3_url
+
+    except Exception as e:
+        logging.error(f"Ошибка при шифровании пакета crypt3: {e}")
+        return None
+
+
+async def get_vpn_config_manual(user_id, username=""):
+    """
+    Генерирует зашифрованную мульти-серверную ссылку happ://crypt3/ 
+    с Финляндией и Польшей в одном пакете под брендом вашего сервиса.
+    """
+    # ЖЕЛЕЗОБЕТОННЫЙ UUID: Всегда одинаковый для одного и того же человека
+    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
+
+    # 1. Формируем чистую ссылку VLESS для Финляндии (Порт 43527)
+    remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
+    vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
+
+    # 2. Формируем чистую ссылку VLESS для Польши (Порт 16303)
+    remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
+    vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
+
+    # Склеиваем оба сервера через перенос строки, как это делает стандартный конфигуратор Happ
+    combined_configs = f"{vless_fi}\n{vless_pl}"
+
+    try:
+        # Формируем структуру подписки, чтобы Happ отобразил плашку вашего бренда
+        subscription_data = {
+            "name": "🚀 Sonata VPN Premium",  # Название вашей плашки в Happ
+            "urls": [vless_fi, vless_pl]
+        }
+        
+        # Переводим в JSON-строку для шифрования
+        json_str = json.dumps(subscription_data)
+
+        # --- НАДЕЖНОЕ ШИФРОВАНИЕ В СТИЛЕ CRYPT3 ---
+        # 1. Сжимаем JSON-текст через zlib
+        compressed_data = zlib.compress(json_str.encode('utf-8'))
+        
+        # 2. Кодируем сжатые байты в стандартный Base64
+        b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
+        
+        # 3. Делаем строку безопасной для URL
+        safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
+        
+        # 4. Собираем финальный глубокий URL для Happ
+        happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
+        
+        # Сохраняем в локальную БД бота текстовый лог
         try:
             add_or_update_user(user_id, username, combined_configs, "crypt3_mode", 0)
         except Exception as db_err:
