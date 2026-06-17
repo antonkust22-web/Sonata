@@ -45,7 +45,7 @@ API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPNaixA-bVTtAqZhYEQq_U85iC1z8sAAlOjAALqaWBJAAHhG-hzI7fyPAQ"
+VIDEO_MAIN = "BAACAgIAAxkBAAPaajJjgN8IT8fYPWnU7aYj4rhAhmIAAr2iAAJQ7ZFJltrjNm3tHII8BA"
 
 text1 = (
     "👋 <b>Обходите блокировки легко!</b>\n"
