@@ -568,6 +568,8 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import urllib.parse
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -579,19 +581,18 @@ async def connect(callback: types.CallbackQuery):
         happ_crypt_link = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         if happ_crypt_link:
-            # Кодируем happ:// ссылку, чтобы превратить её в безопасный веб-параметр
+            # Кодируем happ:// ссылку для безопасного веб-редиректа
             encoded_happ_url = urllib.parse.quote(happ_crypt_link, safe='')
             
-            # Используем стабильный и бесплатный веб-редиректор, который Telegram пропускает на 100%
-            # При клике на эту кнопку сайт мгновенно перенаправит и запустит Happ на смартфоне
+            # Собираем финальную ссылку-редиректор
             final_web_url = f"https://redirect.cc{encoded_happ_url}"
 
-            # Создаем кнопку в один клик
+            # Кнопка «Назад» (Обычная, без длинных ссылок, чтобы Telegram не ругался)
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP", url=final_web_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
+            # Зашиваем длинный URL в красивую текстовую гиперссылку <a>
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
                 "Мы объединили и зашифровали для вас две локации в один пакет:\n"
@@ -599,8 +600,8 @@ async def connect(callback: types.CallbackQuery):
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
                 "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-                "2. Нажмите синюю кнопку <b>«⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP»</b> ниже.\n"
-                "3. Система безопасно откроет приложение и добавит обе страны в ваш список под вашей фирменной плашкой!"
+                f"2. ➔ <a href='{final_web_url}'><b>⚡️ НАЖМИТЕ СЮДА ДЛЯ ИМПОРТА В HAPP</b></a> ⚡️\n\n"
+                "3. Система безопасно откроет приложение и автоматически добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>!"
             )
 
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
