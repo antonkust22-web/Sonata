@@ -163,14 +163,16 @@ async def get_subscription(sub_id: str):
     )
 
 
+
 import uuid
 import secrets
 import json
 import logging
 import urllib.parse
 import aiohttp
+from telegraph import Telegraph
 
-# Ваши точные данные серверов
+# Данные ваших серверов
 SERVERS = [
     {
         "id": "fi_1",
@@ -204,12 +206,12 @@ SERVERS = [
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Авторизуется на серверах (идут пуши) и подготавливает ключи VLESS.
+    Регистрирует клиента на панелях (идут уведомления)
+    и публикует общую подписку на интернет-странице Telegraph.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Железобетонный постоянный UUID
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
     config_links = []
@@ -219,7 +221,7 @@ async def get_vpn_config_manual(user_id, username=""):
             try:
                 email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
 
-                # Авторизация (Пуши о входе прилетят мгновенно)
+                # Авторизация (Пуши прилетят мгновенно)
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
 
@@ -251,14 +253,33 @@ async def get_vpn_config_manual(user_id, username=""):
             except Exception as e:
                 logging.error(f"Ошибка синхронизации сервера: {e}")
 
-    # Записываем в базу данных только текстовую пометку (БД больше не сможет сломать ссылку подписки!)
+    if not config_links:
+        return None
+
+    # --- МУЛЬТИ-ПОДПИСКА ЧЕРЕЗ TELEGRAPH ---
     try:
-        add_or_update_user(user_id, username, "\n".join(config_links), "multi_mode", 0)
-    except Exception:
-        pass
+        tg = Telegraph()
+        tg.create_account(short_name='Sonata')
         
-    # Возвращаем массив из двух готовых сырых vless:// строк
-    return config_links
+        # Склеиваем оба ключа
+        configs_text = "\n".join(config_links)
+        
+        # Создаем публичную интернет-страницу, где лежат ОБА сервера
+        response = tg.create_page(
+            title='Sonata VPN Premium',
+            html_content=f'<p>{configs_text}</p>'
+        )
+        
+        # Получаем короткую интернет-ссылку (всего около 30 символов!)
+        telegraph_url = response['url']
+        
+        # Сохраняем в локальную БД текстовую пометку
+        add_or_update_user(user_id, username, configs_text, telegraph_url, 0)
+        
+        return telegraph_url
+    except Exception as tg_err:
+        logging.error(f"Ошибка создания подписки в Telegraph: {tg_err}")
+        return None
 
 
 
@@ -582,7 +603,6 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
-import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -591,38 +611,26 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Вызываем синхронизацию серверов (идут пуши о входе админа)
-        config_links = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Получаем одну короткую интернет-ссылку на мульти-подписку
+        final_sub_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if config_links and len(config_links) > 0:
-            # Склеиваем оба ключа через обычный перенос строки
-            raw_configs_text = "\n".join(config_links)
-            
-            # Кодируем текст ключей для системной команды Telegram
-            encoded_configs = urllib.parse.quote(raw_configs_text, safe='')
-            
-            # --- НЕУЯЗВИМЫЙ МЕТОД ОДНОГО КЛИКА ---
-            # Официальный протокол Telegram для быстрого копирования текста в буфер обмена.
-            # Одобрен Telegram API на 100%, никогда не вызовет ошибку BUTTON_URL_INVALID!
-            final_copy_command = f"tg://msg_url?url={encoded_configs}"
-
-            # Создаем клавиатуру с кнопкой авто-копирования
+        if final_sub_url:
+            # Создаем клавиатуру с полноценной инлайн-кнопкой!
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_copy_command)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_sub_url)],
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
             text = (
-                "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
-                "Мы объединили две локации в один пакет:\n"
+                "<b>🚀 Ваша единая подписка готова к подключению!</b>\n\n"
+                "Мы объединили две локации в одну умную ссылку:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-                "<b>📥 Инструкция по установке в 2 клика:</b>\n"
+                "<b>📥 Инструкция по установке:</b>\n"
                 "1. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "➔ <i>Telegram мгновенно скопирует оба ключа в память вашего телефона.</i>\n\n"
-                "2. Откройте приложение <b>Happ</b>.\n"
-                "3. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>.\n\n"
-                "🔥 Обе страны сразу добавятся в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>!"
+                "2. Или скопируйте адрес подписки в один тап:\n"
+                f"<code>{final_sub_url}</code>\n\n"
+                "3. Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>, вставьте этот адрес и подтвердите импорт."
             )
 
             # Картинка луны красиво обновится, появится работающая инлайн-кнопка
@@ -633,7 +641,6 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
-
 
 
 
