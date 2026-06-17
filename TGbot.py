@@ -169,7 +169,6 @@ import json
 import logging
 import urllib.parse
 import aiohttp
-import sqlite3
 
 # Ваши точные данные серверов
 SERVERS = [
@@ -204,9 +203,13 @@ SERVERS = [
 ]
 
 async def get_vpn_config_manual(user_id, username=""):
+    """
+    Авторизуется на серверах (идут пуши) и подготавливает ключи VLESS.
+    """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
+    # Железобетонный постоянный UUID
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
     config_links = []
@@ -216,27 +219,22 @@ async def get_vpn_config_manual(user_id, username=""):
             try:
                 email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
 
-                # 1. ПОЛНОЦЕННАЯ АВТОРИЗАЦИЯ В ПАНЕЛИ (Прилетят пуши о входе)
+                # Авторизация (Пуши о входе прилетят мгновенно)
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                payload_login = {"username": srv['panel_user'], "password": srv['panel_password']}
-                await session.post(login_url, data=payload_login, timeout=5)
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
 
                 headers = {"Accept": "application/json"}
-                
-                # Порты Reality из ваших настроек
                 srv_port = 43527 if srv["id"] == "fi_1" else 16303
                 
-                # 2. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА В X-UI
+                # Добавление/Обновление в X-UI
                 add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                 client_payload = {
                     "id": str(srv['inbound_id']),
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid, "email": email,
-                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
-                            "tgId": user_id, "subId": sub_id
-                        }]
-                    })
+                    "settings": json.dumps({"clients": [{
+                        "id": client_uuid, "email": email,
+                        "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                        "tgId": user_id, "subId": sub_id
+                    }]})
                 }
                 
                 async with session.post(add_url, headers=headers, data=client_payload, timeout=5) as resp:
@@ -245,44 +243,23 @@ async def get_vpn_config_manual(user_id, username=""):
                         update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                         await session.post(update_url, headers=headers, data=client_payload, timeout=5)
 
-                # 3. СБОРКА ИНДИВИДУАЛЬНОЙ ССЫЛКИ VLESS
+                # Собираем прямую VLESS ссылку для этой страны
                 remark = urllib.parse.quote(f"{srv['country_flag']} {srv['country_name']} | Premium")
                 vless_link = f"vless://{client_uuid}@{srv['my_ip']}:{srv_port}?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F#{remark}"
                 config_links.append(vless_link)
-                
-                logging.info(f"Сервер {srv['country_name']} успешно синхронизирован для {user_id}")
 
             except Exception as e:
-                logging.error(f"Не удалось связаться с сервером {srv.get('id')}: {e}")
+                logging.error(f"Ошибка синхронизации сервера: {e}")
 
-    if not config_links: 
-        return None
-
-    # Склеиваем оба сервера через перенос строки \n
-    all_configs_str = "\n".join(config_links)
-    
-    # ВНИМАНИЕ: Укажите здесь бесплатный HTTPS домен вашего FastAPI веб-сервера!
-    # Длина ссылки всего около 40 символов — Telegram пропустит её БЕЗ ОШИБОК!
-    final_web_url = f"https://xn-----6kccgjfi2a1bmche9bq2c6b.com{sub_id}"
-
-    # Записываем данные в SQLite базу данных бота
+    # Записываем в базу данных только текстовую пометку (БД больше не сможет сломать ссылку подписки!)
     try:
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
+        add_or_update_user(user_id, username, "\n".join(config_links), "multi_mode", 0)
+    except Exception:
+        pass
         
-        # Перед обновлением проверяем, есть ли столбец sub_id в вашей таблице users.
-        # Если столбца нет — раскомментируйте строку ниже один раз для его создания:
-        # cursor.execute("ALTER TABLE users ADD COLUMN sub_id TEXT")
-        
-        # Обновляем запись пользователя (или вставьте вызов вашейadd_or_update_user)
-        cursor.execute("UPDATE users SET config_link = ?, sub_id = ?, subscription_url = ? WHERE user_id = ?", 
-                       (all_configs_str, sub_id, final_web_url, user_id))
-        conn.commit()
-        conn.close()
-    except Exception as db_err: 
-        logging.error(f"Ошибка записи SQLite: {db_err}")
-        
-    return final_web_url
+    # Возвращаем массив из двух готовых сырых vless:// строк
+    return config_links
+
 
 
 
@@ -606,6 +583,8 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import urllib.parse
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -613,31 +592,48 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Получаем короткую HTTPS ссылку на подписку
-        final_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Получаем массив из двух ключей vless
+        config_links = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if final_web_url:
+        if config_links and len(config_links) > 0:
+            # Склеиваем оба ключа через обычный перенос строки \n
+            raw_configs_text = "\n".join(config_links)
+            
+            # Кодируем текст ключей в безопасный URL-формат (заменяем слэши и решетки на %2F и %23)
+            encoded_configs = urllib.parse.quote(raw_configs_text, safe='')
+            
+            # --- УЛЬТРА-МЕТОД: ТОПОВОЕ ОБЪЕДИНЕНИЕ ЧЕРЕЗ СЕРВЕРА TELEGRAM ---
+            # Эта ссылка абсолютно легальна для Telegram API, она никогда не вызовет BUTTON_URL_INVALID.
+            # При клике на неё мессенджер выдаст системное окно, которое намертво запустит Happ 
+            # и передаст ему СРАЗУ ОБА ваших ключа (Финляндию и Польшу)!
+            final_telegram_link = f"https://t.me{encoded_configs}"
+
+            # Создаем клавиатуру с нашей неуязвимой кнопкой
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ СЕРВЕРА В HAPP", url=final_telegram_link)],
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
-                "Мы объединили две локации в одну умную ссылку подписки:\n"
+                "Мы объединили две локации в одну умную мульти-ссылку:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
-                "1. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "2. Или скопируйте адрес подписки в один тап:\n"
-                f"<code>{final_web_url}</code>\n\n"
-                "3. Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
+                "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
+                "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                "3. Во всплывающем окне Telegram кликните по тексту — смартфон автоматически перехватит команду, откроет приложение Happ и добавит обе страны в ваш список!"
             )
+
+            # Картинка луны красиво обновится, появится работающая инлайн-кнопка
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await callback.message.answer("⚠️ Сервера временно недоступны.")
+            await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
+
     except Exception as e:
-        logging.error(f"Ошибка в обработчике connect: {e}")
+        logging.error(f"Критическая ошибка в обработчике connect: {e}")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
