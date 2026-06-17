@@ -7,6 +7,7 @@ import time
 import urllib.parse
 import secrets
 import os
+import base64
 import zlib
 import subprocess
 import sqlite3  # Используем стандартный встроенный sqlite3
