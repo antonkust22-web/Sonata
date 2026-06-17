@@ -648,31 +648,23 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации в Telegram, чтобы кнопка не висела в загрузке
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Вызываем обновленную функцию. Она регистрирует юзера на двух серверах
-        # и возвращает (all_configs_str, subscription_web_url)
         configs_str, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # Если подписка успешно сгенерирована
         if sub_web_url and sub_web_url.startswith("http"):
-            
-            # 1. Собираем прямую ссылку для автоматического импорта в приложение Happ
             raw_happ_url = f"happ://import/{sub_web_url}"
+            safe_redirect_url = raw_happ_url  
             
-            # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
-            safe_redirect_url = raw_happ_url  # Резервный вариант, если сервис будет недоступен
             try:
                 async with aiohttp.ClientSession() as session:
                     enc_url = urllib.parse.quote(raw_happ_url)
-                    # ИСПРАВЛЕНО: добавлен правильный эндпоинт Яндекса '--?url='
-                    clck_url = f"https://clck.ru--{enc_url}"
+                    # ИСПРАВЛЕНО: Правильный и точный адрес clck.ru
+                    clck_url = f"https://clck.ru{enc_url}"
                     async with session.get(clck_url, timeout=5) as resp:
                         if resp.status == 200:
                             safe_redirect_url = await resp.text()
@@ -680,7 +672,6 @@ async def connect(callback: types.CallbackQuery):
                 logging.error(f"Не удалось сократить happ-ссылку: {e}")
                 safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру 
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
                 [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
@@ -701,7 +692,6 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            # Если функция вернула None (ошибка авторизации панелей или пользователь отключен)
             await callback.message.answer("⚠️ Не удалось сгенерировать подписку. Доступ заблокирован или сервера временно недоступны.")
 
     except Exception as e:
