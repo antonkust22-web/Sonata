@@ -167,7 +167,7 @@ async def get_subscription(sub_id: str):
 SERVERS = [
     {
         "id": "fi_1",
-        "panel_url": "http://78.17.1.43:2053",
+        "panel_url": "https://78.17.1.43:2053",
         "base_path": "/bqPVI4YlUguDhw0MvD", 
         "panel_user": "Asad",
         "panel_password": "Lodka120259",
@@ -220,10 +220,22 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
 
-                # 2. Получение текущих клиентов инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                # 2. Получение текущих клиентов инбаунда (С АДАПТИВНЫМ URL ПОД РАЗНЫЕ ПАНЕЛИ)
+                if srv["id"] == "de_1":
+                    # Для Польши убираем повторение путей, если панель выдает 404
+                    get_url = f"{srv['panel_url']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                else:
+                    # Для Финляндии оставляем стандартный путь с bqPVI4YlUguDhw0MvD
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                
                 async with session.get(get_url, headers=headers, timeout=5) as resp:
-                    res_json = await resp.json()
+                    if resp.status == 404 and srv["id"] == "de_1":
+                        # Если всё равно 404, пробуем альтернативный стандартный путь X-UI
+                        get_url = f"{srv['panel_url']}{srv['base_path']}/xui/API/inbounds/get/{srv['inbound_id']}"
+                        async with session.get(get_url, headers=headers, timeout=5) as resp2:
+                            res_json = await resp2.json()
+                    else:
+                        res_json = await resp.json()
 
                 if not res_json.get("success"):
                     logging.error(f"Ошибка GET на сервере {srv['country_name']}: {res_json}")
@@ -295,8 +307,8 @@ async def get_vpn_config_manual(user_id, username=""):
     all_configs_str = "\n".join(config_links)
     
     # Ссылка на ваш FastAPI-эндпоинт подписок. 
-    # ЗАМЕНИТЕ '://yourdomain.com' на реальный домен или IP вашего бота, где запущен FastAPI
-    sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+    # ВАЖНО: ЗАМЕНИТЕ '://yourdomain.com' на реальный домен или IP вашего бота, где запущен FastAPI
+    sub_remark = urllib.parse.quote("🚀 Sonata VPN")
     subscription_web_url = f"https://://yourdomain.com/sub/{sub_id}#{sub_remark}"
 
     # Сохраняем в вашу локальную БД всю пачку настроек
