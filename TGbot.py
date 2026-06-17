@@ -536,7 +536,8 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
-
+import aiohttp
+import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -545,13 +546,29 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Вызываем функцию (Бот заходит на сервера, идут алерты о входе, возвращается короткий URL)
+        # Вызываем функцию (Бот заходит на сервера, идут пуши о входе)
         final_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         if final_web_url:
-            # Создаем клавиатуру с короткой ссылкой на FastAPI редиректор
+            # Резервный вариант
+            safe_button_url = final_web_url  
+            
+            # Оборачиваем IP-адрес через Яндекс clck.ru, чтобы Telegram одобрил кнопку!
+            try:
+                async with aiohttp.ClientSession() as session:
+                    enc_url = urllib.parse.quote(final_web_url, safe='')
+                    clck_url = f"https://clck.ru{enc_url}"
+                    async with session.get(clck_url, timeout=5) as resp:
+                        if resp.status == 200:
+                            res_text = await resp.text()
+                            if "clck.ru" in res_text:
+                                safe_button_url = res_text.strip()
+            except Exception as e:
+                logging.error(f"Не удалось сократить ссылку для Telegram кнопки: {e}")
+
+            # Создаем клавиатуру с разрешенным Яндексовским URL
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_url)],
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_button_url)],
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
@@ -574,6 +591,7 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
