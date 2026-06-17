@@ -288,22 +288,26 @@ async def get_vpn_config_manual(user_id, username=""):
             except Exception as e:
                 logging.error(f"Не удалось обработать сервер {srv['country_name']}: {e}")
 
-    if not config_links:
+        if not config_links:
         return None, None
 
     all_configs_str = "\n".join(config_links)
     
-    # СТРОГОЕ и ЧИСТОЕ формирование ссылки подписки. Без использования сторонних переменных.
-    # Это исключит появление битых ссылок вида "78.17.10a00a6fa..."
+    # 1. ЗАЩИТА: Формируем чистую ссылку для Telegram-бота напрямую
+    # Мы собираем её локально в переменную, чтобы БД не могла её испортить
     subscription_web_url = f"https://78.17.1{sub_id}"
 
-    # Сохраняем в вашу локальную БД всю пачку настроек
+    # 2. Передаем в вашу БД вместо ссылки просто sub_id, чтобы функция add_or_update_user 
+    # не смогла сломать или обрезать IP-адрес!
     try:
-        add_or_update_user(user_id, username, all_configs_str, subscription_web_url, 0)
+        # Передаем sub_id в поле, где раньше была ссылка
+        add_or_update_user(user_id, username, all_configs_str, sub_id, 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
     
+    # Возвращаем полностью готовую, правильную ссылку в обработчик кнопок
     return all_configs_str, subscription_web_url
+
 
           
 
@@ -654,7 +658,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-            
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -663,33 +666,45 @@ async def connect(callback: types.CallbackQuery):
     try:
         configs_str, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if sub_web_url and sub_web_url.startswith("http"):
-            clean_sub_url = sub_web_url.strip()
-
-            # Клавиатура без сторонних сокращателей — только чистая и надежная ссылка подписки
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🌐 Открыть ссылку подписки", url=clean_sub_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-            ])
-
-            text = (
-                "<b>📥 Подключение через приложение Happ:</b>\n\n"
-                "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-                "2. Нажмите пальцем на ссылку ниже, чтобы <b>быстро скопировать её</b>:\n\n"
-                f"<code>{clean_sub_url}</code>\n\n"
-                "3. Откройте приложение Happ.\n"
-                "4. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
-                "5. Вставьте скопированный адрес и подтвердите импорт."
-            )
-
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        # ЖЕСТКАЯ КОРРЕКЦИЯ ССЫЛКИ: 
+        # Если в коде или БД ссылка сломалась, мы достаем из неё sub_id (последние 16 символов) 
+        # и собираем идеальный, правильный URL заново вручную!
+        if sub_web_url:
+            # Извлекаем sub_id (всегда берем хвост строки)
+            clean_sub_id = sub_web_url.split('/')[-1].split('#')[0].strip()
+            # Если вместо sub_id прилетела сломанная строка "78.17.13ae815734dc74224", 
+            # отрезаем первые 8 символов "78.17.1" и получаем чистый hex
+            if "78.17.1" in clean_sub_id:
+                clean_sub_id = clean_sub_id.replace("78.17.1", "")
             
+            # Собираем гарантированно правильную ссылку без искажений
+            sub_web_url = f"https://78.17.1{clean_sub_id}"
+            clean_sub_url = sub_web_url
         else:
-            await callback.message.answer("⚠️ Не удалось сгенерировать подписку. Доступ заблокирован или сервера временно недоступны.")
+            await callback.message.answer("⚠️ Не удалось сгенерировать подписку.")
+            return
+
+        # Дальше идет ваша стандартная сборка клавиатуры (оставляем без изменений)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Открыть ссылку подписки", url=clean_sub_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+
+        text = (
+            "<b>📥 Подключение через приложение Happ:</b>\n\n"
+            "1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+            "2. Нажмите пальцем на ссылку ниже, чтобы <b>быстро скопировать её</b>:\n\n"
+            f"<code>{clean_sub_url}</code>\n\n"
+            "3. Откройте приложение Happ.\n"
+            "4. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
+            "5. Вставьте скопированный адрес и подтвердите импорт."
+        )
+
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
 
 
 
