@@ -289,7 +289,9 @@ async def get_vpn_config_manual(user_id, username=""):
                 host = "78.17.1.43"
 
             # Модуль подписок панели автоматически объединит инбаунды с одинаковым sub_id!
-            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
+            # Мы принудительно указываем панели отдать инбаунд №1 и инбаунд №2 для этого sub_id
+            subscription_web_url = f"https://{host}:2096/sub/{sub_id}?inbound=1,2#{sub_remark}"
+
 
             # Сохраняем в локальную БД
             expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
