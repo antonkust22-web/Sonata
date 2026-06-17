@@ -538,33 +538,26 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
-import uuid
-import json
-import zlib
-import base64
-import urllib.parse
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
     try:
-        # Вызываем функцию синхронизации серверов (приходят пуши о входе админа)
+        # Вызываем синхронизацию серверов (идут пуши о входе админа)
         await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # --- ПРОГРАММНАЯ СБОРКА CRYPT3 ССЫЛКИ ДЛЯ WEBAPP ---
+        # --- ПРОГРАММНАЯ СБОРКА CRYPT3 ССЫЛКИ ---
         client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
 
-        remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
+        remark_fi = urllib.parse.quote("🇫🇮 Финляндия")
         vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
 
-        remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
+        remark_pl = urllib.parse.quote("🇵🇱 Польша")
         vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
         subscription_data = {
-            "name": "🚀 Sonata VPN Premium",
+            "name": "🚀 Sonata VPN",
             "urls": [vless_fi, vless_pl]
         }
         
@@ -573,19 +566,19 @@ async def connect(callback: types.CallbackQuery):
         b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
         safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
         
-        # Финальная глубокая ссылка для приложения Happ
+        # Глубокая ссылка для приложения Happ
         happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
+        
+        # Безопасный HTTPS URL редиректа для текста
+        final_web_url = f"https://redirect.cc{urllib.parse.quote(happ_crypt3_url, safe='')}"
 
-        # Оборачиваем глубокую ссылку в стандартный WebApp-редиректор Telegram.
-        # Это обходит абсолютно все ограничения Telegram API на порты, IP и протоколы.
+        # Кнопка в клавиатуре теперь только одна (Назад), здесь нет длинных ссылок!
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="⚡️ ИМПОРТИРОВАТЬ В HAPP", 
-                web_app=WebAppInfo(url=f"https://redirect.cc{urllib.parse.quote(happ_crypt3_url, safe='')}")
-            )],
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
         ])
 
+        # Зашиваем ссылку в текст через HTML тег <a>. 
+        # ВНИМАНИЕ: Обязательно используем одинарные кавычки внутри href='...'
         text = (
             "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
             "Мы объединили и зашифровали для вас две локации в один пакет:\n"
@@ -593,15 +586,17 @@ async def connect(callback: types.CallbackQuery):
             "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
             "<b>📥 Инструкция по установке:</b>\n"
             "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-            "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            "3. Встроенное окно Telegram безопасно перенаправит команду, откроет приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
+            f"2. Нажмите пальцем сюда ➔ <a href='{final_web_url}'><b>[ СКАЧАТЬ НАСТРОЙКИ В HAPP ]</b></a>\n\n"
+            "3. Смартфон откроет страницу перехода, автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
         )
 
+        # Редактируем описание (Текст сообщения успешно обновится)
         await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
