@@ -133,7 +133,7 @@ def get_user_from_db(user_id):
 async def get_vpn_config_manual(user_id, username=""):
     """
     Регистрирует клиента на обоих серверах (идут уведомления)
-    и собирает мульти-серверную ссылку vless://sub/ для Happ.
+    и собирает мульти-серверную ссылку vless://sub/ в правильном URL-Safe Base64 формате.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
@@ -151,7 +151,7 @@ async def get_vpn_config_manual(user_id, username=""):
     vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- ФИНЛЯНДИЯ (ИДЕТ УВЕДОМЛЕНИЕ О ВХОДЕ) ---
+        # --- ФИНЛЯНДИЯ ---
         try:
             login_fi = "https://78.17.1"
             await session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=5)
@@ -174,7 +174,7 @@ async def get_vpn_config_manual(user_id, username=""):
         except Exception as e:
             logging.error(f"Ошибка Финляндии: {e}")
 
-        # --- ПОЛЬША (ИДЕТ УВЕДОМЛЕНИЕ О ВХОДЕ) ---
+        # --- ПОЛЬША ---
         try:
             login_pl = "http://78.17.152"
             await session.post(login_pl, data={"username": "Soul", "password": "Lodka1321"}, timeout=5)
@@ -196,13 +196,17 @@ async def get_vpn_config_manual(user_id, username=""):
         except Exception as e:
             logging.error(f"Ошибка Польши: {e}")
 
-    # --- СКЛЕЙКА В МУЛЬТИ-ПОДПИСКУ VLESS ---
-    # Объединяем два ключа через перенос строки и кодируем в чистый Base64
+    # --- ИСПРАВЛЕННАЯ СКЛЕЙКА В МУЛЬТИ-ПОДПИСКУ VLESS (БЕЗ ZLIB) ---
+    # Объединяем два ключа через обычный перенос строки
     combined_str = f"{vless_fi}\n{vless_pl}"
-    b64_str = base64.b64encode(combined_str.encode('utf-8')).decode('utf-8')
     
-    # Стандартный xray-протокол мульти-подписки, который Happ понимает без веб-сайтов!
-    final_vless_sub = f"vless://sub/{b64_str}?title=🚀 Sonata VPN Premium"
+    # Кодируем строго через urlsafe_b64encode, чтобы строка не сожержала ломающих символов + и /
+    b64_bytes = base64.urlsafe_b64encode(combined_str.encode('utf-8'))
+    b64_str = b64_bytes.decode('utf-8').replace('=', '') # Отрезаем знаки равенства (padding), Happ их не любит
+    
+    # Формируем стандартную мульти-ссылку подписки, кодируя название в URL формат
+    safe_title = urllib.parse.quote("Sonata VPN Premium")
+    final_vless_sub = f"vless://sub/{b64_str}?title={safe_title}"
 
     try:
         add_or_update_user(user_id, username, final_vless_sub, "vless_sub_mode", 0)
@@ -210,6 +214,7 @@ async def get_vpn_config_manual(user_id, username=""):
         pass
         
     return final_vless_sub
+
 
 
 
