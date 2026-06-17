@@ -138,8 +138,9 @@ import aiohttp
 async def get_vpn_config_manual(user_id, username=""):
     """
     Регистрирует клиента на обоих инбаундах Финляндии 
-    и формирует валидную веб-ссылку подписки, которую примет Happ.
+    с прямой, жестко прописанной авторизацией без использования скрытых PANEL_URL.
     """
+    # unsafe=True и ssl=False ТРЕБУЮТСЯ ОБЯЗАТЕЛЬНО, чтобы скрипт авторизовался на HTTPS панели без домена
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -148,16 +149,22 @@ async def get_vpn_config_manual(user_id, username=""):
     sub_id = secrets.token_hex(8)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- ФИНЛЯНДИЯ (ИНБАУНД №1 - порт 43527) ---
+        # --- СТРОГАЯ АВТОРИЗАЦИЯ НА ФИНЛЯНДИИ ---
         try:
-            login_fi = f"{PANEL_URL}{BASE_PATH}/login"
-            await session.post(login_fi, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=5)
+            # Используем прямой HTTPS адрес панели, который вы настроили
+            login_fi = "https://78.17.1"
+            
+            # Отправляем логин
+            async with session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=10) as resp:
+                await resp.text()
+                logging.info(f"Бот отправил запрос авторизации на Финляндию. Статус ответа: {resp.status}")
             
             headers = {"Accept": "application/json"}
-            add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+            add_url = "https://78.17.1"
             
+            # Запись пользователя в инбаунд №1 (Финляндия)
             payload_fi = {
-                "id": "1", # Ваш первый Reality-вход
+                "id": "1",
                 "settings": json.dumps({"clients": [{
                     "id": client_uuid, "email": f"🇫🇮_Финляндия_#{user_id}",
                     "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
@@ -167,15 +174,12 @@ async def get_vpn_config_manual(user_id, username=""):
             async with session.post(add_url, headers=headers, data=payload_fi, timeout=5) as resp:
                 resp_text = await resp.text()
                 if "already exists" in resp_text:
-                    up_fi = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                    up_fi = f"https://78.17.1{client_uuid}"
                     await session.post(up_fi, headers=headers, data=payload_fi, timeout=5)
-        except Exception as e:
-            logging.error(f"Ошибка Финляндии: {e}")
 
-        # --- ПОЛЬША (ИНБАУНД №2 - порт 43528, каскад) ---
-        try:
+            # Запись пользователя в инбаунд №2 (Польша - каскад)
             payload_pl = {
-                "id": "2", # Ваша созданная «дверь» в Польшу
+                "id": "2",
                 "settings": json.dumps({"clients": [{
                     "id": client_uuid, "email": f"🇵🇱_Польша_#{user_id}",
                     "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
@@ -185,24 +189,18 @@ async def get_vpn_config_manual(user_id, username=""):
             async with session.post(add_url, headers=headers, data=payload_pl, timeout=5) as resp:
                 resp_text = await resp.text()
                 if "already exists" in resp_text:
-                    up_pl = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
+                    up_pl = f"https://78.17.1{client_uuid}"
                     await session.post(up_pl, headers=headers, data=payload_pl, timeout=5)
-        except Exception as e:
-            logging.error(f"Ошибка Польши: {e}")
+                    
+        except Exception as api_err:
+            logging.error(f"КРИТИЧЕСКАЯ ОШИБКА АВТОРИЗАЦИИ X-UI: {api_err}")
 
-    try:
-        parsed_url = urllib.parse.urlparse(PANEL_URL)
-        host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
-    except Exception:
-        host = "78.17.1.43"
-
-    # СБОРКА СТАНДАРТНОЙ ВЕБ-ПОДПИСКИ С ПАРАМЕТРОМ СКЛЕЙКИ
+    # Сборка чистой ссылки подписки с параметром склейки двух инбаундов
     sub_remark = urllib.parse.quote("Sonata VPN Premium")
-    # ИСПРАВЛЕНО: Теперь формируется чистая веб-ссылка подписки
-    final_web_sub = f"https://{host}:2096/sub/{sub_id}?inbound=1,2#{sub_remark}"
+    final_web_sub = f"https://78.17.1{sub_id}?inbound=1,2#{sub_remark}"
 
     try:
-        add_or_update_user(user_id, username, "using_master_links", final_web_sub, 0)
+        add_or_update_user(user_id, username, "master_mode", final_web_sub, 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
         
