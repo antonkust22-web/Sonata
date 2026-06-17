@@ -404,90 +404,108 @@ async def renew_vpn_subscription(user_id: int) -> bool:
 
 
 
+import time
+
 async def renew_vpn_subscription_flexible(user_id: int, days: int):
     """
-    Продлевает подписку в 3X-UI на ТОЧНОЕ количество дней (поиск по tgId).
+    Продлевает подписку на ТОЧНОЕ количество дней СРАЗУ НА ВСЕХ СЕРВЕРАХ из списка SERVERS.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
-            
-            headers = {"Accept": "application/json"}
+    success_count = 0
+    final_expiry_seconds = 0
+    client_sub_id = None
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        for srv in SERVERS:
+            try:
+                email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+
+                # 1. Авторизация в панели конкретного сервера
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
                 
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для гибкого продления: {res_json}")
-                return False
+                headers = {"Accept": "application/json"}
+
+                # 2. Получаем текущие данные инбаунда с адаптивным URL
+                if srv["id"] == "de_1":
+                    get_url = f"{srv['panel_url']}/root/panel/api/inbounds/get/{srv['inbound_id']}"
+                else:
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+
+                async with session.get(get_url, headers=headers, timeout=5) as resp:
+                    res_json = await resp.json()
+                    
+                if not res_json or not res_json.get("success"):
+                    logging.error(f"Не удалось получить данные инбаунда на сервере {srv['country_name']} для продления.")
+                    continue
+                    
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
                 
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
-            
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
-
-            # 3. Динамический расчет времени
-            current_time_ms = int(time.time() * 1000)
-            custom_days_ms = days * 24 * 60 * 60 * 1000
-            
-            if client.get("expiryTime", 0) > current_time_ms:
-                new_expiry = client["expiryTime"] + custom_days_ms
-            else:
-                new_expiry = current_time_ms + custom_days_ms
-
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-            
-            client_sub_id = client.get("subId", "")
-            if not client_sub_id:
-                client_sub_id = secrets.token_hex(8)
-
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": new_expiry,
-                        "enable": True,
-                        "tgId": user_id,
-                        "subId": client_sub_id
-                    }]
-                })
-            }
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
-            
-            success = update_resp.get("success", False)
-            if success:
-                expiry_seconds = int(new_expiry / 1000)
-                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
-                logging.info(f"Подписка для пользователя {user_id} успешно продлена на {days} дн. в X-UI.")
-                return client_sub_id
+                # Поиск клиента по tgId
+                client = next((c for c in clients if c.get("tgId") == user_id), None)
                 
-            return False
-    except Exception as e:
-        logging.error(f"Ошибка при гибком продлении подписки: {e}")
-        return False
+                if not client:
+                    logging.error(f"Клиент {user_id} не найден на сервере {srv['country_name']}. Пропускаем продление.")
+                    continue
+
+                # 3. Динамический расчет времени продления
+                current_time_ms = int(time.time() * 1000)
+                custom_days_ms = days * 24 * 60 * 60 * 1000
+                
+                # Если текущая подписка еще активна, прибавляем дни к ней. Если сгорела — отсчитываем от текущего момента.
+                if client.get("expiryTime", 0) > current_time_ms:
+                    new_expiry = client["expiryTime"] + custom_days_ms
+                else:
+                    new_expiry = current_time_ms + custom_days_ms
+
+                client_uuid = client['id']
+                update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                
+                client_sub_id = client.get("subId", "")
+                if not client_sub_id:
+                    client_sub_id = secrets.token_hex(8)
+
+                client_data = {
+                    "id": str(srv['inbound_id']),
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid,
+                            "email": email,
+                            "limitIp": client.get("limitIp", 2),
+                            "totalGB": client.get("totalGB", 0),
+                            "expiryTime": new_expiry,
+                            "enable": True,  # Принудительно включаем клиента, если он был деактивирован
+                            "tgId": user_id,
+                            "subId": client_sub_id
+                        }]
+                    })
+                }
+                
+                async with session.post(update_url, headers=headers, data=client_data, timeout=5) as resp:
+                    update_resp = await resp.json()
+                
+                if update_resp.get("success", False):
+                    success_count += 1
+                    final_expiry_seconds = int(new_expiry / 1000)
+                    logging.info(f"Сервер {srv['country_name']} успешно продлил подписку пользователя {user_id}.")
+
+            except Exception as e:
+                logging.error(f"Ошибка при гибком продлении на сервере {srv.get('country_name', 'Неизвестно')}: {e}")
+
+    # Если хотя бы один сервер успешно обновился, фиксируем изменения в локальной БД бота
+    if success_count > 0:
+        try:
+            # Обновляем поле времени действия в вашей локальной БД базы данных бота
+            add_or_update_user(user_id, "", expiry_time=final_expiry_seconds)
+        except Exception as db_err:
+            logging.error(f"Не удалось обновить дату истечения в БД бота: {db_err}")
+        return client_sub_id
+        
+    return False
+
 
 
 async def revoke_vpn_subscription(user_id: int) -> bool:
