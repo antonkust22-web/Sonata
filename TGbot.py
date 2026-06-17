@@ -289,7 +289,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 logging.error(f"Не удалось обработать сервер {srv['country_name']}: {e}")
 
         if not config_links:
-        return None, None
+            return None, None
 
     all_configs_str = "\n".join(config_links)
     
