@@ -8,6 +8,7 @@ import secrets
 import os
 import subprocess
 import sqlite3  # Используем стандартный встроенный sqlite3
+import base64
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
@@ -35,11 +36,10 @@ logging.basicConfig(
 
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
 API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
-PANEL_URL = "https://78.17.1.43:2053"
-PANEL_USER = "Asad"
-PANEL_PASSWORD = "Lodka120259"
-INBOUND_ID = 1
-BASE_PATH = "/bqPVI4YlUguDhw0MvD"
+
+
+
+
 
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
@@ -122,139 +122,189 @@ def get_user_from_db(user_id):
     return row
 
 
+from fastapi import FastAPI, HTTPException, Response
+import base64
 
+# Если объект app уже создан в файле, эту строку писать не нужно:
+app = FastAPI()
+
+@app.get("/sub/{sub_id}")
+async def get_subscription(sub_id: str):
+    """
+    Эндпоинт, который вызывает Happ. 
+    Выдает конфигурации Финляндии и Польши в одном пакете.
+    """
+    # 1. Достаем запись пользователя из вашей БД по sub_id
+    # ВАЖНО: Замените get_user_by_sub_id на вашу реальную функцию работы с БД!
+    user_data = get_user_by_sub_id(sub_id) 
+    
+    if not user_data:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+        
+    # В user_data["config_link"] должна лежать строка, сохраненная функцией add_or_update_user
+    # Она содержит: "vless://...Финляндия...\nvless://...Польша..."
+    configs_string = user_data.get("config_link", "")
+    
+    if not configs_string:
+        raise HTTPException(status_code=404, detail="Configs are empty")
+    
+    # 2. Кодируем список серверов в формат Base64 (обязательно для Happ)
+    base64_encoded_configs = base64.b64encode(configs_string.encode("utf-8")).decode("utf-8")
+    
+    # 3. Отдаем ответ клиенту Happ
+    return Response(
+        content=base64_encoded_configs,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Subscription-Userinfo": "upload=0; download=0; total=0; expire=0"
+        }
+    )
+
+
+
+# Ваши актуальные данные серверов
+SERVERS = [
+    {
+        "id": "fi_1",
+        "panel_url": "http://78.17.1.43:2053",
+        "base_path": "/bqPVI4YlUguDhw0MvD", 
+        "panel_user": "Asad",
+        "panel_password": "Lodka120259",
+        "inbound_id": 1,
+        "my_ip": "78.17.1.43",
+        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
+        "sid": "f2cfb510fbaa",
+        "sni": "://sony.com",
+        "country_flag": "🇫🇮",
+        "country_name": "Финляндия"
+    },
+    {
+        "id": "de_1",
+        "panel_url": "http://78.17.152.36:2053",
+        "base_path": "/root",
+        "panel_user": "Soul",
+        "panel_password": "Lodka1321",
+        "inbound_id": 1,
+        "my_ip": "78.17.152.36",
+        "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
+        "sid": "aa72b4f659",
+        "sni": "://sony.com",
+        "country_flag": "🇵🇱",
+        "country_name": "Польша"
+    }
+]
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Формирует красивое имя сервера с флагом для Happ и обновляет конфигурацию в X-UI.
+    Регистрирует/обновляет клиента на всех серверах X-UI.
+    Формирует единую подписку через встроенный FastAPI.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    
-    # Формируем красивый Email, который Happ отобразит как имя сервера.
-    # Заменяем пробелы на нижнее подчеркивание, чтобы панель 3X-UI не выдавала синтаксических ошибок.
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-    
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Логин в панель
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
+    config_links = []
+    # Новый случайный sub_id (если пользователя еще нет в вашей системе)
+    sub_id = secrets.token_hex(8) 
+    expiry_time_ms = 0
 
-            headers = {"Accept": "application/json"}
-
-            # 2. Получение данных инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        for srv in SERVERS:
+            try:
+                # Имя клиента для панели X-UI
+                email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-            if not res_json.get("success"):
-                logging.error(f"Панель X-UI вернула ошибку при GET: {res_json}")
-                return None, None
+                # 1. Авторизация в панели
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
 
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
-            
-            # Ищем клиента по уникальному tgId
-            current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-            
-            # Резервный поиск по старому формату email на случай первого перехода пользователя
-            if not current_client:
-                old_email = f"user_{user_id}"
-                current_client = next((c for c in clients if c.get("email") == old_email), None)
+                headers = {"Accept": "application/json"}
 
-            client_uuid = current_client.get("id") if current_client else None
+                # 2. Получение текущих клиентов инбаунда
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers=headers, timeout=5) as resp:
+                    res_json = await resp.json()
 
-            # 3. Создание клиента, если его нет
-            if not client_uuid:
-                client_uuid = str(uuid.uuid4())
-                sub_id = secrets.token_hex(8) 
+                if not res_json.get("success"):
+                    logging.error(f"Ошибка GET на сервере {srv['country_name']}: {res_json}")
+                    continue
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
                 
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                client_data = {
-                    "id": str(INBOUND_ID), 
+                # Поиск существующего пользователя
+                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not current_client:
+                    old_email = f"user_{user_id}"
+                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+
+                client_uuid = current_client.get("id") if current_client else str(uuid.uuid4())
+                expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
+                
+                # Если у юзера уже был sub_id на одном из серверов, фиксируем его для всех
+                if current_client and current_client.get("subId"):
+                    sub_id = current_client.get("subId")
+
+                # 3. Добавление или обновление на сервере
+                if not current_client:
+                    action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                else:
+                    action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+
+                client_payload = {
+                    "id": str(srv['inbound_id']),
                     "settings": json.dumps({
                         "clients": [{
                             "id": client_uuid,
-                            "email": email,  # Красивый email с флагом
+                            "email": email,
                             "limitIp": 2,
                             "totalGB": 0,
-                            "expiryTime": 0,
-                            "enable": True,
-                            "tgId": user_id,
-                            "subId": sub_id  
-                        }]
-                    })
-                }
-                async with session.post(add_url, headers=headers, data=client_data, timeout=10) as resp:
-                    await resp.text()
-                expiry_time_ms = 0
-            else:
-                # Клиент существует, обновляем его параметры и принудительно ставим новый email с флагом
-                expiry_time_ms = current_client.get("expiryTime", 0)
-                sub_id = current_client.get("subId", "")
-                if not sub_id:
-                    sub_id = secrets.token_hex(8)
-                
-                update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-                client_data = {
-                    "id": str(INBOUND_ID),
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid,
-                            "email": email,  # Принудительное обновление имени сервера под Happ
-                            "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0),
                             "expiryTime": expiry_time_ms,
-                            "enable": current_client.get("enable", True),
+                            "enable": True,
                             "tgId": user_id,
                             "subId": sub_id
                         }]
                     })
                 }
-                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                async with session.post(action_url, headers=headers, data=client_payload, timeout=5) as resp:
                     await resp.text()
 
-            # 4. Формирование рабочей конфигурации и ссылки на подписку
-            my_ip = "78.17.1.43"
-            my_port = res_json["obj"]["port"]
-            pbk = "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc"
-            sid = "f2cfb510fbaa"
-            sni = "://sony.com"
-            
-            server_type = "Premium"
-            remark = f"{country_flag} {country_name}?{server_type}"
-            safe_remark = urllib.parse.quote(remark)
+                # 4. Сборка ссылки конфигурации vless://
+                my_port = res_json["obj"]["port"]
+                remark = f"{srv['country_flag']} {srv['country_name']} | Premium"
+                safe_remark = urllib.parse.quote(remark)
 
-            config_link = (
-                f"vless://{client_uuid}@{my_ip}:{my_port}"
-                f"?type=tcp&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&spx=%2F"
-                f"#{safe_remark}"
-            )
+                # Убираем лишние двоеточия из sni, если они случайно там есть
+                clean_sni = srv['sni'].replace("://", "")
 
-            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            
-            try:
-                parsed_url = urllib.parse.urlparse(PANEL_URL)
-                host = parsed_url.hostname if parsed_url.hostname else parsed_url.path.split(':')
-            except Exception:
-                host = "78.17.1.43"
+                vless_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?type=tcp&security=reality&sni={clean_sni}&fp=chrome"
+                    f"&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
+                    f"#{safe_remark}"
+                )
+                config_links.append(vless_link)
 
-            subscription_web_url = f"https://{host}:2096/sub/{sub_id}#{sub_remark}"
+            except Exception as e:
+                logging.error(f"Не удалось обработать сервер {srv['country_name']}: {e}")
 
-            # Сохраняем в локальную БД
-            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-            add_or_update_user(user_id, username, config_link, subscription_web_url, expiry_seconds)
-            
-            return config_link, subscription_web_url
-
-    except Exception as e:
-        logging.error(f"Ошибка VPN при формировании красивого имени: {e}")
+    if not config_links:
         return None, None
+
+    # Склеиваем обе конфигурации через перенос строки \n
+    all_configs_str = "\n".join(config_links)
+    
+    # Ссылка на ваш FastAPI-эндпоинт подписок. 
+    # ЗАМЕНИТЕ '://yourdomain.com' на реальный домен или IP вашего бота, где запущен FastAPI
+    sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+    subscription_web_url = f"https://://yourdomain.com/sub/{sub_id}#{sub_remark}"
+
+    # Сохраняем в вашу локальную БД всю пачку настроек
+    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+    add_or_update_user(user_id, username, all_configs_str, subscription_web_url, expiry_seconds)
+    
+    return all_configs_str, subscription_web_url
+
 
 
 
@@ -609,14 +659,14 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Делаем прямой запрос в панель X-UI через вашу функцию синхронизации.
-        # Она возвращает (config_link, subscription_web_url)
-        _, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Вызываем обновленную функцию. Она регистрирует юзера на двух серверах
+        # и возвращает (all_configs_str, subscription_web_url)
+        configs_str, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # Если панель X-UI выдала нам веб-ссылку подписки — значит, доступ ЕСТЬ и он АКТИВЕН!
+        # Если подписка успешно сгенерирована
         if sub_web_url and sub_web_url.startswith("http"):
             
-            # 1. Собираем прямую ссылку для приложения Happ
+            # 1. Собираем прямую ссылку для автоматического импорта в приложение Happ
             raw_happ_url = f"happ://import/{sub_web_url}"
             
             # 2. Оборачиваем её через сервис сокращения Яндекса (clck.ru) прямо на лету
@@ -624,14 +674,16 @@ async def connect(callback: types.CallbackQuery):
             try:
                 async with aiohttp.ClientSession() as session:
                     enc_url = urllib.parse.quote(raw_happ_url)
-                    async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                    # ИСПРАВЛЕНО: добавлен правильный эндпоинт Яндекса '--?url='
+                    clck_url = f"https://clck.ru--{enc_url}"
+                    async with session.get(clck_url, timeout=5) as resp:
                         if resp.status == 200:
                             safe_redirect_url = await resp.text()
             except Exception as e:
                 logging.error(f"Не удалось сократить happ-ссылку: {e}")
                 safe_redirect_url = sub_web_url
 
-            # Собираем инлайн-клавиатуру (Telegram пропустит clck.ru без ошибок)
+            # Собираем инлайн-клавиатуру 
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
                 [InlineKeyboardButton(text="🌐 Открыть в браузере", url=sub_web_url)],
@@ -652,8 +704,8 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             
         else:
-            # Если X-UI панель не вернула ссылку (пользователь истек, удален или отключен в панели)
-            await callback.message.answer("⚠️ Доступ заблокирован! Сначала приобретите или продлите подписку в меню 'Купить подписку'.")
+            # Если функция вернула None (ошибка авторизации панелей или пользователь отключен)
+            await callback.message.answer("⚠️ Не удалось сгенерировать подписку. Доступ заблокирован или сервера временно недоступны.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
