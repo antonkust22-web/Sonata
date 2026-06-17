@@ -38,11 +38,6 @@ logging.basicConfig(
 
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
 API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
-PANEL_URL = "https://78.17.1.43:2053"
-PANEL_USER = "Asad"
-PANEL_PASSWORD = "Lodka120259"
-INBOUND_ID = 1
-BASE_PATH = "/bqPVI4YlUguDhw0MvD"
 
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
@@ -132,138 +127,91 @@ import uuid
 import secrets
 import json
 import logging
-import urllib.parse
 import aiohttp
+
+# Ваши точные данные серверов
+SERVERS = [
+    {
+        "id": "fi_1",
+        "panel_url": "https://78.17.1.43:2053",
+        "base_path": "/bqPVI4YlUguDhw0MvD", 
+        "panel_user": "Asad",
+        "panel_password": "Lodka120259",
+        "inbound_id": 1
+    },
+    {
+        "id": "de_1",
+        "panel_url": "http://78.17.152.36:2053",
+        "base_path": "/root",
+        "panel_user": "Soul",
+        "panel_password": "Lodka1321",
+        "inbound_id": 1
+    }
+]
 
 async def get_vpn_config_manual(user_id, username=""):
     """
-    Регистрирует клиента на обоих инбаундах Финляндии 
-    с прямой, жестко прописанной авторизацией без использования скрытых PANEL_URL.
+    Регистрирует/включает клиента на двух серверах X-UI (идут уведомления).
+    Возвращает короткий URL для кнопки.
     """
-    # unsafe=True и ssl=False ТРЕБУЮТСЯ ОБЯЗАТЕЛЬНО, чтобы скрипт авторизовался на HTTPS панели без домена
     jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False)
+    connector = aiohttp.TCPConnector(ssl=False) # Отключаем проверку SSL для HTTPS панели
     
-    # Постоянный UUID на основе Telegram ID пользователя
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- СТРОГАЯ АВТОРИЗАЦИЯ НА ФИНЛЯНДИИ ---
-        try:
-            # Используем прямой HTTPS адрес панели, который вы настроили
-            login_fi = "https://78.17.1"
-            
-            # Отправляем логин
-            async with session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=10) as resp:
-                await resp.text()
-                logging.info(f"Бот отправил запрос авторизации на Финляндию. Статус ответа: {resp.status}")
-            
-            headers = {"Accept": "application/json"}
-            add_url = "https://78.17.1"
-            
-            # Запись пользователя в инбаунд №1 (Финляндия)
-            payload_fi = {
-                "id": "1",
-                "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇫🇮_Финляндия_#{user_id}",
-                    "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
-                    "tgId": user_id, "subId": sub_id  
-                }]})
-            }
-            async with session.post(add_url, headers=headers, data=payload_fi, timeout=5) as resp:
-                resp_text = await resp.text()
-                if "already exists" in resp_text:
-                    up_fi = f"https://78.17.1{client_uuid}"
-                    await session.post(up_fi, headers=headers, data=payload_fi, timeout=5)
+        for srv in SERVERS:
+            try:
+                # Определяем красивое имя флага для каждой панели отдельно
+                flag = "🇫🇮" if srv["id"] == "fi_1" else "🇵🇱"
+                country = "Финляндия" if srv["id"] == "fi_1" else "Польша"
+                email = f"{flag}_{country}_#{user_id}".replace(" ", "_")
 
-            # Запись пользователя в инбаунд №2 (Польша - каскад)
-            payload_pl = {
-                "id": "2",
-                "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇵🇱_Польша_#{user_id}",
-                    "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
-                    "tgId": user_id, "subId": sub_id  
-                }]})
-            }
-            async with session.post(add_url, headers=headers, data=payload_pl, timeout=5) as resp:
-                resp_text = await resp.text()
-                if "already exists" in resp_text:
-                    up_pl = f"https://78.17.1{client_uuid}"
-                    await session.post(up_pl, headers=headers, data=payload_pl, timeout=5)
-                    
-        except Exception as api_err:
-            logging.error(f"КРИТИЧЕСКАЯ ОШИБКА АВТОРИЗАЦИИ X-UI: {api_err}")
+                # 1. Авторизация в панели (После этой строчки прилетит уведомление в ТГ)
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                payload_login = {"username": srv['panel_user'], "password": srv['panel_password']}
+                await session.post(login_url, data=payload_login, timeout=5)
 
-    # Сборка чистой ссылки подписки с параметром склейки двух инбаундов
-    sub_remark = urllib.parse.quote("Sonata VPN Premium")
-    final_web_sub = f"https://78.17.1{sub_id}?inbound=1,2#{sub_remark}"
+                headers = {"Accept": "application/json"}
+                
+                # 2. Прямая запись клиента в инбаунд (addClient)
+                add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                client_payload = {
+                    "id": str(srv['inbound_id']),
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid,
+                            "email": email,
+                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                            "tgId": user_id, "subId": sub_id
+                        }]
+                    })
+                }
+                
+                async with session.post(add_url, headers=headers, data=client_payload, timeout=5) as resp:
+                    resp_text = await resp.text()
+                    # Если клиент уже существует на сервере, принудительно обновляем и включаем его
+                    if "already exists" in resp_text or resp.status == 400:
+                        update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                        await session.post(update_url, headers=headers, data=client_payload, timeout=5)
+                        
+                logging.info(f"Сервер {country} успешно синхронизирован для {user_id}")
+
+            except Exception as e:
+                logging.error(f"Не удалось связаться с сервером {srv.get('id')}: {e}")
+
+    # Формируем короткую, безопасную ссылку на ваш FastAPI веб-сервер
+    # Укажите здесь порт вашего FastAPI (например, 8000 или 80)
+    final_web_url = f"http://78.17.1{user_id}"
 
     try:
-        add_or_update_user(user_id, username, "master_mode", final_web_sub, 0)
+        add_or_update_user(user_id, username, "crypt3_active", final_web_url, 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
         
-    return final_web_sub
+    return final_web_url
 
-
-
-
-
-
-async def get_vpn_config_manual(user_id, username=""):
-    """
-    Генерирует зашифрованную мульти-серверную ссылку happ://crypt3/ 
-    с Финляндией и Польшей в одном пакете под брендом вашего сервиса.
-    """
-    # ЖЕЛЕЗОБЕТОННЫЙ UUID: Всегда одинаковый для одного и того же человека
-    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
-
-    # 1. Формируем чистую ссылку VLESS для Финляндии (Порт 43527)
-    remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
-    vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
-
-    # 2. Формируем чистую ссылку VLESS для Польши (Порт 16303)
-    remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
-    vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
-
-    # Склеиваем оба сервера через перенос строки, как это делает стандартный конфигуратор Happ
-    combined_configs = f"{vless_fi}\n{vless_pl}"
-
-    try:
-        # Формируем структуру подписки, чтобы Happ отобразил плашку вашего бренда
-        subscription_data = {
-            "name": "🚀 Sonata VPN Premium",  # Название вашей плашки в Happ
-            "urls": [vless_fi, vless_pl]
-        }
-        
-        # Переводим в JSON-строку для шифрования
-        json_str = json.dumps(subscription_data)
-
-        # --- НАДЕЖНОЕ ШИФРОВАНИЕ В СТИЛЕ CRYPT3 ---
-        # 1. Сжимаем JSON-текст через zlib
-        compressed_data = zlib.compress(json_str.encode('utf-8'))
-        
-        # 2. Кодируем сжатые байты в стандартный Base64
-        b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
-        
-        # 3. Делаем строку безопасной для URL
-        safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
-        
-        # 4. Собираем финальный глубокий URL для Happ
-        happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
-        
-        # Сохраняем в локальную БД бота текстовый лог
-        try:
-            add_or_update_user(user_id, username, combined_configs, "crypt3_mode", 0)
-        except Exception as db_err:
-            logging.error(f"Ошибка записи в БД: {db_err}")
-            
-        return happ_crypt3_url
-
-    except Exception as e:
-        logging.error(f"Ошибка при шифровании пакета crypt3: {e}")
-        return None
 
 
 
@@ -589,7 +537,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -598,40 +545,36 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-
-        # Получаем чистую веб-ссылку https://...
-        final_web_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Вызываем функцию (Бот заходит на сервера, идут алерты о входе, возвращается короткий URL)
+        final_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if final_web_sub:
+        if final_web_url:
+            # Создаем клавиатуру с короткой ссылкой на FastAPI редиректор
             kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_url)],
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
             text = (
-                "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
-                "Мы объединили две локации в одну умную ссылку подписки:\n"
+                "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
+                "Мы объединили и зашифровали для вас две локации в один пакет:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
-                "1. Нажмите пальцем на ссылку ниже, чтобы <b>скопировать её в один тап</b>:\n\n"
-                f"<code>{final_web_sub}</code>\n\n"
-                "2. Откройте приложение <b>Happ</b>.\n"
-                "3. Нажмите значок <b>Плюс (➕)</b> в верхнем правом углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
-                "4. Вставьте скопированный адрес и подтвердите импорт.\n\n"
-                "🔥 Ссылка на 100% валидна! Приложение скачает файл конфигураций, и в вашем списке появится папка <b>Sonata VPN Premium</b> сразу с двумя странами!"
+                "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
+                "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                "3. Система автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
             )
 
-            await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+            # Картинка луны красиво обновится, появится полноценная кнопка
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+
 
 
 
@@ -918,42 +861,61 @@ async def scheduler(bot):
         await asyncio.sleep(24 * 60 * 60)
 
 
-from fastapi import FastAPI, Response
+
+import uuid
+import json
+import zlib
+import base64
+import urllib.parse
+from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-# Если объект app уже создан в файле, эту строку писать не нужно:
+# Если объект app уже объявлен выше в файле, эту строку удалите:
 app = FastAPI()
 
 @app.get("/import/{user_id}")
 async def import_to_happ(user_id: int):
     """
-    Эндпоинт на лету собирает crypt3 пакет для Happ 
-    и делает автоматический редирект.
+    Эндпоинт на лету собирает crypt3 пакет для Happ под вашим брендом
+    и делает автоматический редирект, открывающий приложение.
     """
-    # Тот же самый постоянный UUID пользователя
+    # Постоянный UUID, жестко привязанный к Telegram ID
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
 
-    # Сборка оригинальных ключей серверов
-    vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#%F0%9F%87%AB%F0%9F%87%AE%20%D0%A4%D0%B8%D0%BD%D0%BB%D1%8F%D0%BD%D0%B4%D0%B8%D0%AF%20%7C%20Premium"
-    vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#%F0%9F%87%B5%F0%9F%87%B1%20%D0%9F%D0%BE%D0%BB%D1%8C%D1%88%D0%B0%20%7C%20Premium"
+    # Сборка оригинальных конфигураций Reality со всеми вашими данными из SERVERS
+    remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
+    vless_fi = (
+        f"vless://{client_uuid}@78.17.1.43:43527"
+        f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
+        f"&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F"
+        f"#{remark_fi}"
+    )
 
-    # Структура подписки для папки в Happ
+    remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
+    vless_pl = (
+        f"vless://{client_uuid}@78.17.152.36:16303"
+        f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
+        f"&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F"
+        f"#{remark_pl}"
+    )
+
+    # Структура папки подписки для отображения вашего бренда в Happ
     subscription_data = {
-        "name": "🚀 Sonata VPN Premium",
+        "name": "🚀 Sonata VPN",
         "urls": [vless_fi, vless_pl]
     }
     
-    # Шифрование crypt3
+    # Профессиональное сжатие и кодирование crypt3
     json_str = json.dumps(subscription_data)
     compressed_data = zlib.compress(json_str.encode('utf-8'))
     b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
     safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
     
-    # Финальный глубокий URL для Happ
     happ_url = f"happ://crypt3/{safe_crypto_str}"
     
-    # Делаем моментальный редирект, который откроет Happ на смартфоне
+    # Моментальный редирект: браузер закроется, и сразу запустится Happ
     return RedirectResponse(url=happ_url)
+
 
 
 
