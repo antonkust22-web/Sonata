@@ -170,27 +170,56 @@ async def get_vpn_config_manual(user_id, username=""):
 
             client_uuid = current_client.get("id") if current_client else None
 
-            # 3. Создание клиента, если его нет
-            if not client_uuid:
-                client_uuid = str(uuid.uuid4())
-                sub_id = secrets.token_hex(8) 
-                
-                add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-                client_data = {
-                    "id": str(INBOUND_ID), 
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid,
-                            "email": email,  # Красивый email с флагом
-                            "limitIp": 2,
-                            "totalGB": 0,
-                            "expiryTime": 0,
-                            "enable": True,
-                            "tgId": user_id,
-                            "subId": sub_id  
-                        }]
-                    })
-                }
+           # ==============================================================================
+# 3. Создание клиента, если его нет
+# ==============================================================================
+if not client_uuid:
+    client_uuid = str(uuid.uuid4())
+    sub_id = secrets.token_hex(8) 
+    
+    add_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
+    
+    # --- Запрос для ИНБАУНДА №1 (Финляндия) ---
+    client_data_1 = {
+        "id": str(INBOUND_ID),  # Здесь у вас подставится "1"
+        "settings": json.dumps({
+            "clients": [{
+                "id": client_uuid,
+                "email": email,  # Имя Финляндии
+                "limitIp": 2,
+                "totalGB": 0,
+                "expiryTime": 0,
+                "enable": True,
+                "tgId": user_id,
+                "subId": sub_id  
+            }]
+        })
+    }
+    async with session.post(add_url, headers=headers, data=client_data_1, timeout=10) as resp:
+        await resp.text()
+
+    # --- Запрос для ИНБАУНДА №2 (Польша) ---
+    # Мы шлем ТОЧНО ТАКОЙ ЖЕ UUID и sub_id, но меняем "id" инбаунда на "2"
+    client_data_2 = {
+        "id": "2",  # Жёстко указываем ID вашего второго инбаунда (Польша)
+        "settings": json.dumps({
+            "clients": [{
+                "id": client_uuid,
+                "email": email.replace("Финляндия", "Польша"),  # Будет красивое имя Польши в Happ
+                "limitIp": 2,
+                "totalGB": 0,
+                "expiryTime": 0,
+                "enable": True,
+                "tgId": user_id,
+                "subId": sub_id  # Тот же самый sub_id, чтобы они склеились!
+            }]
+        })
+    }
+    async with session.post(add_url, headers=headers, data=client_data_2, timeout=10) as resp:
+        await resp.text()
+
+    expiry_time_ms = 0
+
                 async with session.post(add_url, headers=headers, data=client_data, timeout=10) as resp:
                     await resp.text()
                 expiry_time_ms = 0
