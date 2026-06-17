@@ -536,9 +536,14 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
-import aiohttp
+
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+import uuid
+import json
+import zlib
+import base64
 import urllib.parse
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -546,53 +551,57 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Вызываем функцию (Бот заходит на сервера, идут пуши о входе)
-        final_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        # Вызываем функцию синхронизации серверов (приходят пуши о входе админа)
+        await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        if final_web_url:
-            # Резервный вариант
-            safe_button_url = final_web_url  
-            
-            # Оборачиваем IP-адрес через Яндекс clck.ru, чтобы Telegram одобрил кнопку!
-            try:
-                async with aiohttp.ClientSession() as session:
-                    enc_url = urllib.parse.quote(final_web_url, safe='')
-                    clck_url = f"https://clck.ru{enc_url}"
-                    async with session.get(clck_url, timeout=5) as resp:
-                        if resp.status == 200:
-                            res_text = await resp.text()
-                            if "clck.ru" in res_text:
-                                safe_button_url = res_text.strip()
-            except Exception as e:
-                logging.error(f"Не удалось сократить ссылку для Telegram кнопки: {e}")
+        # --- ПРОГРАММНАЯ СБОРКА CRYPT3 ССЫЛКИ ДЛЯ WEBAPP ---
+        client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
 
-            # Создаем клавиатуру с разрешенным Яндексовским URL
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_button_url)],
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
-            ])
+        remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
+        vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
 
-            text = (
-                "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
-                "Мы объединили и зашифровали для вас две локации в один пакет:\n"
-                "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
-                "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-                "<b>📥 Инструкция по установке:</b>\n"
-                "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-                "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "3. Система автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
-            )
+        remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
+        vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
-            # Картинка луны красиво обновится, появится полноценная кнопка
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else:
-            await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
+        subscription_data = {
+            "name": "🚀 Sonata VPN Premium",
+            "urls": [vless_fi, vless_pl]
+        }
+        
+        json_str = json.dumps(subscription_data)
+        compressed_data = zlib.compress(json_str.encode('utf-8'))
+        b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
+        safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
+        
+        # Финальная глубокая ссылка для приложения Happ
+        happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
+
+        # Оборачиваем глубокую ссылку в стандартный WebApp-редиректор Telegram.
+        # Это обходит абсолютно все ограничения Telegram API на порты, IP и протоколы.
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⚡️ ИМПОРТИРОВАТЬ В HAPP", 
+                web_app=WebAppInfo(url=f"https://redirect.cc{urllib.parse.quote(happ_crypt3_url, safe='')}")
+            )],
+            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
+        ])
+
+        text = (
+            "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
+            "Мы объединили и зашифровали для вас две локации в один пакет:\n"
+            "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
+            "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
+            "<b>📥 Инструкция по установке:</b>\n"
+            "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
+            "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+            "3. Встроенное окно Telegram безопасно перенаправит команду, откроет приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
+        )
+
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
-
-
 
 
 
