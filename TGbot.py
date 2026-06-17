@@ -126,61 +126,42 @@ from fastapi import FastAPI, HTTPException, Response
 app = FastAPI()
 
 def get_configs_from_db(sub_id: str) -> str:
-    """Ищет в вашей БД строки vless по sub_id"""
+    """Достает из SQLite базы данных строку серверов по sub_id"""
     try:
-        # Укажите точное имя файла вашей базы данных бота (например, 'users.db')
-        conn = sqlite3.connect('users.db')
+        # Укажите точное имя файла вашей базы данных бота
+        conn = sqlite3.connect('users.db') 
         cursor = conn.cursor()
-        # Ищем строку серверов по sub_id
+        
+        # Запрашиваем столбец config_link (где лежат ключи vless)
         cursor.execute("SELECT config_link FROM users WHERE sub_id = ?", (sub_id,))
         row = cursor.fetchone()
         conn.close()
+        
         return row[0] if row else ""
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка чтения БД в FastAPI: {e}")
         return ""
 
 @app.get("/sub/{sub_id}")
 async def get_subscription(sub_id: str):
-    """Этот адрес мы вставим в Happ. Он отдаст обе страны!"""
-    # 1. Достаем из БД склеенные vless строки Финляндии и Польши
+    """Эндпоинт, который вызывает Happ. Выдает обе страны."""
     configs_string = get_configs_from_db(sub_id)
     
     if not configs_string:
         raise HTTPException(status_code=404, detail="Subscription not found")
         
-    # 2. Кодируем всю пачку серверов в Base64 (этого строго требует Happ)
+    # Кодируем всю пачку серверов в чистый Base64 (требование Happ)
     base64_encoded_configs = base64.b64encode(configs_string.strip().encode("utf-8")).decode("utf-8")
     
-    # 3. Отдаем чистый текстовый ответ с метаданными вашего бренда
     return Response(
         content=base64_encoded_configs,
         media_type="text/plain; charset=utf-8",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
-            # Название плашки, которое отобразится вверху экрана в Happ
             "Subscription-Userinfo": "upload=0; download=0; total=0; expire=0" 
         }
     )
 
-
-SERVERS = [
-    {
-        "id": "fi_1",
-        "panel_url": "https://78.17.1.43:2053",
-        "base_path": "/bqPVI4YlUguDhw0MvD", 
-        "panel_user": "Asad",
-        "panel_password": "Lodka120259",
-        "inbound_id": 1
-    },
-    {
-        "id": "de_1",
-        "panel_url": "http://78.17.152.36:2053",
-        "base_path": "/root",
-        "panel_user": "Soul",
-        "panel_password": "Lodka1321",
-        "inbound_id": 1
-    }
-]
 
 import uuid
 import secrets
@@ -188,63 +169,120 @@ import json
 import logging
 import urllib.parse
 import aiohttp
+import sqlite3
+
+# Ваши точные данные серверов
+SERVERS = [
+    {
+        "id": "fi_1",
+        "panel_url": "https://78.17.1.43:2053",
+        "base_path": "/bqPVI4YlUguDhw0MvD", 
+        "panel_user": "Asad",
+        "panel_password": "Lodka120259",
+        "inbound_id": 1,
+        "my_ip": "78.17.1.43",
+        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
+        "sid": "f2cfb510fbaa",
+        "sni": "sony.com",
+        "country_flag": "🇫🇮",
+        "country_name": "Финляндия"
+    },
+    {
+        "id": "de_1",
+        "panel_url": "http://78.17.152.36:2053",
+        "base_path": "/root",
+        "panel_user": "Soul",
+        "panel_password": "Lodka1321",
+        "inbound_id": 1,
+        "my_ip": "78.17.152.36",
+        "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
+        "sid": "aa72b4f659",
+        "sni": "sony.com",
+        "country_flag": "🇵🇱",
+        "country_name": "Польша"
+    }
+]
 
 async def get_vpn_config_manual(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Постоянный UUID для стабильной работы интернета
     client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     sub_id = secrets.token_hex(8)
     config_links = []
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- ФИНЛЯНДИЯ ---
-        try:
-            await session.post("https://78.17.1", data={"username": "Asad", "password": "Lodka120259"}, timeout=5)
-            payload = {"id": "1", "settings": json.dumps({"clients": [{"id": client_uuid, "email": f"🇫🇮_Финляндия_#{user_id}", "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-            async with session.post("https://78.17.1", headers={"Accept": "application/json"}, data=payload) as resp:
-                if "already exists" in await resp.text():
-                    await session.post(f"https://78.17.1{client_uuid}", headers={"Accept": "application/json"}, data=payload)
-            
-            remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
-            config_links.append(f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}")
-        except Exception: pass
+        for srv in SERVERS:
+            try:
+                email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
 
-        # --- ПОЛЬША ---
-        try:
-            await session.post("http://78.17.152", data={"username": "Soul", "password": "Lodka1321"}, timeout=5)
-            payload = {"id": "1", "settings": json.dumps({"clients": [{"id": client_uuid, "email": f"🇵🇱_Польша_#{user_id}", "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id}]})}
-            async with session.post("http://78.17.152", headers={"Accept": "application/json"}, data=payload) as resp:
-                if "already exists" in await resp.text():
-                    await session.post(f"https://78.17.152{client_uuid}", headers={"Accept": "application/json"}, data=payload)
-            
-            remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
-            config_links.append(f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}")
-        except Exception: pass
+                # 1. ПОЛНОЦЕННАЯ АВТОРИЗАЦИЯ В ПАНЕЛИ (Прилетят пуши о входе)
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                payload_login = {"username": srv['panel_user'], "password": srv['panel_password']}
+                await session.post(login_url, data=payload_login, timeout=5)
 
-    if not config_links: return None
+                headers = {"Accept": "application/json"}
+                
+                # Порты Reality из ваших настроек
+                srv_port = 43527 if srv["id"] == "fi_1" else 16303
+                
+                # 2. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА В X-UI
+                add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                client_payload = {
+                    "id": str(srv['inbound_id']),
+                    "settings": json.dumps({
+                        "clients": [{
+                            "id": client_uuid, "email": email,
+                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
+                            "tgId": user_id, "subId": sub_id
+                        }]
+                    })
+                }
+                
+                async with session.post(add_url, headers=headers, data=client_payload, timeout=5) as resp:
+                    resp_text = await resp.text()
+                    if "already exists" in resp_text or resp.status == 400:
+                        update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                        await session.post(update_url, headers=headers, data=client_payload, timeout=5)
+
+                # 3. СБОРКА ИНДИВИДУАЛЬНОЙ ССЫЛКИ VLESS
+                remark = urllib.parse.quote(f"{srv['country_flag']} {srv['country_name']} | Premium")
+                vless_link = f"vless://{client_uuid}@{srv['my_ip']}:{srv_port}?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F#{remark}"
+                config_links.append(vless_link)
+                
+                logging.info(f"Сервер {srv['country_name']} успешно синхронизирован для {user_id}")
+
+            except Exception as e:
+                logging.error(f"Не удалось связаться с сервером {srv.get('id')}: {e}")
+
+    if not config_links: 
+        return None
 
     # Склеиваем оба сервера через перенос строки \n
     all_configs_str = "\n".join(config_links)
     
-    # ВНИМАНИЕ: Укажите здесь бесплатный HTTPS домен, который дал вам ваш хостинг!
-    # Длина ссылки всего 45 символов — Telegram пропустит её в ЛЮБОЙ кнопке!
+    # ВНИМАНИЕ: Укажите здесь бесплатный HTTPS домен вашего FastAPI веб-сервера!
+    # Длина ссылки всего около 40 символов — Telegram пропустит её БЕЗ ОШИБОК!
     final_web_url = f"https://xn-----6kccgjfi2a1bmche9bq2c6b.com{sub_id}"
 
-    # Сохраняем пачку ключей в локальную БД бота, чтобы FastAPI мог их прочитать по sub_id
-    # (Добавьте в таблицу users поле sub_id, если его там нет!)
+    # Записываем данные в SQLite базу данных бота
     try:
         conn = sqlite3.connect('users.db')
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET config_link = ?, sub_id = ? WHERE user_id = ?", (all_configs_str, sub_id, user_id))
+        
+        # Перед обновлением проверяем, есть ли столбец sub_id в вашей таблице users.
+        # Если столбца нет — раскомментируйте строку ниже один раз для его создания:
+        # cursor.execute("ALTER TABLE users ADD COLUMN sub_id TEXT")
+        
+        # Обновляем запись пользователя (или вставьте вызов вашейadd_or_update_user)
+        cursor.execute("UPDATE users SET config_link = ?, sub_id = ?, subscription_url = ? WHERE user_id = ?", 
+                       (all_configs_str, sub_id, final_web_url, user_id))
         conn.commit()
         conn.close()
-    except Exception: pass
+    except Exception as db_err: 
+        logging.error(f"Ошибка записи SQLite: {db_err}")
         
     return final_web_url
-
-
 
 
 
@@ -568,6 +606,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -597,7 +636,8 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.answer("⚠️ Сервера временно недоступны.")
-    except Exception: pass
+    except Exception as e:
+        logging.error(f"Ошибка в обработчике connect: {e}")
 
 
 
