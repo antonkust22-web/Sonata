@@ -1,6 +1,8 @@
 
 import asyncio
 import logging
+import io
+import qrcode
 import json
 import uuid
 import time
