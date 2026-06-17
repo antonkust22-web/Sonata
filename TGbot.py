@@ -120,8 +120,6 @@ def get_user_from_db(user_id):
     return row
 
 
-
-
 import uuid
 import secrets
 import json
@@ -131,7 +129,6 @@ import aiohttp
 import base64
 import zlib
 
-# Ваши точные данные серверов
 SERVERS = [
     {
         "id": "fi_1",
@@ -152,10 +149,6 @@ SERVERS = [
 ]
 
 async def get_vpn_config_manual(user_id, username=""):
-    """
-    Регистрирует/включает клиента на двух серверах X-UI (идут уведомления).
-    Собирает зашифрованный пакет crypt3.
-    """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
@@ -169,7 +162,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 country = "Финляндия" if srv["id"] == "fi_1" else "Польша"
                 email = f"{flag}_{country}_#{user_id}".replace(" ", "_")
 
-                # 1. Логин в панель (Идут пуши)
+                # 1. Авторизация в панели (Идут пуши)
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 payload_login = {"username": srv['panel_user'], "password": srv['panel_password']}
                 await session.post(login_url, data=payload_login, timeout=5)
@@ -198,7 +191,7 @@ async def get_vpn_config_manual(user_id, username=""):
             except Exception as e:
                 logging.error(f"Не удалось синхронизировать сервер {srv.get('id')}: {e}")
 
-    # --- СБОРКА ПРОФЕССИОНАЛЬНОГО CRYPT3 ПАКЕТА ---
+    # --- СБОРКА ПРОФЕССИОНАЛЬНОГО CRYPT3 ПАКЕТА ДЛЯ HAPP ---
     remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
     vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
 
@@ -215,10 +208,15 @@ async def get_vpn_config_manual(user_id, username=""):
     compressed_data = zlib.compress(json_str.encode('utf-8'))
     b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
     
-    # Очищаем строку, чтобы она была на 100% безопасной
+    # Делаем строку безопасной для передачи
     safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
     happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
     
+    try:
+        add_or_update_user(user_id, username, "crypt3_active", "no_url", 0)
+    except Exception:
+        pass
+        
     return happ_crypt3_url
 
 
@@ -546,6 +544,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import aiohttp
 import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -555,25 +554,38 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Вызываем функцию синхронизации серверов (идут пуши о входе админа)
+        # Удаляем старое сообщение с картинкой луны, чтобы не захламлять чат
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        # Получаем зашифрованную ссылку happ://crypt3/...
         happ_crypt_link = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         if happ_crypt_link:
-            # Безопасно кодируем happ://crypt3/... в URL-формат
-            encoded_happ_url = urllib.parse.quote(happ_crypt_link, safe='')
+            # По умолчанию оставляем саму ссылку
+            clickable_url = happ_crypt_link  
             
-            # --- ХИТРЫЙ ХАК ДЛЯ ОБХОДА ЛИМИТОВ TELEGRAM ---
-            # Мы оборачиваем шифр в официальный адрес t.me/share. 
-            # Для Telegram API это "родной" домен, поэтому он пропускает его в кнопках 
-            # с любой длиной текста и никогда не выдает ошибку BUTTON_URL_INVALID!
-            final_button_url = f"https://t.me{encoded_happ_url}"
+            # Сокращаем ссылку через Яндекс, чтобы она стала кликабельной в виде текста https://clck.ru...
+            try:
+                async with aiohttp.ClientSession() as session:
+                    enc_url = urllib.parse.quote(happ_crypt_link, safe='')
+                    clck_url = f"https://clck.ru--?url={enc_url}"
+                    async with session.get(clck_url, timeout=5) as resp:
+                        if resp.status == 200:
+                            res_text = await resp.text()
+                            if "clck.ru" in res_text:
+                                clickable_url = res_text.strip()
+            except Exception as e:
+                logging.error(f"Не удалось сократить текстовую ссылку: {e}")
 
-            # Собираем настоящую синюю инлайн-кнопку
+            # Кнопка назад без длинных URL
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_button_url)],
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
+            # Текст сообщения. Ссылка Яндекса будет на 100% кликабельной!
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
                 "Мы объединили и зашифровали для вас две локации в один пакет:\n"
@@ -581,20 +593,18 @@ async def connect(callback: types.CallbackQuery):
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
                 "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-                "2. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "3. Telegram откроет меню, вам останется просто кликнуть по ссылке на экране — смартфон перенаправит команду, откроет приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
+                f"2. Нажмите пальцем на эту ссылку ➔ {clickable_url}\n\n"
+                "3. Система автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
             )
 
-            # Картинка луны красиво обновится, и появится полноценная кнопка
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            # Отправляем новое чистое текстовое сообщение (лимит 4096 символов, всё влезет!)
+            await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.answer("⚠️ Не удалось зашифровать пакет конфигураций.")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
-
-
 
 
 
