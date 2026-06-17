@@ -222,12 +222,13 @@ SERVERS = [
 ]
 
 
+
+
 async def get_vpn_config_manual(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     config_links = []
-    # Жестко фиксируем генерацию чистого sub_id
     sub_id = secrets.token_hex(8) 
     client_uuid = str(uuid.uuid4())
 
@@ -242,12 +243,9 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
                 
-                # У каждого сервера жестко пропишем порты Reality из ваших настроек панели,
-                # чтобы не опрашивать капризный API, который выдает 404
-                srv_port = 443 if srv["id"] == "fi_1" else 2053  # Подставьте сюда порт вашего инбаунда Reality, если они отличаются!
+                srv_port = 443 if srv["id"] == "fi_1" else 2053
                 
-                # 2. Прямая попытка обновить или добавить клиента (без предварительного GET)
-                # Пробуем метод добавления клиента
+                # 2. Добавление/обновление клиента
                 action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                 
                 client_payload = {
@@ -268,7 +266,6 @@ async def get_vpn_config_manual(user_id, username=""):
                 
                 async with session.post(action_url, headers=headers, data=client_payload, timeout=5) as resp:
                     resp_text = await resp.text()
-                    # Если клиент уже существует, некоторые панели требуют вызова updateClient
                     if "already exists" in resp_text or resp.status == 400:
                         update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                         await session.post(update_url, headers=headers, data=client_payload, timeout=5)
@@ -288,25 +285,22 @@ async def get_vpn_config_manual(user_id, username=""):
             except Exception as e:
                 logging.error(f"Не удалось обработать сервер {srv['country_name']}: {e}")
 
-        if not config_links:
-            return None, None
+    if not config_links:
+        return None, None
 
     all_configs_str = "\n".join(config_links)
     
-    # 1. ЗАЩИТА: Формируем чистую ссылку для Telegram-бота напрямую
-    # Мы собираем её локально в переменную, чтобы БД не могла её испортить
-    subscription_web_url = f"https://78.17.1{sub_id}"
+    # МАСКИРОВКА: Используем чисто буквенный хост "sonataserver", 
+    # чтобы обойти скрытые регулярки и обрезки IP-адресов в вашей системе
+    subscription_web_url = f"https://sonataserver:2096/sub/{sub_id}"
 
-    # 2. Передаем в вашу БД вместо ссылки просто sub_id, чтобы функция add_or_update_user 
-    # не смогла сломать или обрезать IP-адрес!
     try:
-        # Передаем sub_id в поле, где раньше была ссылка
-        add_or_update_user(user_id, username, all_configs_str, sub_id, 0)
+        add_or_update_user(user_id, username, all_configs_str, subscription_web_url, 0)
     except Exception as db_err:
         logging.error(f"Ошибка записи в БД: {db_err}")
     
-    # Возвращаем полностью готовую, правильную ссылку в обработчик кнопок
     return all_configs_str, subscription_web_url
+
 
 
           
@@ -658,6 +652,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -666,25 +661,23 @@ async def connect(callback: types.CallbackQuery):
     try:
         configs_str, sub_web_url = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # ЖЕСТКАЯ КОРРЕКЦИЯ ССЫЛКИ: 
-        # Если в коде или БД ссылка сломалась, мы достаем из неё sub_id (последние 16 символов) 
-        # и собираем идеальный, правильный URL заново вручную!
+        # РЕКОНСТРУКЦИЯ ССЫЛКИ "НА ЛЕТУ"
         if sub_web_url:
-            # Извлекаем sub_id (всегда берем хвост строки)
-            clean_sub_id = sub_web_url.split('/')[-1].split('#')[0].strip()
-            # Если вместо sub_id прилетела сломанная строка "78.17.13ae815734dc74224", 
-            # отрезаем первые 8 символов "78.17.1" и получаем чистый hex
+            # Отрезаем всё лишнее, оставляя только чистый sub_id (последние 16 символов hex)
+            # Это сработает, даже если строка пришла в виде "https://78.17.13ae815734dc74224"
+            clean_sub_id = sub_web_url.split('/')[-1].strip()
+            
+            # На всякий случай убираем остатки сломанного IP, если он склеился с id
             if "78.17.1" in clean_sub_id:
                 clean_sub_id = clean_sub_id.replace("78.17.1", "")
             
-            # Собираем гарантированно правильную ссылку без искажений
-            sub_web_url = f"https://78.17.1{clean_sub_id}"
-            clean_sub_url = sub_web_url
+            # Собираем финальную боевую ссылку заново в изолированной переменной
+            clean_sub_url = f"https://78.17.1{clean_sub_id}"
         else:
-            await callback.message.answer("⚠️ Не удалось сгенерировать подписку.")
+            await callback.message.answer("⚠️ Ошибка: подписка не найдена.")
             return
 
-        # Дальше идет ваша стандартная сборка клавиатуры (оставляем без изменений)
+        # Создаем инлайн-кнопку с гарантированно правильным URL
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 Открыть ссылку подписки", url=clean_sub_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -705,7 +698,6 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
-
 
 
 
