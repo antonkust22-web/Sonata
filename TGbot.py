@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
-API_TOKEN = '8728088789:AAGfyqAhbg2Ola2BE3n5duGV_LKPgPcT6AI'
+API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 PANEL_URL = "https://78.17.1.43:2053"
 PANEL_USER = "Asad"
 PANEL_PASSWORD = "Lodka120259"
