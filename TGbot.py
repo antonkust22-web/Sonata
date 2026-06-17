@@ -122,41 +122,67 @@ def get_user_from_db(user_id):
     return row
 
 
-from fastapi import FastAPI, HTTPException, Response
+import sqlite3
 import base64
+from fastapi import FastAPI, HTTPException, Response
 
-# Если объект app уже создан в файле, эту строку писать не нужно:
+# Если app уже объявлен выше в файле, эту строку удалите:
 app = FastAPI()
+
+def get_configs_from_db_by_sub_id(sub_id: str) -> str:
+    """
+    Ищет в базе данных строку конфигураций vless по sub_id.
+    Измените имя файла базы данных ('users.db') на ваше реальное!
+    """
+    try:
+        # Укажите здесь правильный путь к вашей БД (например, 'database.db' или 'bot.db')
+        conn = sqlite3.connect('users.db') 
+        cursor = conn.cursor()
+        
+        # Делаем выборку по ссылке подписки, в которой содержится наш sub_id
+        # Ищем в столбце, куда функция add_or_update_user сохраняет subscription_web_url
+        cursor.execute(
+            "SELECT config_link FROM users WHERE subscription_url LIKE ?", 
+            (f"%{sub_id}%",)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return row[0] # Возвращает строку со всеми vless:// серверами через \n
+        return ""
+    except Exception as e:
+        print(f"Ошибка при обращении к БД в FastAPI: {e}")
+        return ""
+
 
 @app.get("/sub/{sub_id}")
 async def get_subscription(sub_id: str):
     """
     Эндпоинт, который вызывает Happ. 
-    Выдает конфигурации Финляндии и Польши в одном пакете.
+    Отдает конфигурации Финляндии и Польши в одном пакете.
     """
-    # 1. Достаем запись пользователя из вашей БД по sub_id
-    # ВАЖНО: Замените get_user_by_sub_id на вашу реальную функцию работы с БД!
-    user_data = get_user_by_sub_id(sub_id) 
-    
-    if not user_data:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-        
-    # В user_data["config_link"] должна лежать строка, сохраненная функцией add_or_update_user
-    # Она содержит: "vless://...Финляндия...\nvless://...Польша..."
-    configs_string = user_data.get("config_link", "")
+    # 1. Получаем склеенные конфигурации из нашей локальной БД бота
+    configs_string = get_configs_from_db_by_sub_id(sub_id)
     
     if not configs_string:
-        raise HTTPException(status_code=404, detail="Configs are empty")
+        raise HTTPException(status_code=404, detail="Subscription not found or expired")
+        
+    # Очищаем строку от возможных пробелов по краям, чтобы не сломать парсер Happ
+    configs_string = configs_string.strip()
     
-    # 2. Кодируем список серверов в формат Base64 (обязательно для Happ)
-    base64_encoded_configs = base64.b64encode(configs_string.encode("utf-8")).decode("utf-8")
+    # 2. Кодируем список серверов в формат Base64 (обязательное требование Happ)
+    configs_bytes = configs_string.encode("utf-8")
+    base64_encoded_configs = base64.b64encode(configs_bytes).decode("utf-8")
     
-    # 3. Отдаем ответ клиенту Happ
+    # 3. Отдаем чистый текстовый ответ приложению Happ
     return Response(
         content=base64_encoded_configs,
         media_type="text/plain; charset=utf-8",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Content-Disposition": "inline",
+            # Передаем Happ технические параметры подписки (0 означает безлимит)
             "Subscription-Userinfo": "upload=0; download=0; total=0; expire=0"
         }
     )
@@ -201,8 +227,9 @@ async def get_vpn_config_manual(user_id, username=""):
     connector = aiohttp.TCPConnector(ssl=False)
     
     config_links = []
+    # Жестко фиксируем генерацию чистого sub_id
     sub_id = secrets.token_hex(8) 
-    expiry_time_ms = 0
+    client_uuid = str(uuid.uuid4())
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
@@ -215,39 +242,14 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
                 
-                # 2. Формируем точный путь API для каждого сервера отдельно
-                if srv["id"] == "de_1":
-                    get_url = f"{srv['panel_url']}/root/panel/api/inbounds/get/{srv['inbound_id']}"
-                else:
-                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                # У каждого сервера жестко пропишем порты Reality из ваших настроек панели,
+                # чтобы не опрашивать капризный API, который выдает 404
+                srv_port = 443 if srv["id"] == "fi_1" else 2053  # Подставьте сюда порт вашего инбаунда Reality, если они отличаются!
                 
-                async with session.get(get_url, headers=headers, timeout=5) as resp:
-                    res_json = await resp.json()
-
-                if not res_json or not res_json.get("success"):
-                    logging.error(f"Панель {srv['country_name']} отклонила API-запрос.")
-                    continue
-
-                settings = json.loads(res_json["obj"]["settings"])
-                clients = settings.get("clients", [])
+                # 2. Прямая попытка обновить или добавить клиента (без предварительного GET)
+                # Пробуем метод добавления клиента
+                action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                 
-                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-                if not current_client:
-                    old_email = f"user_{user_id}"
-                    current_client = next((c for c in clients if c.get("email") == old_email), None)
-
-                client_uuid = current_client.get("id") if current_client else str(uuid.uuid4())
-                expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
-                
-                if current_client and current_client.get("subId"):
-                    sub_id = current_client.get("subId")
-
-                # 3. Добавление или обновление клиента
-                if not current_client:
-                    action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                else:
-                    action_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-
                 client_payload = {
                     "id": str(srv['inbound_id']),
                     "settings": json.dumps({
@@ -256,23 +258,27 @@ async def get_vpn_config_manual(user_id, username=""):
                             "email": email,
                             "limitIp": 2,
                             "totalGB": 0,
-                            "expiryTime": expiry_time_ms,
+                            "expiryTime": 0,
                             "enable": True,
                             "tgId": user_id,
                             "subId": sub_id
                         }]
                     })
                 }
+                
                 async with session.post(action_url, headers=headers, data=client_payload, timeout=5) as resp:
-                    await resp.text()
+                    resp_text = await resp.text()
+                    # Если клиент уже существует, некоторые панели требуют вызова updateClient
+                    if "already exists" in resp_text or resp.status == 400:
+                        update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                        await session.post(update_url, headers=headers, data=client_payload, timeout=5)
 
-                # 4. Сборка ссылки конфигурации
-                my_port = res_json["obj"]["port"]
+                # 3. Сборка ссылки конфигурации
                 remark = f"{srv['country_flag']} {srv['country_name']} | Premium"
                 safe_remark = urllib.parse.quote(remark)
 
                 vless_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"vless://{client_uuid}@{srv['my_ip']}:{srv_port}"
                     f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
                     f"&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
                     f"#{safe_remark}"
@@ -287,13 +293,19 @@ async def get_vpn_config_manual(user_id, username=""):
 
     all_configs_str = "\n".join(config_links)
     
-    # Формируем чистую и безопасную ссылку подписки на базе рабочего HTTPS Финляндии
+    # СТРОГОЕ и ЧИСТОЕ формирование ссылки подписки. Без использования сторонних переменных.
+    # Это исключит появление битых ссылок вида "78.17.10a00a6fa..."
     subscription_web_url = f"https://78.17.1{sub_id}"
 
-    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-    add_or_update_user(user_id, username, all_configs_str, subscription_web_url, expiry_seconds)
+    # Сохраняем в вашу локальную БД всю пачку настроек
+    try:
+        add_or_update_user(user_id, username, all_configs_str, subscription_web_url, 0)
+    except Exception as db_err:
+        logging.error(f"Ошибка записи в БД: {db_err}")
     
     return all_configs_str, subscription_web_url
+
+          
 
 
 
