@@ -537,6 +537,14 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import io
+import qrcode
+import uuid
+import json
+import zlib
+import base64
+import urllib.parse
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -544,20 +552,26 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Вызываем синхронизацию серверов (идут пуши о входе админа)
+        # Сначала удаляем старое приветственное сообщение с луной, чтобы не захламлять чат
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        # Вызываем синхронизацию серверов (идут пуши о входе админа на панели)
         await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
-        # --- ПРОГРАММНАЯ СБОРКА CRYPT3 ССЫЛКИ ---
+        # --- ПРОГРАММНАЯ СБОРКА CRYPT3 ПАКЕТА ДЛЯ QR-КОДА ---
         client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
 
-        remark_fi = urllib.parse.quote("🇫🇮 Финляндия")
+        remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
         vless_fi = f"vless://{client_uuid}@78.17.1.43:43527?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F#{remark_fi}"
 
-        remark_pl = urllib.parse.quote("🇵🇱 Польша")
+        remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
         vless_pl = f"vless://{client_uuid}@78.17.152.36:16303?type=tcp&security=reality&sni=sony.com&fp=chrome&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F#{remark_pl}"
 
         subscription_data = {
-            "name": "🚀 Sonata VPN",
+            "name": "🚀 Sonata VPN Premium",
             "urls": [vless_fi, vless_pl]
         }
         
@@ -566,36 +580,49 @@ async def connect(callback: types.CallbackQuery):
         b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
         safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
         
-        # Глубокая ссылка для приложения Happ
+        # Наш готовый глубокий крипто-шифр для Happ
         happ_crypt3_url = f"happ://crypt3/{safe_crypto_str}"
-        
-        # Безопасный HTTPS URL редиректа для текста
-        final_web_url = f"https://redirect.cc{urllib.parse.quote(happ_crypt3_url, safe='')}"
 
-        # Кнопка в клавиатуре теперь только одна (Назад), здесь нет длинных ссылок!
+        # --- ГЕНЕРАЦИЯ QR-КОДА В ПАМЯТИ ---
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(happ_crypt3_url)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Сохраняем картинку во временный буфер байт (без создания файлов на диске)
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        
+        # Оборачиваем в объект aiogram для отправки
+        input_file = BufferedInputFile(img_buffer.getvalue(), filename=f"sonata_{user_id}.png")
+
+        # Кнопка возврата в меню
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
         ])
 
-        # Зашиваем ссылку в текст через HTML тег <a>. 
-        # ВНИМАНИЕ: Обязательно используем одинарные кавычки внутри href='...'
         text = (
             "<b>🚀 Ваши премиум-сервера готовы к импорту!</b>\n\n"
-            "Мы объединили и зашифровали для вас две локации в один пакет:\n"
+            "Мы объединили локации в один защищенный QR-код:\n"
             "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
             "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-            "<b>📥 Инструкция по установке:</b>\n"
-            "1. Убедитесь, что у вас установлено приложение <b>Happ</b>.\n"
-            f"2. Нажмите пальцем сюда ➔ <a href='{final_web_url}'><b>[ СКАЧАТЬ НАСТРОЙКИ В HAPP ]</b></a>\n\n"
-            "3. Смартфон откроет страницу перехода, автоматически запустит приложение и добавит обе страны в ваш список под вашей фирменной плашкой <b>Sonata VPN Premium</b>! 🔥"
+            "<b>📥 Инструкция по установке через QR:</b>\n"
+            "1. Нажмите на изображение QR-кода ниже, затем в правом верхнем углу нажмите три точки ➔ <b>«Сохранить в галерею»</b>.\n"
+            "2. Откройте приложение <b>Happ</b>.\n"
+            "3. Нажмите значок <b>Плюс (➕)</b> в верхнем углу ➔ выберите <b>«Сканировать QR-код» (Scan QR Code)</b>.\n"
+            "4. Нажмите на иконку галереи/фотографий в углу экрана сканера и выберите сохраненную картинку QR.\n\n"
+            "🔥 Приложение моментально считает код и добавит в ваш список <b>сразу два сервера</b> под вашей фирменной плашкой <b>Sonata VPN Premium</b>!"
         )
 
-        # Редактируем описание (Текст сообщения успешно обновится)
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        # Отправляем QR-код как фото с описанием
+        await callback.message.answer_photo(photo=input_file, caption=text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
-        logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+        logging.error(f"Критическая ошибка в обработчике connect при создании QR: {e}")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации QR-кода.")
+
 
 
 
