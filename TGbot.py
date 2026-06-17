@@ -590,7 +590,6 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
-
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -599,30 +598,39 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     try:
-        # Функция регистрирует юзера везде (придут уведомления) и возвращает готовую vless://sub/...
+        # Сначала удаляем старое приветственное сообщение с картинкой, 
+        # чтобы очистить чат и красиво вывести ключи отдельным текстом
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        # Функция регистрирует юзера на серверах (придут уведомления) и возвращает vless://sub/...
         final_vless_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
         
         if final_vless_sub:
-            # Обычная кнопка назад без длинных URL (100% защита от багов Telegram)
+            # Кнопка возврата в главное меню
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
             ])
 
+            # Текст отправляется как новое сообщение (лимит 4096 символов) — теперь всё влезет!
             text = (
                 "<b>🚀 Ваши премиум-сервера готовы к подключению!</b>\n\n"
                 "Мы объединили две локации в одну умную мульти-ссылку:\n"
                 "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
                 "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
                 "<b>📥 Инструкция по установке:</b>\n"
-                "1. Нажмите пальцем на текст ниже, чтобы <b>скопировать её в один тап</b>:\n\n"
+                "1. Нажмите пальцем на текст ниже, чтобы <b>скопировать его в один тап</b>:\n\n"
                 f"<code>{final_vless_sub}</code>\n\n"
                 "2. Откройте приложение <b>Happ</b>.\n"
                 "3. Нажмите значок <b>Плюс (➕)</b> в верхнем правом углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b>.\n"
                 "4. Вставьте скопированный адрес и подтвердите импорт.\n\n"
-                "🔥 Приложение само расшифрует строку и добавит в ваш список **сразу два сервера** под плашкой Sonata VPN Premium!"
+                "🔥 Приложение автоматически расшифрует строку и добавит в ваш список <b>сразу два сервера</b> под плашкой Sonata VPN Premium!"
             )
 
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            # ИССПРАВЛЕНО: Отправляем новое текстовое сообщение вместо редактирования картинки
+            await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
 
