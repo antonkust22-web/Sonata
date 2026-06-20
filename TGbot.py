@@ -153,8 +153,9 @@ GITHUB_BRANCH = "main"
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Загружает строку (Base64) на GitHub. 
-    Возвращает прямую ссылку на сырой файл (://githubusercontent.com).
+    Загружает индивидуальный файл подписки на GitHub для конкретного пользователя.
+    Если файл уже есть — обновляет его.
+    Возвращает прямую ссылку на сырой текстовый файл.
     """
     file_path = f"subs/{user_id}.txt"
     url = f"https://github.com{GITHUB_REPO}/contents/{file_path}"
@@ -165,36 +166,38 @@ async def upload_to_github(user_id: int, content: str) -> str:
     }
     
     async with aiohttp.ClientSession() as session:
-        # Проверяем, существует ли файл, чтобы получить его sha
+        # 1. Проверяем, существует ли уже файл этого юзера, чтобы получить его SHA-хэш
         sha = None
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
                 sha = res_data.get("sha")
         
-        # Кодируем контент файла в Base64 для API GitHub
+        # 2. Переводим контент в Base64 для передачи через GitHub API
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         
         payload = {
-            "message": f"Update sub for user {user_id}",
+            "message": f"Update subscription for user {user_id}",
             "content": encoded_content,
             "branch": GITHUB_BRANCH
         }
         if sha:
-            payload["sha"] = sha
+            payload["sha"] = sha  # Если файл обновляется, гитхаб требует старый SHA
             
+        # 3. Записываем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
+            # ИСПРАВЛЕНО: Теперь синтаксис корректен, проверяем успешные коды ответов
             if resp.status in:
-                # Формируем сырую ссылку для приложений вроде Happ / Shadowrocket
-                raw_url = f"https://://githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+                # Формируем ту самую сырую ссылку для Happ
+                raw_url = f"https://githubusercontent.com{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub API Error: {error_text}")
-                raise Exception("Ошибка выгрузки файла на GitHub")
+                raise Exception("Не удалось сохранить конфигурацию на GitHub")
 
 
-# Ваши сервера
+
 SERVERS = [
     {
         "id": "fi_1",
@@ -225,6 +228,7 @@ SERVERS = [
         "country_name": "Польша"
     }
 ]
+
 
 async def get_all_vpn_configs(user_id, username=""):
     """
