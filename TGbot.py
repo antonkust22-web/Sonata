@@ -138,13 +138,13 @@ from datetime import datetime
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Автоматически обновляет файл vpn.txt внутри вашего существующего GitHub Gist.
-    Возвращает прямую raw-ссылку на файл для использования в Happ.
+    Автоматически обновляет ваш Gist и гарантированно возвращает 
+    правильную сырую (raw) ссылку для импорта в Happ.
     """
-    # Жесткий URL без единого слэша во внешних переменных
+    # Жесткий URL вашего Gist для API
     url = "https://github.com"
     
-    # ⚠️ ВПИШИТЕ СЮДА ВАШ ТОКЕН ГИТХАБА:
+    # ⚠️ ВПИШИТЕ СЮДА ВАШ ТОКЕН (Убедитесь, что у него при создании включена галочка "gist")
     MY_GITHUB_TOKEN = "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"
 
     headers = {
@@ -163,15 +163,14 @@ async def upload_to_github(user_id: int, content: str) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.patch(url, headers=headers, json=payload) as resp:
             if resp.status == 200:
-                res_data = await resp.json()
-                # Извлекаем прямую сырую ссылку (raw_url), которую так любит Happ
-                raw_url = res_data["files"]["vpn.txt"]["raw_url"]
+                # Магия: формируем ту самую правильную сырую ссылку для Happ вручную,
+                # чтобы хостинг больше никогда ничего не склеивал с ошибками!
+                raw_url = "https://githubusercontent.com"
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub Gist API Error: {error_text}")
-                raise Exception("Ошибка обновления файла в GitHub Gist")
-
+                raise Exception("Не удалось обновить Gist. Проверьте галочку 'gist' в токене.")
 
 
 
@@ -627,30 +626,29 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Гасим часики анимации в Telegram на кнопке
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию get_vpn_config_manual
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет из полученного массива строк
+        # 2. Формируем единый Base64 пакет (склеиваем строки через перенос \n)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем в ваш GitHub Gist (Вызываем функцию из Шага 1)
+        # 3. Отправляем кашу в ваш GitHub Gist (Вызываем функцию из Шага 1)
         try:
             sub_web_url = await upload_to_github(user_id, base64_sub_content)
         except Exception as github_err:
             logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка обновления файла подписки на GitHub. Повторите позже.")
+            await callback.message.answer("⚠️ Ошибка авторизации GitHub. Убедитесь, что прописали токен с галочкой 'gist'.")
             return
 
         # 4. Рассчитываем статус и дату окончания подписки
@@ -662,7 +660,7 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Используем чистую HTTP-ссылку на Gist (Telegram её пропустит!)
+        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Выдаем ту самую идеальную Raw-ссылку на ваш Gist
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -675,7 +673,7 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Подключение через приложение Happ:</b>\n"
             f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из адресной строки.\n"
+            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
             f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
             f"<b>💡 Альтернативный способ (вручную):</b>\n"
             f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
@@ -683,7 +681,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 7. Сохраняем данные в локальную SQLite (Синхронно, без await)
+        # 7. Сохраняем данные в локальную SQLite
         add_or_update_user(
             user_id=user_id, 
             username=username, 
