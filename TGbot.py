@@ -658,14 +658,13 @@ async def connect(callback: types.CallbackQuery):
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ (БЕЗ ВСЕХ ГЛОБАЛЬНЫХ ПЕРЕМЕННЫХ)
+        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ
         sub_web_url = f"https://githubusercontent.com{user_id}.txt"
         
         try:
-            # Ссылка строго на API гитхаба, никаких склеиваний в коде!
             direct_api_url = f"https://github.com{user_id}.txt"
             
-            # Впишите ваш токен прямо сюда вместо ТОКЕН, чтобы глобальная переменная ничего не ломала
+            # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА ВМЕСТО ЭТОЙ СТРОКИ:
             my_secure_token = "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" 
             
             headers = {
@@ -692,7 +691,10 @@ async def connect(callback: types.CallbackQuery):
                 
                 # Записываем файл в репозиторий
                 async with session.put(direct_api_url, headers=headers, json=payload) as resp:
-                    if resp.status not in:
+                    # ИСПРАВЛЕНО НАДЕЖНО: Избавились от скобок, проверяем коды 200 и 201
+                    if resp.status == 200 or resp.status == 201:
+                        pass
+                    else:
                         error_text = await resp.text()
                         logging.error(f"GitHub API Direct Error: {error_text}")
                         raise Exception("GitHub вернул ошибку при записи")
@@ -753,6 +755,9 @@ async def connect(callback: types.CallbackQuery):
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
 
+            # Впишите ваш токен прямо сюда вместо ТОКЕН, чтобы глобальная переменная ничего не ломала
+            
+         
 
 
 
