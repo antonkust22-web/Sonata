@@ -57,121 +57,144 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 
-# --- Блок Базы Данных (Синхронный sqlite3 с защитой от блокировок) ---
+import os
+import sqlite3
+import logging
+import asyncio
+
+# Путь к вашей базе данных (замените на свой, если нужно)
+DB_PATH = "users.db"
+
 def init_db():
+    """Инициализация базы данных с правильной структурой полей"""
     logging.info(f"Диспетчер: Инициализация базы данных: {DB_PATH}")
-    # timeout=30.0 заставляет запросы послушно ждать, если база занята
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    # Включаем режим WAL. Это ускоряет запись в 10 раз и исключает зависания
+    # Включаем WAL режим для ускорения базы и защиты от locked-ошибок
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # Создаем продвинутую таблицу пользователей
+    # Создаем таблицу. 
+    # vpn_config — здесь будет храниться чистый список VLESS-ссылок (через \n)
+    # github_raw_url — прямая ссылка на ://githubusercontent.com для кнопки в Telegram
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             vpn_config TEXT,
-            happ_url TEXT,
+            github_raw_url TEXT,
             expiry_time INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
     conn.close()
 
-def add_or_update_user(user_id, username, vpn_config=None, happ_url=None, expiry_time=None):
-    """Безопасное добавление или обновление данных пользователя"""
+def _sync_add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
+    """Внутренняя синхронная функция для работы внутри потока"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    # Проверяем, есть ли уже юзер
-    cursor.execute('SELECT user_id, vpn_config, happ_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT user_id, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if not row:
-        # Если пользователя нет — создаем запись
         cursor.execute(
-            'INSERT INTO users (user_id, username, vpn_config, happ_url, expiry_time) VALUES (?, ?, ?, ?, ?)',
-            (user_id, username, vpn_config, happ_url, expiry_time if expiry_time else 0)
+            'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time) VALUES (?, ?, ?, ?, ?)',
+            (user_id, username, vpn_config, github_raw_url, expiry_time if expiry_time is not None else 0)
         )
     else:
-        # Если пользователь есть — обновляем только то, что передано
-        new_config = vpn_config if vpn_config else row[1]
-        new_happ = happ_url if happ_url else row[2]
+        new_config = vpn_config if vpn_config is not None else row[1]
+        new_github = github_raw_url if github_raw_url is not None else row[2]
         new_expiry = expiry_time if expiry_time is not None else row[3]
 
         cursor.execute(
-            'UPDATE users SET username = ?, vpn_config = ?, happ_url = ?, expiry_time = ? WHERE user_id = ?',
-            (username, new_config, new_happ, new_expiry, user_id)
+            'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ? WHERE user_id = ?',
+            (username, new_config, new_github, new_expiry, user_id)
         )
 
     conn.commit()
     conn.close()
 
-def get_user_from_db(user_id):
-    """Получение всех данных о пользователе из локальной БД"""
+async def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
+    """Асинхронная обертка: безопасно сохраняет данные, не подвешивая бота"""
+    await asyncio.to_thread(
+        _sync_add_or_update_user, 
+        user_id, username, vpn_config, github_raw_url, expiry_time
+    )
+
+def _sync_get_user_from_db(user_id):
+    """Внутреннее синхронное чтение из БД"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT username, vpn_config, happ_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT username, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row
 
+async def get_user_from_db(user_id):
+    """Асинлективное получение данных пользователя из локальной БД"""
+    return await asyncio.to_thread(_sync_get_user_from_db, user_id)
+
+
 import base64
-import sqlite3
-from fastapi import FastAPI, HTTPException, Response
-
-app = FastAPI()
-
-def get_configs_from_db(sub_id: str) -> str:
-    """Достает из SQLite базы данных строку серверов по sub_id"""
-    try:
-        # Укажите точное имя файла вашей базы данных бота
-        conn = sqlite3.connect('users.db') 
-        cursor = conn.cursor()
-        
-        # Запрашиваем столбец config_link (где лежат ключи vless)
-        cursor.execute("SELECT config_link FROM users WHERE sub_id = ?", (sub_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        return row[0] if row else ""
-    except Exception as e:
-        print(f"Ошибка чтения БД в FastAPI: {e}")
-        return ""
-
-@app.get("/sub/{sub_id}")
-async def get_subscription(sub_id: str):
-    """Эндпоинт, который вызывает Happ. Выдает обе страны."""
-    configs_string = get_configs_from_db(sub_id)
-    
-    if not configs_string:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-        
-    # Кодируем всю пачку серверов в чистый Base64 (требование Happ)
-    base64_encoded_configs = base64.b64encode(configs_string.strip().encode("utf-8")).decode("utf-8")
-    
-    return Response(
-        content=base64_encoded_configs,
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Subscription-Userinfo": "upload=0; download=0; total=0; expire=0" 
-        }
-    )
-
-
-
-import uuid
-import secrets
 import json
 import logging
+import secrets
 import urllib.parse
+import uuid
 import aiohttp
+from datetime import datetime
 
-# Ваши точные и проверенные данные серверов
+# Константы для интеграции с GitHub (Замените своими данными!)
+GITHUB_TOKEN = "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"
+GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/configs"
+GITHUB_BRANCH = "main"
+
+async def upload_to_github(user_id: int, content: str) -> str:
+    """
+    Загружает строку (Base64) на GitHub. 
+    Возвращает прямую ссылку на сырой файл (://githubusercontent.com).
+    """
+    file_path = f"subs/{user_id}.txt"
+    url = f"https://github.com{GITHUB_REPO}/contents/{file_path}"
+    
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        # Проверяем, существует ли файл, чтобы получить его sha
+        sha = None
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                res_data = await resp.json()
+                sha = res_data.get("sha")
+        
+        # Кодируем контент файла в Base64 для API GitHub
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        
+        payload = {
+            "message": f"Update sub for user {user_id}",
+            "content": encoded_content,
+            "branch": GITHUB_BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
+            
+        async with session.put(url, headers=headers, json=payload) as resp:
+            if resp.status in:
+                # Формируем сырую ссылку для приложений вроде Happ / Shadowrocket
+                raw_url = f"https://://githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+                return raw_url
+            else:
+                error_text = await resp.text()
+                logging.error(f"GitHub API Error: {error_text}")
+                raise Exception("Ошибка выгрузки файла на GitHub")
+
+
+# Ваши сервера
 SERVERS = [
     {
         "id": "fi_1",
@@ -179,7 +202,13 @@ SERVERS = [
         "base_path": "/bqPVI4YlUguDhw0MvD", 
         "panel_user": "Asad",
         "panel_password": "Lodka120259",
-        "inbound_id": 1
+        "inbound_id": 1,
+        "my_ip": "78.17.1.43",
+        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
+        "sid": "f2cfb510fbaa",
+        "sni": "://sony.com",
+        "country_flag": "🇫🇮",
+        "country_name": "Финляндия"
     },
     {
         "id": "de_1",
@@ -187,73 +216,108 @@ SERVERS = [
         "base_path": "/root",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
-        "inbound_id": 1
+        "inbound_id": 1,
+        "my_ip": "78.17.152.36",
+        "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
+        "sid": "aa72b4f659",
+        "sni": "://sony.com",
+        "country_flag": "🇵🇱",
+        "country_name": "Польша"
     }
 ]
 
-async def get_vpn_config_manual(user_id, username=""):
+async def get_all_vpn_configs(user_id, username=""):
     """
-    Регистрирует клиента на обоих инбаундах (идут пуши о входе админа)
-    и формирует валидную веб-ссылку подписки для Happ с параметром объединения.
+    Генерирует или обновляет клиента на ОБОИХ серверах.
+    Возвращает: список VLESS-ссылок и timestamp окончания подписки.
     """
+    vless_links = []
+    final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False) # Отключаем проверку SSL для HTTPS панели
+    connector = aiohttp.TCPConnector(ssl=False)
     
-    # Постоянный UUID на основе Telegram ID пользователя (интернет будет работать стабильно)
-    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
-    sub_id = secrets.token_hex(8)
-
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                flag = "🇫🇮" if srv["id"] == "fi_1" else "🇵🇱"
-                country = "Финляндия" if srv["id"] == "fi_1" else "Польша"
-                email = f"{flag}_{country}_#{user_id}".replace(" ", "_")
-
-                # 1. ПОЛНОЦЕННАЯ АВТОРИЗАЦИЯ В ПАНЕЛИ (Прилетят пуши о входе)
+                # Настройки текущего сервера
+                email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                
+                # 1. Логин
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                payload_login = {"username": srv['panel_user'], "password": srv['panel_password']}
-                await session.post(login_url, data=payload_login, timeout=5)
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                    await resp.text()
 
-                headers = {"Accept": "application/json"}
+                # 2. Получение данных
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
+                    res_json = await resp.json()
+                    
+                if not res_json.get("success"):
+                    continue
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
                 
-                # 2. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА В X-UI
-                add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                client_payload = {
-                    "id": str(srv['inbound_id']),
-                    "settings": json.dumps({
-                        "clients": [{
-                            "id": client_uuid, "email": email,
-                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True,
-                            "tgId": user_id, "subId": sub_id
-                        }]
-                    })
-                }
-                
-                async with session.post(add_url, headers=headers, data=client_payload, timeout=5) as resp:
-                    resp_text = await resp.text()
-                    if "already exists" in resp_text or resp.status == 400:
-                        update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                        await session.post(update_url, headers=headers, data=client_payload, timeout=5)
+                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not current_client:
+                    old_email = f"user_{user_id}"
+                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+
+                client_uuid = current_client.get("id") if current_client else None
+
+                # 3. Создание / Обновление клиента в панели X-UI
+                if not client_uuid:
+                    client_uuid = str(uuid.uuid4())
+                    sub_id = secrets.token_hex(8) 
+                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                    client_data = {
+                        "id": str(srv['inbound_id']), 
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
+                        }]})
+                    }
+                    await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
+                    expiry_time_ms = 0
+                else:
+                    expiry_time_ms = current_client.get("expiryTime", 0)
+                    sub_id = current_client.get("subId", "")
+                    if not sub_id:
+                        sub_id = secrets.token_hex(8)
+                    
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    client_data = {
+                        "id": str(srv['inbound_id']),
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms,
+                            "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id
+                        }]})
+                    }
+                    await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
+
+                # Сохраняем максимальное время окончания (или берем с первого рабочего сервера)
+                if expiry_time_ms > 0:
+                    final_expiry_time_ms = expiry_time_ms
+
+                # 4. Сборка VLESS ссылки
+                my_port = res_json["obj"]["port"]
+                remark = f"{srv['country_flag']} {srv['country_name']}?Premium"
+                safe_remark = urllib.parse.quote(remark)
+
+                config_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
+                    f"#{safe_remark}"
+                )
+                vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Не удалось синхронизировать сервер {srv.get('id')}: {e}")
+                logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
+                continue
 
-    # --- СБОРКА СТАНДАРТНОЙ ВЕБ-ПОДПИСКИ С ПАРАМЕТРОМ СКЛЕЙКИ ---
-    # Мы запрашиваем подписку через порт 2096 Финляндии.
-    # Параметр ?inbound=1,2 принудительно заставит панель отдать оба ваших инбаунда в одной ссылке!
-    sub_remark = urllib.parse.quote("Sonata VPN Premium")
-    
-    # Ссылка получается короткой (около 45 символов) — Telegram пропустит её без единой ошибки!
-    final_web_sub = f"https://78.17.1{sub_id}?inbound=1,2#{sub_remark}"
+    return vless_links, final_expiry_time_ms
 
-    # Сохраняем маску в БД бота (база данных больше ничего не сломает, так как ссылка уже создана)
-    try:
-        add_or_update_user(user_id, username, "master_active", final_web_sub, 0)
-    except Exception as db_err:
-        logging.error(f"Ошибка записи в БД: {db_err}")
-        
-    return final_web_sub
 
 
 
@@ -578,46 +642,99 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации в Telegram на кнопке
     await callback.answer()
+    
     user_id = callback.from_user.id
+    username = callback.from_user.username or ""
 
     try:
-        # Удалите импорт telegraph из самого верха файла, если он там остался, чтобы не было ошибок!
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов и timestamp окончания подписки
+        vless_links, expiry_time_ms = await get_all_vpn_configs(user_id, username)
         
-        # Получаем чистую веб-ссылку подписки https://...
-        final_web_sub = await get_vpn_config_manual(user_id, callback.from_user.username or "")
+        if not vless_links:
+            await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
+            return
+
+        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки — требование X-UI/Happ)
+        full_configs_string = "\n".join(vless_links) + "\n"
+        base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        if final_web_sub:
-            # Создаем клавиатуру с полноценной инлайн-кнопкой!
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=final_web_sub)],
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
-            ])
+        # 3. Отправляем индивидуальный файл в классический репозиторий GitHub
+        try:
+            sub_web_url = await upload_to_github(user_id, base64_sub_content)
+        except Exception as github_err:
+            logging.error(f"Ошибка работы с GitHub для пользователя {user_id}: {github_err}")
+            await callback.message.answer("⚠️ Ошибка генерации ссылки подписки на сервере. Повторите позже.")
+            return
 
-            text = (
-                "<b>🚀 Ваша единая подписка готова к подключению!</b>\n\n"
-                "Мы объединили две локации в одну умную ссылку:\n"
-                "• <b>🇫🇮 Финляндия (Helsinki)</b>\n"
-                "• <b>🇵🇱 Польша (Warsaw)</b>\n\n"
-                "<b>📥 Инструкция по установке:</b>\n"
-                "1. Нажмите синюю инлайн-кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                "2. Или скопируйте адрес подписки в один тап:\n"
-                f"<code>{final_web_sub}</code>\n\n"
-                "3. Откройте приложение <b>Happ</b> ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте скопированный адрес."
-            )
-
-            # Описание красиво обновится, появится работающая инлайн-кнопка в стиле топовых VPN-сервисов
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        # 4. Формируем плашку со статусом и датой окончания подписки
+        if expiry_time_ms > 0:
+            # Конвертируем миллисекунды из панели в понятную дату
+            expiry_date = datetime.fromtimestamp(expiry_time_ms / 1000).strftime('%d.%m.%Y %H:%M')
+            status_text = f"🟢 Активна — до <b>{expiry_date}</b>"
         else:
-            await callback.message.answer("⚠️ Не удалось подключиться к серверам.")
+            status_text = "♾ Безлимитная / Срок не задан"
 
+        # 5. Собираем прямую ссылку для приложения Happ
+        raw_happ_url = f"happ://import/{sub_web_url}"
+        safe_redirect_url = raw_happ_url  # Резервный вариант
+        
+        # 6. Оборачиваем через сокращатель Яндекса для стабильного клика в Telegram
+        try:
+            async with aiohttp.ClientSession() as session:
+                enc_url = urllib.parse.quote(raw_happ_url)
+                async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
+                    if resp.status == 200:
+                        safe_redirect_url = await resp.text()
+        except Exception as e:
+            logging.error(f"Не удалось сократить happ-ссылку для {user_id}: {e}")
+            safe_redirect_url = sub_web_url
+
+        # 7. Строим инлайн-клавиатуру с прямой raw-ссылкой на GitHub
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+            [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+
+        # 8. Красивый текст сообщения для пользователя
+        text = (
+            f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
+            f" STATUS: {status_text}\n"
+            f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
+            f"<b>📥 Автоматическое подключение через Happ:</b>\n"
+            f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+            f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+            f"3. Смартфон сам откроет приложение и импортирует подписку со всеми серверами.\n\n"
+            f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
+            f"• Нажмите пальцем на поле ниже, чтобы скопировать ссылку подписки:\n"
+            f"<code>{sub_web_url}</code>\n\n"
+            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
+        )
+
+        # 9. Безопасно и асинхронно обновляем / сохраняем данные в локальную SQLite
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+        await add_or_update_user(
+            user_id=user_id, 
+            username=username, 
+            vpn_config=full_configs_string, 
+            github_raw_url=sub_web_url, 
+            expiry_time=expiry_seconds
+        )
+
+        # Изменяем текущее сообщение на плашку подключения
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
