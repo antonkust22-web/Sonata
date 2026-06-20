@@ -139,60 +139,51 @@ from datetime import datetime
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Обновляет Gist vpn.txt. Имеет встроенную защиту от таймаутов, 
-    ошибок SSL и падений сети GitHub (3 повторные попытки).
+    Автоматически заходит в ваш аккаунт по токену и СОЗДАЕТ новый секретный Gist.
+    Возвращает прямую сырую (raw) ссылку на файл для Happ.
     """
+    # Общий URL API для создания новых гистов
     url = "https://github.com"
-    token = "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"  # Замените на свой живой токен с галочкой 'gist'
+    
+    # ⚠️ ВПИШИ СВОЙ ТОКЕН СЮДА (убедись, что при создании стояла галочка на 'gist'):
+    token = "ghp_ВАШ_СЕКРЕТНЫЙ_ТОКЕН_КОТОРЫЙ_ВЫ_НЕ_ПОКАЗЫВАЛИ"
 
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "SonataVPN-Bot",
-        "Content-Type": "application/json; charset=utf-8"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     
+    # Имя файла внутри гиста делаем уникальным под ID пользователя
+    filename = f"sonata_{user_id}.txt"
+    
+    # Структура запроса POST для создания нового секретного гиста
     payload = {
-        "description": "Sonata VPN Premium Subscription",
+        "description": f"Sonata VPN Personal Subscription for User {user_id}",
+        "public": False,  # Ставим False, чтобы гист был Secret (скрыт от чужих глаз)
         "files": {
-            "vpn.txt": {
+            filename: {
                 "content": content
             }
         }
     }
     
+    # Принудительно упаковываем JSON в UTF-8 без ASCII-искажений русского текста и эмодзи
     json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     
-    max_retries = 3
-    timeout = aiohttp.ClientTimeout(total=8)
-    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession() as session:
+        # Для создания нового ресурса ВСЕГДА используется метод POST
+        async with session.post(url, headers=headers, data=json_data, timeout=10) as resp:
+            if resp.status == 201:  # 201 Created означает, что новый гист успешно создан!
+                res_data = await resp.json()
+                # Извлекаем сырую raw-ссылку на созданный текстовый файл
+                raw_url = res_data["files"][filename]["raw_url"]
+                return raw_url
+            else:
+                error_text = await resp.text()
+                logging.error(f"GitHub Gist POST Error (Код {resp.status}): {error_text}")
+                raise Exception(f"GitHub отклонил создание гиста с кодом {resp.status}")
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.patch(url, headers=headers, data=json_data) as resp:
-                    if resp.status == 200:
-                        logging.info(f"Gist успешно обновлен с {attempt}-й попытки.")
-                        # ИСПРАВЛЕНО: Возвращаем правильную сырую ссылку на ваш Gist
-                        return "https://githubusercontent.com"
-                    
-                    # ИСПРАВЛЕНО НАДЕЖНО: Избавились от оператора 'in' и скрытых скобок
-                    elif resp.status == 401 or resp.status == 403 or resp.status == 404:
-                        error_text = await resp.text()
-                        logging.error(f"Критическая ошибка GitHub API (Статус {resp.status}): {error_text}")
-                        return None 
-                    
-                    else:
-                        logging.warning(f"Попытка {attempt} неуспешна (Статус {resp.status}). Пробуем снова...")
-        
-        except (aiohttp.ClientConnectorError, asyncio.TimeoutError, Exception) as network_err:
-            logging.warning(f"Сетевой сбой на попытке {attempt}: {network_err}")
-        
-        if attempt < max_retries:
-            await asyncio.sleep(attempt * 2)
-            
-    logging.error("Все попытки подключиться к GitHub Gist исчерпаны.")
-    return None
 
  
 
@@ -234,7 +225,8 @@ SERVERS = [
 async def get_vpn_config_clean(user_id, username=""):
     """
     Универсальный сборщик конфигураций. 
-    В конце ссылки VLESS оставляет ТОЛЬКО флаг и страну без ID пользователя.
+    Исправляет ошибки Reality параметров (убирает n/a в Happ).
+    В конце ссылки VLESS оставляет ТОЛЬКО флаг и страну БЕЗ ID пользователя.
     """
     vless_links = []
     final_expiry_time_ms = 0
@@ -244,7 +236,7 @@ async def get_vpn_config_clean(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # Технический email для панели
+                # Технический email для панели (остаётся уникальным для X-UI)
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
@@ -303,17 +295,20 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # ЖЕСТКО: Оставляем только флаг и страну без нижних подчеркиваний и решеток
+                # ИСПРАВЛЕНИЕ ДЛЯ ПИНГА: Очищаем SNI от протоколов, оставляем чистый домен (например, sony.com)
+                clean_sni = srv['sni'].replace("://", "").replace("www.", "")
+                
+                # СТРОГО: Только флаг и страна для отображения в приложении Happ
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # Сборка чистой конфигурации без лишнего кодирования
+                # ИСПРАВЛЕННАЯ СТРУКТУРА ССЫЛКИ VLESS ( Reality стандарт без лишнего encryption=none)
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
+                    f"?type=tcp&security=reality&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
                     f"#{remark}"
                 )
                 
-                # Записываем чистую строку без %-кодов
+                # Декодируем проценты, записываем чистый текст в UTF-8
                 vless_links.append(urllib.parse.unquote(config_link))
 
             except Exception as e:
@@ -650,44 +645,84 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации загрузки кнопки в Telegram
     await callback.answer()
+    
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем ссылки
+        # 1. Получаем чистые VLESS-ссылки (только флаг и страна)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
-            await callback.message.answer("⚠️ Не удалось получить конфигурации.")
+            await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Склеиваем и кодируем в Base64 точно так же, как мы делали
-        # strip() убирает случайные лишние пробелы и переносы по краям строки
+        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. ВЫВОДИМ В ЛОГИ ХОСТИНГА (Ищи строку "DIAGNOSTIC BASE64:")
-        print(f"\n\n=== DIAGNOSTIC BASE64 FOR USER {user_id} ===\n{base64_sub_content}\n====================================\n")
-        logging.info(f"Диагностический Base64: {base64_sub_content}")
+        # 3. АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ГИСТА: Бот заходит под твоим токеном и делает новый Gist
+        try:
+            sub_web_url = await upload_to_github(user_id, base64_sub_content)
+        except Exception as github_err:
+            logging.error(f"Критическая ошибка создания Gist для {user_id}: {github_err}")
+            await callback.message.answer("⚠️ Ошибка автоматического создания подписки в GitHub. Проверьте токен.")
+            return
 
-        # 4. Отправляем этот код сообщением прямо в чат Telegram
+        # 4. Рассчитываем статус и дату окончания подписки
+        if expiry_time_ms > 0:
+            expiry_seconds = int(expiry_time_ms / 1000)
+            expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
+            status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
+        else:
+            expiry_seconds = 0
+            status_text = "♾ Безлимитная / Срок не задан"
+
+        # 5. Строим инлайн-клавиатуру с полученной RAW-ссылкой на новый Gist
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+
+        # 6. Текст сообщения для пользователя
         text = (
-            f"📥 <b>Ваш сгенерированный Base64-код подписки:</b>\n\n"
+            f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
+            f" STATUS: {status_text}\n"
+            f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
+            f"<b>📥 Подключение через приложение Happ:</b>\n"
+            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
+            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
+            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
+            f"<b>💡 Альтернативный способ (вручную):</b>\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
             f"<code>{base64_sub_content}</code>\n\n"
-            f" Скопируйте этот текст, зайдите на сайт <b>base64decode.org</b>, вставьте в верхнее поле и нажмите кнопку декодирования. Пришлите мне то, что выдаст сайт в нижнем поле!"
+            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
-        
+
+        # 7. Сохраняем данные в локальную SQLite (Синхронно)
+        add_or_update_user(
+            user_id=user_id, 
+            username=username, 
+            vpn_config=full_configs_string, 
+            github_raw_url=sub_web_url, 
+            expiry_time=expiry_seconds
+        )
+
+        # 8. Удаляем старое медиа-сообщение
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        await callback.message.answer(text=text, parse_mode="HTML")
+        # Отправляем новую чистую плашку обычным текстом
+        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
-        logging.error(f"Ошибка диагностики: {e}")
-        await callback.message.answer(f"⚠️ Ошибка сборки: {e}")
+        logging.error(f"Критическая ошибка в обработчике connect: {e}")
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
          
 
