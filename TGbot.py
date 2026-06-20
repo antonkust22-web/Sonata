@@ -218,7 +218,12 @@ SERVERS = [
 ]
 
 
+
 async def get_vpn_config_manual(user_id, username=""):
+    """
+    Генерирует конфигурации со всех серверов. 
+    В конце ссылки VLESS оставляет ТОЛЬКО флаг и страну без ID пользователя.
+    """
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
@@ -227,7 +232,7 @@ async def get_vpn_config_manual(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # 1. Для панели X-UI оставляем техническое уникальное имя с ID, чтобы не было синтаксических ошибок
+                # Технический email для панели (чтобы вы видели, чей это клиент)
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
@@ -244,7 +249,6 @@ async def get_vpn_config_manual(user_id, username=""):
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
-                # Ищем клиента по tgId
                 current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                 if not current_client:
                     old_email = f"user_{user_id}"
@@ -260,10 +264,8 @@ async def get_vpn_config_manual(user_id, username=""):
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
-                            "id": client_uuid, 
-                            "email": email_for_panel,  # Отправляем в панель техническое имя
-                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, 
-                            "tgId": user_id, "subId": sub_id  
+                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
                         }]})
                     }
                     await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
@@ -278,11 +280,8 @@ async def get_vpn_config_manual(user_id, username=""):
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
-                            "id": client_uuid, 
-                            "email": email_for_panel,  # Принудительно обновляем техническое имя в панели
-                            "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, 
-                            "tgId": user_id, "subId": sub_id
+                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
                         }]})
                     }
                     await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
@@ -292,27 +291,24 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # Имя сервера, как оно должно выглядеть в Happ
+                # ИСПРАВЛЕНО: Теперь здесь ТОЛЬКО флаг и страна через обычный пробел (например: 🇵🇱 Польша)
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # Собираем ссылку
-                raw_config = (
+                # Сборка чистой конфигурации без лишнего кодирования
+                config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
                     f"#{remark}"
                 )
                 
-                # ЖЕЛЕЗОБЕТОННЫЙ ФИКС: Принудительно очищаем ссылку от любых %-кодов перед добавлением в список
-                clean_config = urllib.parse.unquote(raw_config)
-                vless_links.append(clean_config)
-
+                # Принудительно декодируем проценты, если Python попытался их подставить
+                vless_links.append(urllib.parse.unquote(config_link))
 
             except Exception as e:
                 logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
                 continue
 
     return vless_links, final_expiry_time_ms
-
 
 
 
