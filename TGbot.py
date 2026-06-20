@@ -651,7 +651,7 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов и timestamp окончания подписки
+        # 1. Вызываем get_vpn_config_manual (теперь она возвращает массив ссылок с обоих серверов)
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
@@ -714,7 +714,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
         )
 
-        # 9. ТЕПЕРЬ СИНХРОННО (БЕЗ AWAIT): Обновляем/сохраняем данные в локальную SQLite
+        # 9. Сохраняем данные в локальную SQLite (Синхронно, без await)
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
         add_or_update_user(
             user_id=user_id, 
@@ -730,7 +730,6 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
 
 
 
