@@ -136,31 +136,26 @@ import uuid
 import aiohttp
 from datetime import datetime
 
+
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Создает абсолютно НОВЫЙ секретный Gist для пользователя.
-    Возвращает прямую raw-ссылку на файл подписки для Happ.
+    Обновляет Gist vpn.txt. Имеет встроенную защиту от таймаутов, 
+    ошибок SSL и падений сети GitHub (3 повторные попытки).
     """
-    # Общий URL для создания новых гистов
     url = "https://github.com"
-    
-    # Вставьте сюда ваш секретный рабочий токен (с галочкой 'gist')
-    token = "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" 
+    token = "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"  # Замени на свой живой токен с галочкой 'gist'
 
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "SonataVPN_Bot",
         "Content-Type": "application/json; charset=utf-8"
     }
     
-    # Имя файла делаем динамическим под ID пользователя
-    filename = f"sonata_{user_id}.txt"
-    
     payload = {
-        "description": f"Sonata VPN Premium Subscription for User {user_id}",
-        "public": False,  # Секретный гист, скрытый из общего поиска
+        "description": "Sonata VPN Premium Subscription",
         "files": {
-            filename: {
+            "vpn.txt": {
                 "content": content
             }
         }
@@ -168,19 +163,39 @@ async def upload_to_github(user_id: int, content: str) -> str:
     
     json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     
-    async with aiohttp.ClientSession() as session:
-        # Для создания нового ресурса используется метод POST вместо PATCH
-        async with session.post(url, headers=headers, data=json_data) as resp:
-            # Успешное создание возвращает статус 201 Created
-            if resp.status == 201:
-                res_data = await resp.json()
-                # Извлекаем сырую raw-ссылку на созданный файл
-                raw_url = res_data["files"][filename]["raw_url"]
-                return raw_url
-            else:
-                error_text = await resp.text()
-                logging.error(f"GitHub Gist API POST Error Code {resp.status}: {error_text}")
-                raise Exception(f"GitHub отклонил создание со статусом {resp.status}")
+    # Настройки защиты: 3 попытки, таймаут 8 секунд на запрос
+    max_retries = 3
+    timeout = aiohttp.ClientTimeout(total=8)
+    
+    # Отключаем строгую проверку SSL на случай, если у хостинга проблемы с корневыми сертификатами
+    connector = aiohttp.TCPConnector(ssl=False)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                async with session.patch(url, headers=headers, data=json_data) as resp:
+                    if resp.status == 200:
+                        logging.info(f"Gist успешно обновлен с {attempt}-й попытки.")
+                        return "https://githubusercontent.com"
+                    
+                    elif resp.status in:
+                        error_text = await resp.text()
+                        logging.error(f"Критическая ошибка GitHub API (Статус {resp.status}): {error_text}")
+                        # При ошибках авторизации/прав нет смысла пробовать еще раз — сразу выходим в резервный режим
+                        return None 
+                    
+                    else:
+                        logging.warning(f"Попытка {attempt} неуспешна (Статус {resp.status}). Пробуем снова...")
+        
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError, Exception) as network_err:
+            logging.warning(f"Сетевой сбой на попытке {attempt}: {network_err}")
+        
+        # Если это не последняя попытка, ждем увеличивающийся интервал (1сек, 3сек) перед следующим запросом
+        if attempt < max_retries:
+            await asyncio.sleep(attempt * 2)
+            
+    logging.error("Все попытки подключиться к GitHub Gist исчерпаны.")
+    return None  # Возвращаем None, сигнализируя обработчику connect включить аварийный режим
 
  
 
@@ -644,26 +659,17 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. ИСПРАВЛЕНО: Вызываем нашу новую чистую функцию (старый дубликат теперь полностью проигнорирован)
+        # 1. Сборка чистых VLESS-ссылок (только флаг и страна)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (как вы делали руками на сайте)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем чистый UTF-8 Base64 в ваш GitHub Gist
-        try:
-            sub_web_url = await upload_to_github(user_id, base64_sub_content)
-        except Exception as github_err:
-            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка обновления подписки. Убедитесь, что токен активен и имеет галочку 'gist'.")
-            return
-
-        # 4. Рассчитываем статус и дату окончания подписки
+        # Расчет даты окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -672,28 +678,58 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Строим инлайн-клавиатуру со ссылкой на ваш Gist
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
+        # 2. Попытка отправить данные в GitHub Gist
+        sub_web_url = await upload_to_github(user_id, base64_sub_content)
+        
+        # 3. АВТОМАТИЧЕСКИЙ ВЫБОР РЕЖИМА РАБОТЫ
+        if sub_web_url:
+            # --- ОСНОВНОЙ РЕЖИМ (GitHub работает идеально) ---
+            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+            happ_url = f"happ://import/{sub_web_url}#{sub_remark}"
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=happ_url)],
+                [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            ])
+            
+            connect_instruction = (
+                f"1. Нажмите на кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+                f"2. Смартфон сам откроет приложение и обновит сервера автоматически.\n\n"
+                f"<b>💡 Вручную по ссылке:</b>\n"
+                f"<code>{sub_web_url}</code>"
+            )
+        else:
+            # --- АВАРИЙНЫЙ РЕЖИМ (GitHub лежит или токен заблокирован) ---
+            # Передаем Base64 пакет прямо внутрь протокола happ://, полностью минуя интернет-запросы!
+            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium (Резерв)")
+            happ_url = f"happ://import/{base64_sub_content}#{sub_remark}"
+            sub_web_url = "direct_memory_import"
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡️ АВАРИЙНЫЙ ИМПОРТ В HAPP", url=happ_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            ])
+            
+            connect_instruction = (
+                f"⚠️ <i>Сервер синхронизации GitHub временно перегружен. Включен резервный режим прямой загрузки.</i>\n\n"
+                f"1. Нажмите кнопку <b>«⚡️ АВАРИЙНЫЙ ИМПОРТ В HAPP»</b> ниже.\n"
+                f"2. Локации добавятся напрямую из памяти бота.\n\n"
+                f"<b>💡 Вручную через буфер обмена:</b>\n"
+                f"Скопируйте код ниже и вставьте в Happ через кнопку 'Add from Clipboard':\n"
+                f"<code>{base64_sub_content}</code>"
+            )
 
-        # 6. Текст сообщения для пользователя
+        # 4. Текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Подключение через приложение Happ:</b>\n"
-            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
-            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
-            f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
-            f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
+            f"<b>📥 Подключение:</b>\n"
+            f"{connect_instruction}"
         )
 
-        # 7. Сохраняем данные в локальную SQLite (Синхронно)
+        # 5. Локальное сохранение в базу данных бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
@@ -702,7 +738,7 @@ async def connect(callback: types.CallbackQuery):
             expiry_time=expiry_seconds
         )
 
-        # 8. Удаляем старое меню с картинкой
+        # 6. Удаляем старое медиа-сообщение и отправляем чистую текстовую плашку
         try:
             await callback.message.delete()
         except Exception:
