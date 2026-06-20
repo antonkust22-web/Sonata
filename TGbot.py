@@ -219,9 +219,9 @@ SERVERS = [
 
 
 
-async def get_vpn_config_manual(user_id, username=""):
+async def get_vpn_config_clean(user_id, username=""):
     """
-    Генерирует конфигурации со всех серверов. 
+    Универсальный сборщик конфигураций. 
     В конце ссылки VLESS оставляет ТОЛЬКО флаг и страну без ID пользователя.
     """
     vless_links = []
@@ -232,7 +232,7 @@ async def get_vpn_config_manual(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # Технический email для панели (чтобы вы видели, чей это клиент)
+                # Технический email для панели
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
@@ -291,7 +291,7 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # ИСПРАВЛЕНО: Теперь здесь ТОЛЬКО флаг и страна через обычный пробел (например: 🇵🇱 Польша)
+                # ЖЕСТКО: Оставляем только флаг и страну без нижних подчеркиваний и решеток
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
                 # Сборка чистой конфигурации без лишнего кодирования
@@ -301,7 +301,7 @@ async def get_vpn_config_manual(user_id, username=""):
                     f"#{remark}"
                 )
                 
-                # Принудительно декодируем проценты, если Python попытался их подставить
+                # Записываем чистую строку без %-кодов
                 vless_links.append(urllib.parse.unquote(config_link))
 
             except Exception as e:
@@ -309,6 +309,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -583,7 +584,7 @@ async def cabinet(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     # Синхронизируем данные с панелью X-UI
-    await get_vpn_config_manual(user_id, callback.from_user.username or "")
+    await get_vpn_config_clean(user_id, callback.from_user.username or "")
 
     # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
@@ -637,22 +638,20 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов (теперь без лишних %-кодов в имени)
-        vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
+        # 1. ИСПРАВЛЕНО: Вызываем нашу новую чистую функцию (старый дубликат теперь полностью проигнорирован)
+        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
-        # Получится точь-в-точь как при ручном кодировании на сайте
+        # 2. Формируем единый Base64 пакет (как вы делали руками на сайте)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
@@ -661,7 +660,7 @@ async def connect(callback: types.CallbackQuery):
             sub_web_url = await upload_to_github(user_id, base64_sub_content)
         except Exception as github_err:
             logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка авторизации GitHub. Убедитесь, что токен активен и имеет галочку 'gist'.")
+            await callback.message.answer("⚠️ Ошибка обновления подписки. Убедитесь, что токен активен и имеет галочку 'gist'.")
             return
 
         # 4. Рассчитываем статус и дату окончания подписки
@@ -673,7 +672,7 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Строим инлайн-клавиатуру с вашей прямой RAW-ссылкой на Gist
+        # 5. Строим инлайн-клавиатуру со ссылкой на ваш Gist
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -703,14 +702,12 @@ async def connect(callback: types.CallbackQuery):
             expiry_time=expiry_seconds
         )
 
-        # 8. Удаляем старое приветственное сообщение с картинкой,
-        # чтобы обойти лимит MEDIA_CAPTION_TOO_LONG
+        # 8. Удаляем старое меню с картинкой
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем новую чистую плашку обычным текстом (лимит 4096 символов)
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
