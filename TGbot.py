@@ -641,7 +641,7 @@ async def connect(callback: types.CallbackQuery):
 
     try:
         # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов и timestamp окончания подписки
-        vless_links, expiry_time_ms = await get_all_vpn_configs(user_id, username)
+        vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
