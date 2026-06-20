@@ -143,12 +143,12 @@ async def upload_to_github(user_id: int, content: str) -> str:
     ошибок SSL и падений сети GitHub (3 повторные попытки).
     """
     url = "https://github.com"
-    token = "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"  # Замени на свой живой токен с галочкой 'gist'
+    token = "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"  # Замените на свой живой токен с галочкой 'gist'
 
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "SonataVPN_Bot",
+        "User-Agent": "SonataVPN-Bot",
         "Content-Type": "application/json; charset=utf-8"
     }
     
@@ -163,11 +163,8 @@ async def upload_to_github(user_id: int, content: str) -> str:
     
     json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     
-    # Настройки защиты: 3 попытки, таймаут 8 секунд на запрос
     max_retries = 3
     timeout = aiohttp.ClientTimeout(total=8)
-    
-    # Отключаем строгую проверку SSL на случай, если у хостинга проблемы с корневыми сертификатами
     connector = aiohttp.TCPConnector(ssl=False)
 
     for attempt in range(1, max_retries + 1):
@@ -176,12 +173,13 @@ async def upload_to_github(user_id: int, content: str) -> str:
                 async with session.patch(url, headers=headers, data=json_data) as resp:
                     if resp.status == 200:
                         logging.info(f"Gist успешно обновлен с {attempt}-й попытки.")
+                        # ИСПРАВЛЕНО: Возвращаем правильную сырую ссылку на ваш Gist
                         return "https://githubusercontent.com"
                     
-                    elif resp.status in:
+                    # ИСПРАВЛЕНО НАДЕЖНО: Избавились от оператора 'in' и скрытых скобок
+                    elif resp.status == 401 or resp.status == 403 or resp.status == 404:
                         error_text = await resp.text()
                         logging.error(f"Критическая ошибка GitHub API (Статус {resp.status}): {error_text}")
-                        # При ошибках авторизации/прав нет смысла пробовать еще раз — сразу выходим в резервный режим
                         return None 
                     
                     else:
@@ -190,12 +188,11 @@ async def upload_to_github(user_id: int, content: str) -> str:
         except (aiohttp.ClientConnectorError, asyncio.TimeoutError, Exception) as network_err:
             logging.warning(f"Сетевой сбой на попытке {attempt}: {network_err}")
         
-        # Если это не последняя попытка, ждем увеличивающийся интервал (1сек, 3сек) перед следующим запросом
         if attempt < max_retries:
             await asyncio.sleep(attempt * 2)
             
     logging.error("Все попытки подключиться к GitHub Gist исчерпаны.")
-    return None  # Возвращаем None, сигнализируя обработчику connect включить аварийный режим
+    return None
 
  
 
