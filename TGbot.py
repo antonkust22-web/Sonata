@@ -139,13 +139,13 @@ from datetime import datetime
 async def upload_to_github(user_id: int, content: str) -> str:
     """
     Автоматически обновляет файл vpn.txt внутри вашего существующего GitHub Gist.
-    Возвращает прямую raw-ссылку для Happ.
+    Возвращает прямую raw-ссылку на файл для использования в Happ.
     """
-    # URL строго текстом, без использования фигурных скобок и переменных пути
+    # Жесткий URL без единого слэша во внешних переменных
     url = "https://github.com"
     
-    # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА (убедитесь, что при создании токена стояла галочка на "gist"):
-    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН"
+    # ⚠️ ВПИШИТЕ СЮДА ВАШ ТОКЕН ГИТХАБА:
+    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН_ГЕТХАБА"
 
     headers = {
         "Authorization": f"token {MY_GITHUB_TOKEN}",
@@ -164,7 +164,7 @@ async def upload_to_github(user_id: int, content: str) -> str:
         async with session.patch(url, headers=headers, json=payload) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
-                # Извлекаем прямую сырую ссылку (raw_url) на обновленный файл vpn.txt
+                # Извлекаем прямую сырую ссылку (raw_url), которую так любит Happ
                 raw_url = res_data["files"]["vpn.txt"]["raw_url"]
                 return raw_url
             else:
@@ -634,14 +634,14 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию get_vpn_config_manual
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет из полученного массива
+        # 2. Формируем единый Base64 пакет из полученного массива строк
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
@@ -662,7 +662,7 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Используем HTTP-ссылку на Gist, которую Telegram ОДОБРЯЕТ
+        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Используем чистую HTTP-ссылку на Gist (Telegram её пропустит!)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -675,15 +675,15 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Подключение через приложение Happ:</b>\n"
             f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
+            f"2. Скопируйте адрес открывшейся страницы из адресной строки.\n"
             f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
             f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую:\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
             f"<code>{base64_sub_content}</code>\n\n"
             f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 7. Сохраняем данные в локальную SQLite
+        # 7. Сохраняем данные в локальную SQLite (Синхронно, без await)
         add_or_update_user(
             user_id=user_id, 
             username=username, 
@@ -692,7 +692,7 @@ async def connect(callback: types.CallbackQuery):
             expiry_time=expiry_seconds
         )
 
-        # Изменяем текущее сообщение на плашку подключения
+        # Изменяем текущее сообщение на красивую плашку подключения
         await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
