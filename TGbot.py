@@ -142,11 +142,6 @@ GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/confi
 GITHUB_BRANCH = "main"
 
 async def upload_to_github(user_id: int, content: str) -> str:
-    """
-    Загружает индивидуальный файл подписки на GitHub для конкретного пользователя.
-    Если файл уже есть — обновляет его.
-    Возвращает прямую ссылку на сырой текстовый файл.
-    """
     file_path = f"subs/{user_id}.txt"
     url = f"https://github.com{GITHUB_REPO}/contents/{file_path}"
     
@@ -156,14 +151,12 @@ async def upload_to_github(user_id: int, content: str) -> str:
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Проверяем, существует ли уже файл этого юзера, чтобы получить его SHA-хэш
         sha = None
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
                 sha = res_data.get("sha")
         
-        # 2. Переводим контент в Base64 для передачи через GitHub API
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         
         payload = {
@@ -172,20 +165,16 @@ async def upload_to_github(user_id: int, content: str) -> str:
             "branch": GITHUB_BRANCH
         }
         if sha:
-            payload["sha"] = sha  # Если файл обновляется, гитхаб требует старый SHA
+            payload["sha"] = sha
             
-        # 3. Записываем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
-            # ИСПРАВЛЕНО НАДЕЖНО: Избавились от оператора 'in' и скрытых скобок
             if resp.status == 200 or resp.status == 201:
-                # Корректный адрес для получения сырых данных ://githubusercontent.com
-                raw_url = f"https://://githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+                raw_url = f"https://githubusercontent.com{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub API Error: {error_text}")
                 raise Exception("Не удалось сохранить конфигурацию на GitHub")
-
 
 
 
@@ -207,7 +196,7 @@ SERVERS = [
     {
         "id": "de_1",
         "panel_url": "http://78.17.152.36:2053",
-        "base_path": "/root",
+        "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
         "inbound_id": 1,
@@ -221,7 +210,7 @@ SERVERS = [
 ]
 
 
-async def get_all_vpn_configs(user_id, username=""):
+async def get_vpn_config_manual(user_id, username=""):
     """
     Генерирует или обновляет клиента на ОБОИХ серверах.
     Возвращает: список VLESS-ссылок и timestamp окончания подписки.
