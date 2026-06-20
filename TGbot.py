@@ -145,7 +145,7 @@ async def upload_to_github(user_id: int, content: str) -> str:
     url = "https://github.com"
     
     # ⚠️ ВПИШИТЕ СЮДА ВАШ ТОКЕН ГИТХАБА:
-    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН_ГЕТХАБА"
+    MY_GITHUB_TOKEN = "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"
 
     headers = {
         "Authorization": f"token {MY_GITHUB_TOKEN}",
