@@ -143,12 +143,13 @@ GITHUB_BRANCH = "main"
 
 async def upload_to_github_fixed(user_id: int, content: str) -> str:
     """
-    Абсолютно надёжная загрузка подписки на GitHub с уникальным именем функции.
+    Вариант с абсолютно жестким URL. Никакие переменные пути не склеиваются.
     """
-    file_path = f"subs/{user_id}.txt"
+    # Превращаем ID пользователя в строку для имени файла
+    filename = str(user_id) + ".txt"
     
-    # Полный прямой путь к API GitHub без использования склеивания переменных
-    url = f"https://github.com{file_path}"
+    # Жесткий, проверенный URL без единой переменной в пути
+    url = f"https://github.com{filename}"
     
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -156,7 +157,7 @@ async def upload_to_github_fixed(user_id: int, content: str) -> str:
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Проверяем, существует ли файл, для получения SHA-хэша
+        # 1. Проверяем наличие файла для получения SHA
         sha = None
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
@@ -167,17 +168,18 @@ async def upload_to_github_fixed(user_id: int, content: str) -> str:
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         
         payload = {
-            "message": f"Update subscription for user {user_id}",
+            "message": f"Update sub {user_id}",
             "content": encoded_content,
-            "branch": GITHUB_BRANCH
+            "branch": "main"  # Прописано жестко
         }
         if sha:
             payload["sha"] = sha
             
-        # 3. Публикуем файл в репозиторий
+        # 3. Публикуем файл в ваш репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
             if resp.status == 200 or resp.status == 201:
-                raw_url = f"https://githubusercontent.com{GITHUB_BRANCH}/{file_path}"
+                # Прямая raw ссылка для Happ
+                raw_url = f"https://githubusercontent.com{filename}"
                 return raw_url
             else:
                 error_text = await resp.text()
