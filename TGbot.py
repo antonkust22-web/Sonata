@@ -136,30 +136,22 @@ import uuid
 import aiohttp
 from datetime import datetime
 
-# Константы для интеграции с GitHub (Замените своими данными!)
-GITHUB_TOKEN = "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"
-GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/configs"
-GITHUB_BRANCH = "main"
-
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Автоматически обновляет файл vpn.txt внутри вашего GitHub Gist.
-    Возвращает сырую (raw) ссылку для импорта в Happ.
+    Абсолютно жесткий вариант без использования переменных в строке URL.
+    Защищен от любых кривых глобальных переменных хостинга.
     """
-    # ⚠️ Впишите сюда ваш реальный Gist ID из адресной строки (хвост ссылки)
-    MY_GIST_ID = "ad4444cf9ccfb021e97a4d9546471b68" 
+    # ЖЕСТКИЙ ПРЯМОЙ URL ДО ВАШЕГО API GIST (Без единой фигурной скобки {})
+    url = "https://github.com"
     
-    # ⚠️ Впишите сюда ваш токен GitHub (в Scopes должна быть галочка "gist")
-    MY_GITHUB_TOKEN = "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"
+    # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА:
+    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН_ГЕТХАБА"
 
-    url = f"https://github.com{MY_GIST_ID}"
-    
     headers = {
         "Authorization": f"token {MY_GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
     
-    # Формируем тело запроса для обновления файла vpn.txt в гисте
     payload = {
         "files": {
             "vpn.txt": {
@@ -172,13 +164,13 @@ async def upload_to_github(user_id: int, content: str) -> str:
         async with session.patch(url, headers=headers, json=payload) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
-                # Извлекаем прямую сырую ссылку (raw_url) на файл vpn.txt
                 raw_url = res_data["files"]["vpn.txt"]["raw_url"]
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub Gist API Error: {error_text}")
                 raise Exception("Не удалось обновить файл в GitHub Gist")
+
 
 
 
