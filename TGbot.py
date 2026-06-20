@@ -639,10 +639,8 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Гасим часики анимации в Telegram на кнопке
     await callback.answer()
     
     user_id = callback.from_user.id
@@ -660,20 +658,25 @@ async def connect(callback: types.CallbackQuery):
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ ИЗ КОННЕКТА
-        sub_web_url = ""
+        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ (БЕЗ ВСЕХ ГЛОБАЛЬНЫХ ПЕРЕМЕННЫХ)
+        sub_web_url = f"https://githubusercontent.com{user_id}.txt"
+        
         try:
-            github_url = f"https://github.com{user_id}.txt"
+            # Ссылка строго на API гитхаба, никаких склеиваний в коде!
+            direct_api_url = f"https://github.com{user_id}.txt"
+            
+            # Впишите ваш токен прямо сюда вместо ТОКЕН, чтобы глобальная переменная ничего не ломала
+            my_secure_token = "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" 
             
             headers = {
-                "Authorization": f"token {GITHUB_TOKEN}",
+                "Authorization": f"token {my_secure_token}",
                 "Accept": "application/vnd.github.v3+json"
             }
             
             async with aiohttp.ClientSession() as session:
                 # Проверяем, существует ли уже файл, чтобы получить его SHA
                 sha = None
-                async with session.get(github_url, headers=headers) as resp:
+                async with session.get(direct_api_url, headers=headers) as resp:
                     if resp.status == 200:
                         res_data = await resp.json()
                         sha = res_data.get("sha")
@@ -688,11 +691,8 @@ async def connect(callback: types.CallbackQuery):
                     payload["sha"] = sha
                 
                 # Записываем файл в репозиторий
-                async with session.put(github_url, headers=headers, json=payload) as resp:
-                    if resp.status == 200 or resp.status == 201:
-                        # Сырая ссылка на файл конфигурации
-                        sub_web_url = f"https://githubusercontent.com{user_id}.txt"
-                    else:
+                async with session.put(direct_api_url, headers=headers, json=payload) as resp:
+                    if resp.status not in:
                         error_text = await resp.text()
                         logging.error(f"GitHub API Direct Error: {error_text}")
                         raise Exception("GitHub вернул ошибку при записи")
@@ -702,7 +702,7 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Ошибка генерации ссылки подписки на сервере. Повторите позже.")
             return
 
-        # 4. Рассчитываем плашку со статусом для Telegram и данные для Happ
+        # 4. Рассчитываем плашку со статусом
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -711,12 +711,11 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Собираем чистую happ-ссылку БЕЗ сокращателей (Telegram отлично ее переварит)
-        # Добавляем в конец якорь #🚀 Sonata VPN Premium, чтобы приложение красиво назвало профиль подписки
+        # 5. Собираем чистую happ-ссылку
         sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
         raw_happ_url = f"happ://import/{sub_web_url}#{sub_remark}"
 
-        # 6. Строим инлайн-клавиатуру напрямую с happ:// протоколом
+        # 6. Строим инлайн-клавиатуру
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=raw_happ_url)],
             [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
