@@ -651,101 +651,43 @@ async def cabinet(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
-    
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Сборка чистых VLESS-ссылок (только флаг и страна) через get_vpn_config_clean
+        # 1. Получаем ссылки
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
-            await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
+            await callback.message.answer("⚠️ Не удалось получить конфигурации.")
             return
 
-        full_configs_string = "\n".join(vless_links) + "\n"
+        # 2. Склеиваем и кодируем в Base64 точно так же, как мы делали
+        # strip() убирает случайные лишние пробелы и переносы по краям строки
+        full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # Расчет даты окончания подписки
-        if expiry_time_ms > 0:
-            expiry_seconds = int(expiry_time_ms / 1000)
-            expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
-            status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
-        else:
-            expiry_seconds = 0
-            status_text = "♾ Безлимитная / Срок не задан"
+        # 3. ВЫВОДИМ В ЛОГИ ХОСТИНГА (Ищи строку "DIAGNOSTIC BASE64:")
+        print(f"\n\n=== DIAGNOSTIC BASE64 FOR USER {user_id} ===\n{base64_sub_content}\n====================================\n")
+        logging.info(f"Диагностический Base64: {base64_sub_content}")
 
-        # 2. Попытка отправить данные в GitHub Gist
-        sub_web_url = await upload_to_github(user_id, base64_sub_content)
-        
-        # 3. АВТОМАТИЧЕСКИЙ ВЫБОР РЕЖИМА РАБОТЫ (ИСПРАВЛЕНО!)
-        if sub_web_url:
-            # --- ОСНОВНОЙ РЕЖИМ (GitHub работает идеально) ---
-            # Передаем обычную HTTP-ссылку на Gist через официальный веб-веб-импорт Happ
-            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            web_redirect_url = f"https://happ.link{sub_web_url}#{sub_remark}"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=web_redirect_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-            ])
-            
-            connect_instruction = (
-                f"1. Нажмите на кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-                f"2. Смартфон сам откроет приложение и обновит сервера автоматически.\n\n"
-                f"<b>💡 Вручную по ссылке подписки:</b>\n"
-                f"<code>{sub_web_url}</code>"
-            )
-        else:
-            # --- АВАРИЙНЫЙ РЕЖИМ (GitHub лежит или токен не подошел) ---
-            # ИСПРАВЛЕНО: Передаем Base64 пакет внутрь стандартной HTTPS ссылки, которую Telegram ПРОПУСТИТ!
-            sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-            web_redirect_url = f"https://happ.link{base64_sub_content}#{sub_remark}"
-            sub_web_url = "direct_memory_import"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡️ АВАРИЙНЫЙ ИМПОРТ В HAPP", url=web_redirect_url)],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-            ])
-            
-            connect_instruction = (
-                f"⚠️ <i>Сервер синхронизации GitHub временно недоступен. Включен резервный режим прямой загрузки.</i>\n\n"
-                f"1. Нажмите кнопку <b>«⚡️ АВАРИЙНЫЙ ИМПОРТ В HAPP»</b> ниже.\n"
-                f"2. Локации добавятся напрямую из памяти бота.\n\n"
-                f"<b>💡 Вручную через буфер обмена:</b>\n"
-                f"Скопируйте код ниже и вставьте в Happ через кнопку 'Add from Clipboard':\n"
-                f"<code>{base64_sub_content}</code>"
-            )
-
-        # 4. Текст сообщения для пользователя
+        # 4. Отправляем этот код сообщением прямо в чат Telegram
         text = (
-            f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
-            f" STATUS: {status_text}\n"
-            f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Подключение:</b>\n"
-            f"{connect_instruction}"
+            f"📥 <b>Ваш сгенерированный Base64-код подписки:</b>\n\n"
+            f"<code>{base64_sub_content}</code>\n\n"
+            f" Скопируйте этот текст, зайдите на сайт <b>base64decode.org</b>, вставьте в верхнее поле и нажмите кнопку декодирования. Пришлите мне то, что выдаст сайт в нижнем поле!"
         )
-
-        # 5. Локальное сохранение в базу данных бота
-        add_or_update_user(
-            user_id=user_id, 
-            username=username, 
-            vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, 
-            expiry_time=expiry_seconds
-        )
-
-        # 6. Удаляем старое медиа-сообщение и отправляем чистую текстовую плашку
+        
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+        await callback.message.answer(text=text, parse_mode="HTML")
             
     except Exception as e:
-        logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+        logging.error(f"Ошибка диагностики: {e}")
+        await callback.message.answer(f"⚠️ Ошибка сборки: {e}")
 
          
 
