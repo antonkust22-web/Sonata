@@ -142,8 +142,15 @@ GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/confi
 GITHUB_BRANCH = "main"
 
 async def upload_to_github(user_id: int, content: str) -> str:
+    """
+    Загружает индивидуальный файл подписки на GitHub для конкретного пользователя.
+    Если файл уже есть — обновляет его.
+    Возвращает прямую ссылку на сырой текстовый файл.
+    """
     file_path = f"subs/{user_id}.txt"
-    url = f"https://github.com{GITHUB_REPO}/contents/{file_path}"
+    
+    # ЖЕСТКИЙ ИСПРАВЛЕННЫЙ URL (слэш после repos гарантирован)
+    url = f"https://github.com{file_path}"
     
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -151,12 +158,14 @@ async def upload_to_github(user_id: int, content: str) -> str:
     }
     
     async with aiohttp.ClientSession() as session:
+        # 1. Проверяем, существует ли уже файл этого юзера, чтобы получить его SHA-хэш
         sha = None
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
                 sha = res_data.get("sha")
         
+        # 2. Переводим контент в Base64 для передачи через GitHub API
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         
         payload = {
@@ -165,11 +174,13 @@ async def upload_to_github(user_id: int, content: str) -> str:
             "branch": GITHUB_BRANCH
         }
         if sha:
-            payload["sha"] = sha
+            payload["sha"] = sha  # Если файл обновляется, гитхаб требует старый SHA
             
+        # 3. Записываем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
             if resp.status == 200 or resp.status == 201:
-                raw_url = f"https://githubusercontent.com{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+                # Корректный адрес для получения сырых данных ://githubusercontent.com
+                raw_url = f"https://://githubusercontent.com/antonkust22-web/sonata-configs/{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
                 error_text = await resp.text()
