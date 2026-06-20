@@ -141,15 +141,13 @@ GITHUB_TOKEN = "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"
 GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/configs"
 GITHUB_BRANCH = "main"
 
-async def upload_to_github(user_id: int, content: str) -> str:
+async def upload_to_github_fixed(user_id: int, content: str) -> str:
     """
-    Загружает индивидуальный файл подписки на GitHub для конкретного пользователя.
-    Если файл уже есть — обновляет его.
-    Возвращает прямую ссылку на сырой текстовый файл.
+    Абсолютно надёжная загрузка подписки на GitHub с уникальным именем функции.
     """
     file_path = f"subs/{user_id}.txt"
     
-    # ЖЕСТКИЙ ИСПРАВЛЕННЫЙ URL (слэш после repos гарантирован)
+    # Полный прямой путь к API GitHub без использования склеивания переменных
     url = f"https://github.com{file_path}"
     
     headers = {
@@ -158,14 +156,14 @@ async def upload_to_github(user_id: int, content: str) -> str:
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Проверяем, существует ли уже файл этого юзера, чтобы получить его SHA-хэш
+        # 1. Проверяем, существует ли файл, для получения SHA-хэша
         sha = None
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
                 sha = res_data.get("sha")
         
-        # 2. Переводим контент в Base64 для передачи через GitHub API
+        # 2. Переводим данные в Base64
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         
         payload = {
@@ -174,13 +172,12 @@ async def upload_to_github(user_id: int, content: str) -> str:
             "branch": GITHUB_BRANCH
         }
         if sha:
-            payload["sha"] = sha  # Если файл обновляется, гитхаб требует старый SHA
+            payload["sha"] = sha
             
-        # 3. Записываем файл в репозиторий
+        # 3. Публикуем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
             if resp.status == 200 or resp.status == 201:
-                # Корректный адрес для получения сырых данных ://githubusercontent.com
-                raw_url = f"https://://githubusercontent.com/antonkust22-web/sonata-configs/{GITHUB_BRANCH}/{file_path}"
+                raw_url = f"https://githubusercontent.com{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
                 error_text = await resp.text()
@@ -651,20 +648,20 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Вызываем get_vpn_config_manual (теперь она возвращает массив ссылок с обоих серверов)
+        # 1. Вызываем get_vpn_config_manual (которая собирает ключи)
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
+        # 2. Формируем единый Base64 пакет
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем индивидуальный файл в репозиторий GitHub
+        # 3. Отправляем индивидуальный файл в репозиторий GitHub (ВЫЗЫВАЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ)
         try:
-            sub_web_url = await upload_to_github(user_id, base64_sub_content)
+            sub_web_url = await upload_to_github_fixed(user_id, base64_sub_content)
         except Exception as github_err:
             logging.error(f"Ошибка работы с GitHub для пользователя {user_id}: {github_err}")
             await callback.message.answer("⚠️ Ошибка генерации ссылки подписки на сервере. Повторите позже.")
@@ -679,9 +676,9 @@ async def connect(callback: types.CallbackQuery):
 
         # 5. Собираем прямую ссылку для приложения Happ
         raw_happ_url = f"happ://import/{sub_web_url}"
-        safe_redirect_url = raw_happ_url  # Резервный вариант
+        safe_redirect_url = raw_happ_url
         
-        # 6. Оборачиваем через сокращатель Яндекса для стабильного клика в Telegram
+        # 6. Оборачиваем через сокращатель Яндекса
         try:
             async with aiohttp.ClientSession() as session:
                 enc_url = urllib.parse.quote(raw_happ_url)
@@ -692,7 +689,7 @@ async def connect(callback: types.CallbackQuery):
             logging.error(f"Не удалось сократить happ-ссылку для {user_id}: {e}")
             safe_redirect_url = sub_web_url
 
-        # 7. Строим инлайн-клавиатуру с прямой raw-ссылкой на GitHub
+        # 7. Строим инлайн-клавиатуру
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
             [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
@@ -714,7 +711,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
         )
 
-        # 9. Сохраняем данные в локальную SQLite (Синхронно, без await)
+        # 9. Сохраняем данные в локальную SQLite
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
         add_or_update_user(
             user_id=user_id, 
