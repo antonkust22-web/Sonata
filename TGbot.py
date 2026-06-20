@@ -227,8 +227,8 @@ async def get_vpn_config_manual(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # Формируем имя клиента для панели X-UI (без пробелов)
-                email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                # 1. Для панели X-UI оставляем техническое уникальное имя с ID, чтобы не было синтаксических ошибок
+                email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
@@ -244,6 +244,7 @@ async def get_vpn_config_manual(user_id, username=""):
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
+                # Ищем клиента по tgId
                 current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                 if not current_client:
                     old_email = f"user_{user_id}"
@@ -251,6 +252,7 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
+                # Создание / Обновление клиента в панели X-UI
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8) 
@@ -258,8 +260,10 @@ async def get_vpn_config_manual(user_id, username=""):
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email, "limitIp": 2, "totalGB": 0,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
+                            "id": client_uuid, 
+                            "email": email_for_panel,  # Отправляем в панель техническое имя
+                            "limitIp": 2, "totalGB": 0, "expiryTime": 0, "enable": True, 
+                            "tgId": user_id, "subId": sub_id  
                         }]})
                     }
                     await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
@@ -273,12 +277,13 @@ async def get_vpn_config_manual(user_id, username=""):
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
-                        "settings": json.dumps({
-                            "clients": [{
-                                "id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2),
-                                "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
-                            }]
-                        })
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, 
+                            "email": email_for_panel,  # Принудительно обновляем техническое имя в панели
+                            "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, 
+                            "tgId": user_id, "subId": sub_id
+                        }]})
                     }
                     await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
 
@@ -287,10 +292,11 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # ИСПРАВЛЕНО: Оставляем имя чистым текстом, БЕЗ urllib.parse.quote
+                # 2. ИСПРАВЛЕНО: Для ссылки VLESS формируем ЧИСТОЕ имя без нижних подчеркиваний и без ID пользователя
+                # Happ отобразит в списке серверов ровно то, что написано здесь
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # Собираем чистую прямую ссылку, как вы делали руками на сайте
+                # Собираем чистую прямую ссылку БЕЗ лишних %-кодов в хвосте
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
