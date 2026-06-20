@@ -141,50 +141,44 @@ GITHUB_TOKEN = "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"
 GITHUB_REPO = "antonkust22-web/sonata-configs"  # Пример: "sonatavpn/configs"
 GITHUB_BRANCH = "main"
 
-async def upload_to_github_fixed(user_id: int, content: str) -> str:
+async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Вариант с абсолютно жестким URL. Никакие переменные пути не склеиваются.
+    Автоматически обновляет файл vpn.txt внутри вашего GitHub Gist.
+    Возвращает сырую (raw) ссылку для импорта в Happ.
     """
-    # Превращаем ID пользователя в строку для имени файла
-    filename = str(user_id) + ".txt"
+    # ⚠️ Впишите сюда ваш реальный Gist ID из адресной строки (хвост ссылки)
+    MY_GIST_ID = "ad4444cf9ccfb021e97a4d9546471b68" 
     
-    # Жесткий, проверенный URL без единой переменной в пути
-    url = f"https://github.com{filename}"
+    # ⚠️ Впишите сюда ваш токен GitHub (в Scopes должна быть галочка "gist")
+    MY_GITHUB_TOKEN = "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"
+
+    url = f"https://github.com{MY_GIST_ID}"
     
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
+        "Authorization": f"token {MY_GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
     
+    # Формируем тело запроса для обновления файла vpn.txt в гисте
+    payload = {
+        "files": {
+            "vpn.txt": {
+                "content": content
+            }
+        }
+    }
+    
     async with aiohttp.ClientSession() as session:
-        # 1. Проверяем наличие файла для получения SHA
-        sha = None
-        async with session.get(url, headers=headers) as resp:
+        async with session.patch(url, headers=headers, json=payload) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
-                sha = res_data.get("sha")
-        
-        # 2. Переводим данные в Base64
-        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        
-        payload = {
-            "message": f"Update sub {user_id}",
-            "content": encoded_content,
-            "branch": "main"  # Прописано жестко
-        }
-        if sha:
-            payload["sha"] = sha
-            
-        # 3. Публикуем файл в ваш репозиторий
-        async with session.put(url, headers=headers, json=payload) as resp:
-            if resp.status == 200 or resp.status == 201:
-                # Прямая raw ссылка для Happ
-                raw_url = f"https://githubusercontent.com{filename}"
+                # Извлекаем прямую сырую ссылку (raw_url) на файл vpn.txt
+                raw_url = res_data["files"]["vpn.txt"]["raw_url"]
                 return raw_url
             else:
                 error_text = await resp.text()
-                logging.error(f"GitHub API Error: {error_text}")
-                raise Exception("Не удалось сохранить конфигурацию на GitHub")
+                logging.error(f"GitHub Gist API Error: {error_text}")
+                raise Exception("Не удалось обновить файл в GitHub Gist")
 
 
 
@@ -647,64 +641,26 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет
+        # 2. Формируем единый Base64 пакет из полученного массива (как вы делали на сайте)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ
-        sub_web_url = f"https://githubusercontent.com{user_id}.txt"
-        
+        # 3. Отправляем в ваш GitHub Gist (Вызываем функцию из Шага 1)
         try:
-            direct_api_url = f"https://github.com{user_id}.txt"
-            
-            # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА ВМЕСТО ЭТОЙ СТРОКИ:
-            my_secure_token = "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" 
-            
-            headers = {
-                "Authorization": f"token {my_secure_token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                # Проверяем, существует ли уже файл, чтобы получить его SHA
-                sha = None
-                async with session.get(direct_api_url, headers=headers) as resp:
-                    if resp.status == 200:
-                        res_data = await resp.json()
-                        sha = res_data.get("sha")
-                
-                # Создаем payload для записи
-                payload = {
-                    "message": f"Update sub {user_id}",
-                    "content": base64_sub_content,
-                    "branch": "main"
-                }
-                if sha:
-                    payload["sha"] = sha
-                
-                # Записываем файл в репозиторий
-                async with session.put(direct_api_url, headers=headers, json=payload) as resp:
-                    # ИСПРАВЛЕНО НАДЕЖНО: Избавились от скобок, проверяем коды 200 и 201
-                    if resp.status == 200 or resp.status == 201:
-                        pass
-                    else:
-                        error_text = await resp.text()
-                        logging.error(f"GitHub API Direct Error: {error_text}")
-                        raise Exception("GitHub вернул ошибку при записи")
-                        
+            sub_web_url = await upload_to_github(user_id, base64_sub_content)
         except Exception as github_err:
-            logging.error(f"Критическая ошибка отправки на GitHub в connect: {github_err}")
-            await callback.message.answer("⚠️ Ошибка генерации ссылки подписки на сервере. Повторите позже.")
+            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
+            await callback.message.answer("⚠️ Ошибка обновления файла подписки на GitHub. Повторите позже.")
             return
 
-        # 4. Рассчитываем плашку со статусом
+        # 4. Рассчитываем статус и дату окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -713,18 +669,18 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Собираем чистую happ-ссылку
+        # 5. Собираем прямую happ-ссылку импорта, которая ведет на ваш Gist
         sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
         raw_happ_url = f"happ://import/{sub_web_url}#{sub_remark}"
 
-        # 6. Строим инлайн-клавиатуру
+        # 6. Строим инлайн-клавиатуру (без сокращателей Яндекса)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=raw_happ_url)],
             [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Красивый текст сообщения для пользователя
+        # 7. Текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
@@ -732,9 +688,9 @@ async def connect(callback: types.CallbackQuery):
             f"<b>📥 Автоматическое подключение через Happ:</b>\n"
             f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
             f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            f"3. Смартфон сам откроет приложение и импортирует профиль со всеми серверами.\n\n"
+            f"3. Смартфон сам откроет приложение и импортирует подписку со всеми вашими серверами.\n\n"
             f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
-            f"• Нажмите пальцем на поле ниже, чтобы скопировать ссылку подписки:\n"
+            f"• Нажмите пальцем на поле ниже, чтобы скопировать вашу ссылку подписки:\n"
             f"<code>{sub_web_url}</code>\n\n"
             f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
         )
@@ -755,8 +711,6 @@ async def connect(callback: types.CallbackQuery):
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
 
-            # Впишите ваш токен прямо сюда вместо ТОКЕН, чтобы глобальная переменная ничего не ломала
-            
          
 
 
