@@ -624,9 +624,9 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
@@ -640,19 +640,13 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет из полученного массива (как вы делали на сайте)
+        # 2. Формируем единый пакет (каждая ссылка с новой строки)
         full_configs_string = "\n".join(vless_links) + "\n"
+        
+        # 3. Кодируем всю пачку в чистый Base64 (точно так же, как вы делали на сайте руками!)
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем в ваш GitHub Gist (Вызываем функцию из Шага 1)
-        try:
-            sub_web_url = await upload_to_github(user_id, base64_sub_content)
-        except Exception as github_err:
-            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка обновления файла подписки на GitHub. Повторите позже.")
-            return
-
-        # 4. Рассчитываем статус и дату окончания подписки
+        # 4. Рассчитываем статус и дату окончания подписки для вывода в Telegram
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -661,14 +655,14 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Собираем прямую happ-ссылку импорта, которая ведет на ваш Gist
+        # 5. МАГИЯ ПРЯМОГО ИМПОРТА: Happ поддерживает чтение Base64 прямо из ссылки!
+        # Мы добавляем название через знак #, чтобы приложение красиво назвало подписку
         sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-        raw_happ_url = f"happ://import/{sub_web_url}#{sub_remark}"
+        raw_happ_url = f"happ://import/{base64_sub_content}#{sub_remark}"
 
-        # 6. Строим инлайн-клавиатуру (без сокращателей Яндекса)
+        # 6. Строим инлайн-клавиатуру БЕЗ использования Гитхаба и Яндекса
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=raw_happ_url)],
-            [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -680,11 +674,11 @@ async def connect(callback: types.CallbackQuery):
             f"<b>📥 Автоматическое подключение через Happ:</b>\n"
             f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
             f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            f"3. Смартфон сам откроет приложение и импортирует подписку со всеми вашими серверами.\n\n"
+            f"3. Смартфон автоматически откроет приложение и мгновенно импортирует Финляндию и Польшу сразу пакетом!\n\n"
             f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
-            f"• Нажмите пальцем на поле ниже, чтобы скопировать вашу ссылку подписки:\n"
-            f"<code>{sub_web_url}</code>\n\n"
-            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его в буфер обмена:\n"
+            f"<code>{base64_sub_content}</code>\n\n"
+            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b> и вставьте текст."
         )
 
         # 8. Сохраняем данные в локальную SQLite (Синхронно)
@@ -692,7 +686,7 @@ async def connect(callback: types.CallbackQuery):
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, 
+            github_raw_url="direct_import", 
             expiry_time=expiry_seconds
         )
 
