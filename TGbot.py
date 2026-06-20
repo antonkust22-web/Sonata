@@ -64,20 +64,17 @@ import asyncio
 
 # Путь к вашей базе данных (замените на свой, если нужно)
 DB_PATH = "users.db"
-
 def init_db():
-    """Инициализация базы данных с правильной структурой полей"""
     logging.info(f"Диспетчер: Инициализация базы данных: {DB_PATH}")
+    # timeout=30.0 заставляет запросы послушно ждать, если база занята
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    # Включаем WAL режим для ускорения базы и защиты от locked-ошибок
+    # Включаем режим WAL. Это ускоряет запись в 10 раз и исключает зависания
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # Создаем таблицу. 
-    # vpn_config — здесь будет храниться чистый список VLESS-ссылок (через \n)
-    # github_raw_url — прямая ссылка на ://githubusercontent.com для кнопки в Telegram
+    # Создаем продвинутую таблицу пользователей с новыми полями
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -90,20 +87,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-def _sync_add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
-    """Внутренняя синхронная функция для работы внутри потока"""
+def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
+    """Синхронное добавление или обновление данных пользователя (без await)"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
+    # Проверяем, есть ли уже юзер
     cursor.execute('SELECT user_id, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if not row:
+        # Если пользователя нет — создаем запись
         cursor.execute(
             'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time) VALUES (?, ?, ?, ?, ?)',
             (user_id, username, vpn_config, github_raw_url, expiry_time if expiry_time is not None else 0)
         )
     else:
+        # Если пользователь есть — обновляем только то, что передано
         new_config = vpn_config if vpn_config is not None else row[1]
         new_github = github_raw_url if github_raw_url is not None else row[2]
         new_expiry = expiry_time if expiry_time is not None else row[3]
@@ -116,15 +116,8 @@ def _sync_add_or_update_user(user_id, username, vpn_config=None, github_raw_url=
     conn.commit()
     conn.close()
 
-async def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
-    """Асинхронная обертка: безопасно сохраняет данные, не подвешивая бота"""
-    await asyncio.to_thread(
-        _sync_add_or_update_user, 
-        user_id, username, vpn_config, github_raw_url, expiry_time
-    )
-
-def _sync_get_user_from_db(user_id):
-    """Внутреннее синхронное чтение из БД"""
+def get_user_from_db(user_id):
+    """Получение всех данных о пользователе из локальной БД"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT username, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
@@ -132,9 +125,6 @@ def _sync_get_user_from_db(user_id):
     conn.close()
     return row
 
-async def get_user_from_db(user_id):
-    """Асинлективное получение данных пользователя из локальной БД"""
-    return await asyncio.to_thread(_sync_get_user_from_db, user_id)
 
 
 import base64
@@ -650,6 +640,8 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     # Сразу гасим часики анимации в Telegram на кнопке
@@ -666,11 +658,11 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки — требование X-UI/Happ)
+        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем индивидуальный файл в классический репозиторий GitHub
+        # 3. Отправляем индивидуальный файл в репозиторий GitHub
         try:
             sub_web_url = await upload_to_github(user_id, base64_sub_content)
         except Exception as github_err:
@@ -680,7 +672,6 @@ async def connect(callback: types.CallbackQuery):
 
         # 4. Формируем плашку со статусом и датой окончания подписки
         if expiry_time_ms > 0:
-            # Конвертируем миллисекунды из панели в понятную дату
             expiry_date = datetime.fromtimestamp(expiry_time_ms / 1000).strftime('%d.%m.%Y %H:%M')
             status_text = f"🟢 Активна — до <b>{expiry_date}</b>"
         else:
@@ -723,9 +714,9 @@ async def connect(callback: types.CallbackQuery):
             f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
         )
 
-        # 9. Безопасно и асинхронно обновляем / сохраняем данные в локальную SQLite
+        # 9. ТЕПЕРЬ СИНХРОННО (БЕЗ AWAIT): Обновляем/сохраняем данные в локальную SQLite
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
-        await add_or_update_user(
+        add_or_update_user(
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
