@@ -138,14 +138,14 @@ from datetime import datetime
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Абсолютно жесткий вариант без использования переменных в строке URL.
-    Защищен от любых кривых глобальных переменных хостинга.
+    Автоматически обновляет файл vpn.txt внутри вашего существующего GitHub Gist.
+    Возвращает прямую raw-ссылку для Happ.
     """
-    # ЖЕСТКИЙ ПРЯМОЙ URL ДО ВАШЕГО API GIST (Без единой фигурной скобки {})
+    # URL строго текстом, без использования фигурных скобок и переменных пути
     url = "https://github.com"
     
-    # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА:
-    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН_ГЕТХАБА"
+    # ⚠️ ВПИШИТЕ ВАШ ТОКЕН СЮДА (убедитесь, что при создании токена стояла галочка на "gist"):
+    MY_GITHUB_TOKEN = "ghp_ВАШ_РЕАЛЬНЫЙ_ТОКЕН"
 
     headers = {
         "Authorization": f"token {MY_GITHUB_TOKEN}",
@@ -164,12 +164,13 @@ async def upload_to_github(user_id: int, content: str) -> str:
         async with session.patch(url, headers=headers, json=payload) as resp:
             if resp.status == 200:
                 res_data = await resp.json()
+                # Извлекаем прямую сырую ссылку (raw_url) на обновленный файл vpn.txt
                 raw_url = res_data["files"]["vpn.txt"]["raw_url"]
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub Gist API Error: {error_text}")
-                raise Exception("Не удалось обновить файл в GitHub Gist")
+                raise Exception("Ошибка обновления файла в GitHub Gist")
 
 
 
@@ -626,7 +627,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации загрузки кнопки в Telegram
+    # Гасим часики анимации в Telegram на кнопке
     await callback.answer()
     
     user_id = callback.from_user.id
@@ -640,13 +641,19 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый пакет (каждая ссылка с новой строки)
+        # 2. Формируем единый Base64 пакет из полученного массива
         full_configs_string = "\n".join(vless_links) + "\n"
-        
-        # 3. Кодируем всю пачку в чистый Base64 (точно так же, как вы делали на сайте руками!)
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 4. Рассчитываем статус и дату окончания подписки для вывода в Telegram
+        # 3. Отправляем в ваш GitHub Gist (Вызываем функцию из Шага 1)
+        try:
+            sub_web_url = await upload_to_github(user_id, base64_sub_content)
+        except Exception as github_err:
+            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
+            await callback.message.answer("⚠️ Ошибка обновления файла подписки на GitHub. Повторите позже.")
+            return
+
+        # 4. Рассчитываем статус и дату окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -655,38 +662,33 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. МАГИЯ ПРЯМОГО ИМПОРТА: Happ поддерживает чтение Base64 прямо из ссылки!
-        # Мы добавляем название через знак #, чтобы приложение красиво назвало подписку
-        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-        raw_happ_url = f"happ://import/{base64_sub_content}#{sub_remark}"
-
-        # 6. Строим инлайн-клавиатуру БЕЗ использования Гитхаба и Яндекса
+        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Используем HTTP-ссылку на Gist, которую Telegram ОДОБРЯЕТ
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=raw_happ_url)],
+            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Текст сообщения для пользователя
+        # 6. Текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Автоматическое подключение через Happ:</b>\n"
-            f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-            f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            f"3. Смартфон автоматически откроет приложение и мгновенно импортирует Финляндию и Польшу сразу пакетом!\n\n"
-            f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его в буфер обмена:\n"
+            f"<b>📥 Подключение через приложение Happ:</b>\n"
+            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
+            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
+            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
+            f"<b>💡 Альтернативный способ (вручную):</b>\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую:\n"
             f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b> и вставьте текст."
+            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 8. Сохраняем данные в локальную SQLite (Синхронно)
+        # 7. Сохраняем данные в локальную SQLite
         add_or_update_user(
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url="direct_import", 
+            github_raw_url=sub_web_url, 
             expiry_time=expiry_seconds
         )
 
