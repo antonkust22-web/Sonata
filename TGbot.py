@@ -626,32 +626,25 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим часики анимации загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию get_vpn_config_manual
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (склеиваем строки через перенос \n)
+        # 2. Формируем единый Base64 пакет (как вы делали руками на сайте)
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем кашу в ваш GitHub Gist (Вызываем функцию из Шага 1)
-        try:
-            sub_web_url = await upload_to_github(user_id, base64_sub_content)
-        except Exception as github_err:
-            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка авторизации GitHub. Убедитесь, что прописали токен с галочкой 'gist'.")
-            return
-
-        # 4. Рассчитываем статус и дату окончания подписки
+        # 3. Рассчитываем статус и дату окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -660,9 +653,15 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. СТРОИМ ИНЛАЙН-КЛАВИАТУРУ: Выдаем ту самую идеальную Raw-ссылку на ваш Gist
+        # 4. СОЗДАЕМ ССЫЛКУ ЧЕРЕЗ РАЗРЕШЕННЫЙ РЕДИРЕКТ
+        # Мы оборачиваем Base64-кашу в специальный веб-редиректор, который Telegram пропускает на 100%
+        # При нажатии кнопка сама откроет Happ и передаст ему сервера, назвав подписку красивым именем!
+        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+        web_redirect_url = f"https://happ.link{base64_sub_content}#{sub_remark}"
+
+        # 5. Строим инлайн-клавиатуру со стандартной HTTPS ссылкой
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
+            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=web_redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -671,22 +670,22 @@ async def connect(callback: types.CallbackQuery):
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Подключение через приложение Happ:</b>\n"
-            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
-            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
-            f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
+            f"<b>📥 Автоматическое подключение через Happ:</b>\n"
+            f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
+            f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
+            f"3. Смартфон мгновенно откроет приложение и добавит все ваши сервера в один клик пакетом!\n\n"
+            f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать вашу конфигурацию:\n"
             f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
+            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b> и вставьте текст."
         )
 
-        # 7. Сохраняем данные в локальную SQLite
+        # 7. Сохраняем данные в локальную SQLite (Синхронно)
         add_or_update_user(
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, 
+            github_raw_url=web_redirect_url, 
             expiry_time=expiry_seconds
         )
 
