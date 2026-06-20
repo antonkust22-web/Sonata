@@ -292,17 +292,20 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # 2. ИСПРАВЛЕНО: Для ссылки VLESS формируем ЧИСТОЕ имя без нижних подчеркиваний и без ID пользователя
-                # Happ отобразит в списке серверов ровно то, что написано здесь
+                # Имя сервера, как оно должно выглядеть в Happ
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # Собираем чистую прямую ссылку БЕЗ лишних %-кодов в хвосте
-                config_link = (
+                # Собираем ссылку
+                raw_config = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
                     f"#{remark}"
                 )
-                vless_links.append(config_link)
+                
+                # ЖЕЛЕЗОБЕТОННЫЙ ФИКС: Принудительно очищаем ссылку от любых %-кодов перед добавлением в список
+                clean_config = urllib.parse.unquote(raw_config)
+                vless_links.append(clean_config)
+
 
             except Exception as e:
                 logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
