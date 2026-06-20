@@ -186,15 +186,16 @@ async def upload_to_github(user_id: int, content: str) -> str:
             
         # 3. Записываем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
-            # ИСПРАВЛЕНО: Теперь тут стоят корректные коды ответов [200, 201]
-            if resp.status in:
-                # ИСПРАВЛЕНО: Корректный адрес для получения сырых данных raw.githubusercontent.com
-                raw_url = f"https://githubusercontent.com{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+            # ИСПРАВЛЕНО НАДЕЖНО: Избавились от оператора 'in' и скрытых скобок
+            if resp.status == 200 or resp.status == 201:
+                # Корректный адрес для получения сырых данных ://githubusercontent.com
+                raw_url = f"https://://githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub API Error: {error_text}")
                 raise Exception("Не удалось сохранить конфигурацию на GitHub")
+
 
 
 
