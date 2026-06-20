@@ -138,18 +138,19 @@ from datetime import datetime
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Автоматически обновляет ваш Gist и гарантированно возвращает 
-    правильную сырую (raw) ссылку для импорта в Happ.
+    Обновляет ваш Gist. Отправляет данные в сыром UTF-8,
+    полностью сохраняя русские буквы и эмодзи без искажений Python.
     """
-    # Жесткий URL вашего Gist для API
+    # ИСПРАВЛЕНО ЖЕСТКО: Путь ведет строго к API твоего Gist заметки
     url = "https://github.com"
     
-    # ⚠️ ВПИШИТЕ СЮДА ВАШ ТОКЕН (Убедитесь, что у него при создании включена галочка "gist")
-    MY_GITHUB_TOKEN = "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"
+    # Твой новый токен (не забудь перевыпустить, если этот уже заблокирован системой безопасности)
+    token = "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" 
 
     headers = {
-        "Authorization": f"token {MY_GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json; charset=utf-8"
     }
     
     payload = {
@@ -160,17 +161,20 @@ async def upload_to_github(user_id: int, content: str) -> str:
         }
     }
     
+    # Принудительно упаковываем JSON в UTF-8 без превращения символов в \u00f1
+    json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    
     async with aiohttp.ClientSession() as session:
-        async with session.patch(url, headers=headers, json=payload) as resp:
+        # Отправляем данные как строку bytes
+        async with session.patch(url, headers=headers, data=json_data) as resp:
             if resp.status == 200:
-                # Магия: формируем ту самую правильную сырую ссылку для Happ вручную,
-                # чтобы хостинг больше никогда ничего не склеивал с ошибками!
+                # ИСПРАВЛЕНО ЖЕСТКО: Идеальная сырая raw-ссылка на твой файл для приложения Happ
                 raw_url = "https://githubusercontent.com"
                 return raw_url
             else:
                 error_text = await resp.text()
                 logging.error(f"GitHub Gist API Error: {error_text}")
-                raise Exception("Не удалось обновить Gist. Проверьте галочку 'gist' в токене.")
+                raise Exception("GitHub отклонил запрос. Проверьте кодировку или токен.")
 
 
 
@@ -207,10 +211,6 @@ SERVERS = [
 
 
 async def get_vpn_config_manual(user_id, username=""):
-    """
-    Генерирует или обновляет клиента на ОБОИХ серверах.
-    Возвращает: список VLESS-ссылок и timestamp окончания подписки.
-    """
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
@@ -219,15 +219,13 @@ async def get_vpn_config_manual(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # Настройки текущего сервера
+                # Формируем имя клиента для панели X-UI (без пробелов)
                 email = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Логин
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # 2. Получение данных
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
                     res_json = await resp.json()
@@ -245,7 +243,6 @@ async def get_vpn_config_manual(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Создание / Обновление клиента в панели X-UI
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8) 
@@ -268,27 +265,28 @@ async def get_vpn_config_manual(user_id, username=""):
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms,
-                            "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id
-                        }]})
+                        "settings": json.dumps({
+                            "clients": [{
+                                "id": client_uuid, "email": email, "limitIp": current_client.get("limitIp", 2),
+                                "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
+                            }]
+                        })
                     }
                     await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
 
-                # Сохраняем максимальное время окончания (или берем с первого рабочего сервера)
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # 4. Сборка VLESS ссылки
                 my_port = res_json["obj"]["port"]
-                remark = f"{srv['country_flag']} {srv['country_name']}?Premium"
-                safe_remark = urllib.parse.quote(remark)
+                
+                # ИСПРАВЛЕНО: Оставляем имя чистым текстом, БЕЗ urllib.parse.quote
+                remark = f"{srv['country_flag']} {srv['country_name']}"
 
+                # Собираем чистую прямую ссылку, как вы делали руками на сайте
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
-                    f"#{safe_remark}"
+                    f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
+                    f"#{remark}"
                 )
                 vless_links.append(config_link)
 
@@ -633,18 +631,27 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов через вашу функцию get_vpn_config_manual
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов (теперь без лишних %-кодов в имени)
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (как вы делали руками на сайте)
+        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
+        # Получится точь-в-точь как при ручном кодировании на сайте
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Рассчитываем статус и дату окончания подписки
+        # 3. Отправляем чистый UTF-8 Base64 в ваш GitHub Gist
+        try:
+            sub_web_url = await upload_to_github(user_id, base64_sub_content)
+        except Exception as github_err:
+            logging.error(f"Критическая ошибка работы с Gist для {user_id}: {github_err}")
+            await callback.message.answer("⚠️ Ошибка авторизации GitHub. Убедитесь, что токен активен и имеет галочку 'gist'.")
+            return
+
+        # 4. Рассчитываем статус и дату окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -653,15 +660,9 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 4. СОЗДАЕМ ССЫЛКУ ЧЕРЕЗ РАЗРЕШЕННЫЙ РЕДИРЕКТ
-        # Мы оборачиваем Base64-кашу в специальный веб-редиректор, который Telegram пропускает на 100%
-        # При нажатии кнопка сама откроет Happ и передаст ему сервера, назвав подписку красивым именем!
-        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
-        web_redirect_url = f"https://happ.link{base64_sub_content}#{sub_remark}"
-
-        # 5. Строим инлайн-клавиатуру со стандартной HTTPS ссылкой
+        # 5. Строим инлайн-клавиатуру с вашей прямой RAW-ссылкой на Gist
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=web_redirect_url)],
+            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -670,14 +671,14 @@ async def connect(callback: types.CallbackQuery):
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Автоматическое подключение через Happ:</b>\n"
-            f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
-            f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            f"3. Смартфон мгновенно откроет приложение и добавит все ваши сервера в один клик пакетом!\n\n"
-            f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать вашу конфигурацию:\n"
+            f"<b>📥 Подключение через приложение Happ:</b>\n"
+            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
+            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
+            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
+            f"<b>💡 Альтернативный способ (вручную):</b>\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
             f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b> и вставьте текст."
+            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
         # 7. Сохраняем данные в локальную SQLite (Синхронно)
@@ -685,12 +686,19 @@ async def connect(callback: types.CallbackQuery):
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url=web_redirect_url, 
+            github_raw_url=sub_web_url, 
             expiry_time=expiry_seconds
         )
 
-        # Изменяем текущее сообщение на красивую плашку подключения
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        # 8. Удаляем старое приветственное сообщение с картинкой,
+        # чтобы обойти лимит MEDIA_CAPTION_TOO_LONG
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+            
+        # Отправляем новую чистую плашку обычным текстом (лимит 4096 символов)
+        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
