@@ -138,13 +138,13 @@ from datetime import datetime
 
 async def upload_to_github(user_id: int, content: str) -> str:
     """
-    Обновляет ваш Gist. Отправляет данные в сыром UTF-8,
-    полностью сохраняя русские буквы и эмодзи без искажений Python.
+    Создает абсолютно НОВЫЙ секретный Gist для пользователя.
+    Возвращает прямую raw-ссылку на файл подписки для Happ.
     """
-    # ИСПРАВЛЕНО ЖЕСТКО: Путь ведет строго к API твоего Gist заметки
+    # Общий URL для создания новых гистов
     url = "https://github.com"
     
-    # Твой новый токен (не забудь перевыпустить, если этот уже заблокирован системой безопасности)
+    # Вставьте сюда ваш секретный рабочий токен (с галочкой 'gist')
     token = "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" 
 
     headers = {
@@ -153,28 +153,36 @@ async def upload_to_github(user_id: int, content: str) -> str:
         "Content-Type": "application/json; charset=utf-8"
     }
     
+    # Имя файла делаем динамическим под ID пользователя
+    filename = f"sonata_{user_id}.txt"
+    
     payload = {
+        "description": f"Sonata VPN Premium Subscription for User {user_id}",
+        "public": False,  # Секретный гист, скрытый из общего поиска
         "files": {
-            "vpn.txt": {
+            filename: {
                 "content": content
             }
         }
     }
     
-    # Принудительно упаковываем JSON в UTF-8 без превращения символов в \u00f1
     json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     
     async with aiohttp.ClientSession() as session:
-        # Отправляем данные как строку bytes
-        async with session.patch(url, headers=headers, data=json_data) as resp:
-            if resp.status == 200:
-                # ИСПРАВЛЕНО ЖЕСТКО: Идеальная сырая raw-ссылка на твой файл для приложения Happ
-                raw_url = "https://githubusercontent.com"
+        # Для создания нового ресурса используется метод POST вместо PATCH
+        async with session.post(url, headers=headers, data=json_data) as resp:
+            # Успешное создание возвращает статус 201 Created
+            if resp.status == 201:
+                res_data = await resp.json()
+                # Извлекаем сырую raw-ссылку на созданный файл
+                raw_url = res_data["files"][filename]["raw_url"]
                 return raw_url
             else:
                 error_text = await resp.text()
-                logging.error(f"GitHub Gist API Error: {error_text}")
-                raise Exception("GitHub отклонил запрос. Проверьте кодировку или токен.")
+                logging.error(f"GitHub Gist API POST Error Code {resp.status}: {error_text}")
+                raise Exception(f"GitHub отклонил создание со статусом {resp.status}")
+
+ 
 
 
 
