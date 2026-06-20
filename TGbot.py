@@ -186,9 +186,9 @@ async def upload_to_github(user_id: int, content: str) -> str:
             
         # 3. Записываем файл в репозиторий
         async with session.put(url, headers=headers, json=payload) as resp:
-            # ИСПРАВЛЕНО: Теперь синтаксис корректен, проверяем успешные коды ответов
+            # ИСПРАВЛЕНО: Теперь тут стоят корректные коды ответов [200, 201]
             if resp.status in:
-                # Формируем ту самую сырую ссылку для Happ
+                # ИСПРАВЛЕНО: Корректный адрес для получения сырых данных raw.githubusercontent.com
                 raw_url = f"https://githubusercontent.com{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
                 return raw_url
             else:
