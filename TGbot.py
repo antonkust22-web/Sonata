@@ -640,17 +640,16 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации в Telegram на кнопке
+    # Гасим часики анимации в Telegram на кнопке
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Вызываем get_vpn_config_manual (которая собирает ключи)
+        # 1. Получаем рабочие VLESS-ссылки со ВСЕХ серверов
         vless_links, expiry_time_ms = await get_vpn_config_manual(user_id, username)
         
         if not vless_links:
@@ -661,44 +660,70 @@ async def connect(callback: types.CallbackQuery):
         full_configs_string = "\n".join(vless_links) + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
         
-        # 3. Отправляем индивидуальный файл в репозиторий GitHub (ВЫЗЫВАЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ)
+        # 3. ОТПРАВЛЯЕМ НА GITHUB НАПРЯМУЮ ИЗ КОННЕКТА
+        sub_web_url = ""
         try:
-            sub_web_url = await upload_to_github_fixed(user_id, base64_sub_content)
+            github_url = f"https://github.com{user_id}.txt"
+            
+            headers = {
+                "Authorization": f"token {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                # Проверяем, существует ли уже файл, чтобы получить его SHA
+                sha = None
+                async with session.get(github_url, headers=headers) as resp:
+                    if resp.status == 200:
+                        res_data = await resp.json()
+                        sha = res_data.get("sha")
+                
+                # Создаем payload для записи
+                payload = {
+                    "message": f"Update sub {user_id}",
+                    "content": base64_sub_content,
+                    "branch": "main"
+                }
+                if sha:
+                    payload["sha"] = sha
+                
+                # Записываем файл в репозиторий
+                async with session.put(github_url, headers=headers, json=payload) as resp:
+                    if resp.status == 200 or resp.status == 201:
+                        # Сырая ссылка на файл конфигурации
+                        sub_web_url = f"https://githubusercontent.com{user_id}.txt"
+                    else:
+                        error_text = await resp.text()
+                        logging.error(f"GitHub API Direct Error: {error_text}")
+                        raise Exception("GitHub вернул ошибку при записи")
+                        
         except Exception as github_err:
-            logging.error(f"Ошибка работы с GitHub для пользователя {user_id}: {github_err}")
+            logging.error(f"Критическая ошибка отправки на GitHub в connect: {github_err}")
             await callback.message.answer("⚠️ Ошибка генерации ссылки подписки на сервере. Повторите позже.")
             return
 
-        # 4. Формируем плашку со статусом и датой окончания подписки
+        # 4. Рассчитываем плашку со статусом для Telegram и данные для Happ
         if expiry_time_ms > 0:
-            expiry_date = datetime.fromtimestamp(expiry_time_ms / 1000).strftime('%d.%m.%Y %H:%M')
-            status_text = f"🟢 Активна — до <b>{expiry_date}</b>"
+            expiry_seconds = int(expiry_time_ms / 1000)
+            expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
+            status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
         else:
+            expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Собираем прямую ссылку для приложения Happ
-        raw_happ_url = f"happ://import/{sub_web_url}"
-        safe_redirect_url = raw_happ_url
-        
-        # 6. Оборачиваем через сокращатель Яндекса
-        try:
-            async with aiohttp.ClientSession() as session:
-                enc_url = urllib.parse.quote(raw_happ_url)
-                async with session.get(f"https://clck.ru{enc_url}", timeout=5) as resp:
-                    if resp.status == 200:
-                        safe_redirect_url = await resp.text()
-        except Exception as e:
-            logging.error(f"Не удалось сократить happ-ссылку для {user_id}: {e}")
-            safe_redirect_url = sub_web_url
+        # 5. Собираем чистую happ-ссылку БЕЗ сокращателей (Telegram отлично ее переварит)
+        # Добавляем в конец якорь #🚀 Sonata VPN Premium, чтобы приложение красиво назвало профиль подписки
+        sub_remark = urllib.parse.quote("🚀 Sonata VPN Premium")
+        raw_happ_url = f"happ://import/{sub_web_url}#{sub_remark}"
 
-        # 7. Строим инлайн-клавиатуру
+        # 6. Строим инлайн-клавиатуру напрямую с happ:// протоколом
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=safe_redirect_url)],
+            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=raw_happ_url)],
             [InlineKeyboardButton(text="🌐 Открыть файл подписки", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 8. Красивый текст сообщения для пользователя
+        # 7. Красивый текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
@@ -706,15 +731,14 @@ async def connect(callback: types.CallbackQuery):
             f"<b>📥 Автоматическое подключение через Happ:</b>\n"
             f"1. Установите приложение <b>Happ</b> из App Store или Google Play.\n"
             f"2. Нажмите кнопку <b>«⚡️ ИМПОРТИРОВАТЬ В HAPP»</b> ниже.\n"
-            f"3. Смартфон сам откроет приложение и импортирует подписку со всеми серверами.\n\n"
+            f"3. Смартфон сам откроет приложение и импортирует профиль со всеми серверами.\n\n"
             f"<b>💡 Вручную (если автоматический импорт не сработал):</b>\n"
             f"• Нажмите пальцем на поле ниже, чтобы скопировать ссылку подписки:\n"
             f"<code>{sub_web_url}</code>\n\n"
             f"• Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте адрес."
         )
 
-        # 9. Сохраняем данные в локальную SQLite
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 0
+        # 8. Сохраняем данные в локальную SQLite (Синхронно)
         add_or_update_user(
             user_id=user_id, 
             username=username, 
