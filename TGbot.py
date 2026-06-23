@@ -251,11 +251,17 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_uuid = current_client.get("id")
                     clean_sni = srv['sni'].replace("://", "").replace("www.", "")
                     raw_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?type=tcp&security=reality&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
+               
+                if "#" in raw_link:
+                    base_link_str = raw_link.split("#")[0]
+                else:
+                    base_link_str = raw_link
 
+                
                 # Отрезаем старое имя и ставим красивый флаг и название страны
                 base_link = raw_link.split("#")[0]
                 remark = f"{srv['country_flag']} {srv['country_name']}"
-                final_link = f"{base_link}#{urllib.parse.quote(remark)}"
+                final_link = f"{base_link_str}#{urllib.parse.quote(remark)}"
                 
                 vless_links.append(final_link)
 
@@ -590,7 +596,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 import base64
 import logging
 import json
@@ -607,17 +612,16 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
+        # 1. Получаем конфигурации из панелей
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Получение subId напрямую из панели Финляндии
-                # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ subId НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
+        # 2. Получение чистой строки subId из панели Финляндии
         sub_id = None
-        srv = SERVERS[0]  # СТРОГО: Берем первый сервер из списка (индекс 0)
+        srv = SERVERS[0]  # Индекс 0 — Финляндия
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -639,16 +643,16 @@ async def connect(callback: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Ошибка прямого запроса subId из панели: {e}")
 
-        # Защита: Если панель недоступна или клиент новый, ставим id_user_id
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id_{user_id}"
 
-        # 3. Чистая ссылка для Telegram-кнопки
-        sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
-        redirect_url = "https://sonatavpn.ru" + "/" + sub_id
+        # 3. Чистые ссылки для Happ Utility
+        sub_web_url = f"https://sonatavpn.ru{sub_id}"
+        
+        # ЖЕЛЕЗНЫЙ ДИПЛИНК: Telegram пропускает протокол sing-box://, если в нем нет %3A и %2F
+        deep_link_happ = f"sing-box://import-remote-profile?url={sub_web_url}"
 
-
-        # 4. Отправляем готовые рабочие ключи на веб-сайт по сети
+        # 4. Отправляем готовые рабочие ключи на сайт по сети
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         
@@ -660,7 +664,7 @@ async def connect(callback: types.CallbackQuery):
             }
             headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
             try:
-                await session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5)
+                await session.post("https://sonatavpn.ruindex.php", data=payload, headers=headers, timeout=5)
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
 
@@ -674,9 +678,9 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 7. Клавиатура: Ведет на защищенный HTTPS-редирект, который на 100% разрешен в TG!
+        # 7. Клавиатура со специальной кнопкой автоматического импорта в Happ
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -686,7 +690,7 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Система сама откроет приложение Happ и импортирует подписку.\n\n"
+            f"• Телефон сам откроет приложение Happ и импортирует подписку.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
             f"<code>{sub_web_url}</code>\n"
@@ -713,6 +717,7 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
