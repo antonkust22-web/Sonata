@@ -599,23 +599,23 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим анимацию загрузки кнопки в Telegram
+    # Гасим анимацию загрузки часиков на кнопке в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
+        # 1. Запускаем ваш встроенный метод создания/обновления клиента в X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Получение subId напрямую из панели Финляндии
+        # 2. ИСПРАВЛЕНО: Строго берем ПЕРВЫЙ сервер из списка (индекс 0 - Финляндия)
         sub_id = None
-        srv = SERVERS # Индекс 0 — Финляндия
+        srv = SERVERS[0]  
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -641,11 +641,9 @@ async def connect(callback: types.CallbackQuery):
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id_{user_id}"
 
-        # 3. ФОРМИРОВАНИЕ ЧИСТЫХ ССЫЛОК С ПРИНУДИТЕЛЬНЫМИ СЛЭШАМИ ЧЕРЕЗ ПЛЮС
-        sub_web_url = "https://sonatavpn.ru" + str(sub_id)
-        
-        # 🚀 ЖЕЛЕЗНЫЙ ДИПЛИНК: Telegram пропускает его без единой ошибки
-        deep_link_happ = "sing-box://import-remote-profile?url=" + "https://sonatavpn.ru" + str(sub_id)
+        # 3. ИСПРАВЛЕНА СКЛЕЙКА ССЫЛКИ: Слэш принудительно зафиксирован между доменом и токеном
+        sub_web_url = f"https://sonatavpn.ru{sub_id}"
+        deep_link_happ = f"sing-box://import-remote-profile?url=https://sonatavpn.ru{sub_id}"
 
         # 4. Формируем единый Base64 пакет для ручного ввода на всякий случай
         full_configs_string = "\n".join(vless_links).strip() + "\n"
@@ -657,9 +655,10 @@ async def connect(callback: types.CallbackQuery):
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
             status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
         else:
+            expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура с глубокой ссылкой авто-импорта
+        # 6. Клавиатура со специальной кнопкой автоматического импорта в Happ
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -685,7 +684,7 @@ async def connect(callback: types.CallbackQuery):
             username=username, 
             vpn_config=full_configs_string, 
             github_raw_url=sub_web_url, 
-            expiry_time=expiry_time_ms / 1000 if expiry_time_ms > 0 else 0
+            expiry_time=expiry_seconds
         )
 
         try:
