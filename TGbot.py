@@ -605,22 +605,23 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Умный поиск subId прямо из сгенерированной ссылки VLESS, чтобы не трогать базу данных
-        # Ищем параметр subId= или uuid клиента, если панель использует его как токен
+        # 2. Железное и безопасное извлечение чистой строки UUID из первой ссылки VLESS
         sub_id = None
-        for link in vless_links:
-            # Сначала пытаемся вытащить UUID (строка между vless:// и @)
-            match_uuid = re.search(r"vless://(.*?)@", link)
-            if match_uuid:
-                # В современных X-UI UUID клиента часто совпадает с его subId токеном подписки
-                sub_id = match_uuid.group(1)
-                break
+        try:
+            first_link = vless_links[0]
+            # Убираем протокол vless://
+            raw_part = first_link.replace("vless://", "")
+            # Отрезаем всё, что идет после знака @ (IP-адрес, порты, параметры)
+            sub_id = raw_part.split("@")[0].strip()
+        except Exception as parse_err:
+            logging.error(f"Ошибка парсинга UUID для user_id {user_id}: {parse_err}")
+            sub_id = None
                 
-        # Если UUID вытащить не удалось, ставим дефолтный хэш на основе Telegram ID, чтобы скрипт не ломался
-        if not sub_id:
-            sub_id = secrets.token_hex(8)
+        # Если вдруг массив ссылок был пуст или парсер сбоит, ставим текстовый ID
+        if not sub_id or len(sub_id) < 10:
+            sub_id = f"user_{user_id}"
 
-        # 3. Формируем вашу КРАСИВУЮ персональную ссылку на ваш собственный домен
+        # 3. Формируем вашу КРАСИВУЮ персональную ссылку (без кривых символов)
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
         
         # 4. Формируем единый Base64 пакет для ручного альтернативного ввода
@@ -649,7 +650,7 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Автоматическое подключение (Рекомендуется):</b>\n"
             f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Перейдите по ней и скопируйте адрес страницы из строки браузера.\n"
+            f"2. Скопируйте адрес страницы из строки браузера.\n"
             f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
             f"<b>💡 Альтернативный способ (вручную):</b>\n"
             f"• Нажмите пальцем на код ниже, чтобы скопировать его в буфер обмена:\n"
@@ -662,7 +663,7 @@ async def connect(callback: types.CallbackQuery):
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, # Поле осталось старым в базе, но теперь туда пишется чистый домен
+            github_raw_url=sub_web_url, 
             expiry_time=expiry_seconds
         )
 
