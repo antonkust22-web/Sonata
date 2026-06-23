@@ -605,15 +605,12 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Безопасное извлечение UUID из списка строк
+        # 2. Безопасное извлечение UUID из первой ссылки списка
         sub_id = None
         try:
             if vless_links and len(vless_links) > 0:
-                # Берем строго ПЕРВУЮ строку из списка
                 first_link = str(vless_links[0])
-                # Отрезаем протокол vless://
                 raw_part = first_link.replace("vless://", "")
-                # Берем то, что идет ДО знака @
                 sub_id = raw_part.split("@")[0].strip()
         except Exception as parse_err:
             logging.error(f"Ошибка парсинга UUID: {parse_err}")
@@ -622,8 +619,8 @@ async def connect(callback: types.CallbackQuery):
         if not sub_id or len(sub_id) < 10:
             sub_id = f"user_{user_id}"
 
-        # 3. Формируем персональную ссылку
-        sub_web_url = f"https://sonatavpn.ru{sub_id}"
+        # 3. Формируем красивую персональную ссылку (ДОБАВЛЕН СЛЭШ)
+        sub_web_url = f"https://sonatavpn.ru/{sub_id}"
         
         # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
@@ -638,24 +635,24 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура БЕЗ ссылки (только кнопка Назад, чтобы исключить BUTTON_URL_INVALID)
+        # 6. Клавиатура со специальной кнопкой импорта
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Текст сообщения, куда мы вывели саму ссылку
+        # 7. Текст сообщения
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Способ 1. Подключение по ссылке (Рекомендуется):</b>\n"
+            f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
+            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
+            f"• Ваш телефон сам откроет приложение Happ и добавит подписку.\n\n"
+            f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
-            f"<code>{sub_web_url}</code>\n\n"
-            f"• Откройте Happ Utility ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте её.\n\n"
-            f"<b>💡 Способ 2. Альтернативный (через буфер):</b>\n"
-            f"• Нажмите на код ниже, чтобы скопировать его:\n"
-            f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
+            f"<code>{sub_web_url}</code>\n"
+            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>."
         )
 
         add_or_update_user(
