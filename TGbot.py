@@ -254,7 +254,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 )
                 
                 # Декодируем проценты, записываем чистый текст в UTF-8
-                vless_links.append(urllib.parse.unquote(config_link))
+                vless_links.append(config_link)
 
             except Exception as e:
                 logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
@@ -592,12 +592,14 @@ import base64
 import logging
 import json
 import aiohttp
+import urllib.parse
 from datetime import datetime
 from aiogram import types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Сразу гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
@@ -611,28 +613,44 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Безопасное получение subId напрямую из первой ссылки
+        # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ СУБ-АЙДИ (subId) НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
         sub_id = None
-        try:
-            if vless_links and len(vless_links) > 0:
-                first_link_str = str(vless_links[0])
-                without_protocol = first_link_str.replace("vless://", "")
-                sub_id = without_protocol.split("@")[0].strip()
-        except Exception as e:
-            logging.error(f"Ошибка парсинга sub_id: {e}")
+        srv = SERVERS[0]  # Строго берем Финляндию
+        jar = aiohttp.CookieJar(unsafe=True)
+        connector = aiohttp.TCPConnector(ssl=False)
+        
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            try:
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
+                
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
+                    res_json = await resp.json()
+                    
+                if res_json.get("success"):
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
+                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if current_client:
+                        sub_id = str(current_client.get("subId", "")).strip()
+            except Exception as e:
+                logging.error(f"Ошибка прямого запроса subId из панели: {e}")
 
+        # Защита: Если панель недоступна, генерируем фиксированный токен по tgId
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id{user_id}"
 
-        # Вычисляем время окончания подписки (в секундах)
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
+        # 3. Склеиваем персональную ссылку слэшем вручную через ПЛЮС
+        sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
 
-        # Склеиваем ссылки vless в один текстовый блок
+        # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
+        base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 🚀 КРИТИЧЕСКИЙ ШАГ: Отправляем готовые рабочие ключи на ваш сайт по сети
-        # Это связывает хостинг бота и сайт без всяких баз данных и прав root!
+        # 🚀 КРИТИЧЕСКИЙ ШАГ: Отправляем готовые рабочие ключи на ваш веб-сайт по сети
         async with aiohttp.ClientSession() as session:
+            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
             payload = {
                 "client_id": sub_id,
                 "vpn_config": full_configs_string,
@@ -645,22 +663,21 @@ async def connect(callback: types.CallbackQuery):
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
 
-        # 3. Склеиваем персональную ссылку слэшем вручную через ПЛЮС
-        sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
+        # 🚀 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ДЛЯ ОТКРЫТИЯ HAPP:
+        # Кодируем ссылку через urllib.parse.quote, чтобы Telegram пропустил Deep Link протокол
+        encoded_url = urllib.parse.quote(sub_web_url, safe='')
+        deep_link_happ = f"sing-box://import-remote-profile?url={encoded_url}"
 
-        # 4. Формируем единый Base64 пакет для ручного ввода на экране
-        base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
-
-        # 5. Рассчитываем текстовый статус подписки для сообщения
+        # 5. Рассчитываем текстовый статус подписки
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
             status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура с персональной ссылкой
+        # 6. Клавиатура со специальной кнопкой автоматического перехода в Happ
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -669,17 +686,17 @@ async def connect(callback: types.CallbackQuery):
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Подключение по ссылке (Рекомендуется):</b>\n"
-            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
-            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
-            f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его:\n"
-            f"<code>{base64_sub_content}</code>\n\n"
-            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
+            f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
+            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
+            f"• Ваш телефон сам откроет приложение Happ и импортирует подписку.\n\n"
+            f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
+            f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
+            f"<code>{sub_web_url}</code>\n"
+            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>.\n\n"
+            f"• Либо скопируйте этот код и выберите <b>«Добавить из буфера»</b>:\n"
+            f"<code>{base64_sub_content}</code>"
         )
 
-        # Сохраняем в локальную базу хостинга бота (пусть пишется, как и раньше)
         add_or_update_user(
             user_id=user_id, 
             username=username, 
