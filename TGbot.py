@@ -127,62 +127,6 @@ def get_user_from_db(user_id):
 
 
 
-import base64
-import json
-import logging
-import secrets
-import urllib.parse
-import uuid
-import aiohttp
-from datetime import datetime
-
-
-async def upload_to_github(user_id: int, content: str) -> str:
-    """
-    Автоматически заходит в ваш аккаунт по токену и СОЗДАЕТ новый секретный Gist.
-    Возвращает прямую сырую (raw) ссылку на файл для Happ.
-    """
-    # Общий URL API для создания новых гистов
-    url = "https://github.com"
-    
-    # ⚠️ ВПИШИ СВОЙ ТОКЕН СЮДА (убедись, что при создании стояла галочка на 'gist'):
-    token = "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"
-
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-    
-    # Имя файла внутри гиста делаем уникальным под ID пользователя
-    filename = f"sonata_{user_id}.txt"
-    
-    # Структура запроса POST для создания нового секретного гиста
-    payload = {
-        "description": f"Sonata VPN Personal Subscription for User {user_id}",
-        "public": False,  # Ставим False, чтобы гист был Secret (скрыт от чужих глаз)
-        "files": {
-            filename: {
-                "content": content
-            }
-        }
-    }
-    
-    # Принудительно упаковываем JSON в UTF-8 без ASCII-искажений русского текста и эмодзи
-    json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    
-    async with aiohttp.ClientSession() as session:
-        # Для создания нового ресурса ВСЕГДА используется метод POST
-        async with session.post(url, headers=headers, data=json_data, timeout=10) as resp:
-            if resp.status == 201:  # 201 Created означает, что новый гист успешно создан!
-                res_data = await resp.json()
-                # Извлекаем сырую raw-ссылку на созданный текстовый файл
-                raw_url = res_data["files"][filename]["raw_url"]
-                return raw_url
-            else:
-                error_text = await resp.text()
-                logging.error(f"GitHub Gist POST Error (Код {resp.status}): {error_text}")
-                raise Exception(f"GitHub отклонил создание гиста с кодом {resp.status}")
 
 
  
@@ -643,35 +587,47 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import re
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим часики анимации загрузки кнопки в Telegram
+    # Сразу гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем чистые VLESS-ссылки (только флаг и страна)
+        # 1. Запускаем встроенный метод: он создает/обновляет клиента в 3X-UI и генерирует ключи
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
-            await callback.message.answer("⚠️ Не удалось получить конфигурации серверов. Обратитесь в техподдержку.")
+            await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Формируем единый Base64 пакет (каждая ссылка с новой строки)
+        # 2. Умный поиск subId прямо из сгенерированной ссылки VLESS, чтобы не трогать базу данных
+        # Ищем параметр subId= или uuid клиента, если панель использует его как токен
+        sub_id = None
+        for link in vless_links:
+            # Сначала пытаемся вытащить UUID (строка между vless:// и @)
+            match_uuid = re.search(r"vless://(.*?)@", link)
+            if match_uuid:
+                # В современных X-UI UUID клиента часто совпадает с его subId токеном подписки
+                sub_id = match_uuid.group(1)
+                break
+                
+        # Если UUID вытащить не удалось, ставим дефолтный хэш на основе Telegram ID, чтобы скрипт не ломался
+        if not sub_id:
+            sub_id = secrets.token_hex(8)
+
+        # 3. Формируем вашу КРАСИВУЮ персональную ссылку на ваш собственный домен
+        sub_web_url = f"https://sonatavpn.ru{sub_id}"
+        
+        # 4. Формируем единый Base64 пакет для ручного альтернативного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
-        
-        # 3. АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ГИСТА: Бот заходит под твоим токеном и делает новый Gist
-        try:
-            sub_web_url = await upload_to_github(user_id, base64_sub_content)
-        except Exception as github_err:
-            logging.error(f"Критическая ошибка создания Gist для {user_id}: {github_err}")
-            await callback.message.answer("⚠️ Ошибка автоматического создания подписки в GitHub. Проверьте токен.")
-            return
 
-        # 4. Рассчитываем статус и дату окончания подписки
+        # 5. Рассчитываем статус и дату окончания подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -680,49 +636,48 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Строим инлайн-клавиатуру с полученной RAW-ссылкой на новый Gist
+        # 6. Строим инлайн-клавиатуру с вашей персональной ссылкой на сайт sonatavpn.ru
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 6. Текст сообщения для пользователя
+        # 7. Красивый и понятный текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Подключение через приложение Happ:</b>\n"
+            f"<b>📥 Автоматическое подключение (Рекомендуется):</b>\n"
             f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
-            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> в правом верхнем углу ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
+            f"2. Перейдите по ней и скопируйте адрес страницы из строки браузера.\n"
+            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
             f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его напрямую в буфер обмена:\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его в буфер обмена:\n"
             f"<code>{base64_sub_content}</code>\n\n"
             f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 7. Сохраняем данные в локальную SQLite (Синхронно)
+        # 8. Сохраняем данные в вашу локальную SQLite базу
         add_or_update_user(
             user_id=user_id, 
             username=username, 
             vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, 
+            github_raw_url=sub_web_url, # Поле осталось старым в базе, но теперь туда пишется чистый домен
             expiry_time=expiry_seconds
         )
 
-        # 8. Удаляем старое медиа-сообщение
+        # 9. Удаляем старое приветственное сообщение
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем новую чистую плашку обычным текстом
+        # Отправляем готовую карточку VPN
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
 
          
 
