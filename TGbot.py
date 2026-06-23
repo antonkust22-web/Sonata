@@ -664,7 +664,8 @@ async def connect(callback: types.CallbackQuery):
             }
             headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
             try:
-                await session.post("https://sonatavpn.ruindex.php", data=payload, headers=headers, timeout=5)
+                async with session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5) as resp:
+                    await resp.text()
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
 
