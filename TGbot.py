@@ -606,22 +606,23 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
+    # Гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
+        # 1. Запускаем встроенный метод создания/обновления клиента в X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Получение subId напрямую из панели Финляндии
+        # 2. Получение токена subId напрямую из панели Финляндии
         sub_id = None
-        srv = SERVERS[0]  # Берем Финляндию
+        srv = SERVERS[0]  # Индекс 0 — Финляндия
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -643,12 +644,14 @@ async def connect(callback: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Ошибка прямого запроса subId из панели: {e}")
 
+        # Защита от пустого ответа панели
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id_{user_id}"
 
-        # 3. Идеальные ссылки (СЛЭШИ ПРОПИСАНЫ СТРОГО ВНУТРИ f-СТРОКИ)
-        sub_web_url = f"https://sonatavpn.ru{sub_id}"
-        redirect_url = f"https://sonatavpn.ruconnect/{sub_id}"
+        # 3. ЧЕСТНЫЕ ССЫЛКИ С ПРИНУДИТЕЛЬНЫМИ СЛЭШАМИ БЕЗ ИСПОЛЬЗОВАНИЯ СТОРОННИХ ПЕРЕМЕННЫХ
+        sub_web_url = "https://sonatavpn.ru" + str(sub_id)
+        redirect_url = "https://sonatavpn.ruconnect/" + str(sub_id)
+        post_api_url = "https://sonatavpn.ruindex.php"
 
         # 4. Отправляем готовые рабочие ключи на веб-сайт по сети (POST)
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
@@ -656,14 +659,14 @@ async def connect(callback: types.CallbackQuery):
         
         async with aiohttp.ClientSession() as session:
             payload = {
-                "client_id": sub_id,
+                "client_id": str(sub_id),
                 "vpn_config": full_configs_string,
                 "expire": str(expiry_seconds)
             }
             headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
             try:
-                # Четкий слэш перед index.php
-                async with session.post("https://sonatavpn.ruindex.php", data=payload, headers=headers, timeout=5) as resp:
+                # Отправляем на жестко прописанный post_api_url
+                async with session.post(post_api_url, data=payload, headers=headers, timeout=5) as resp:
                     await resp.text()
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
@@ -678,7 +681,7 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 7. Клавиатура: Ведет на защищенный HTTPS-редирект, разрешенный в Telegram!
+        # 7. Клавиатура: Ведет на защищенный HTTPS-редирект сайта
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
