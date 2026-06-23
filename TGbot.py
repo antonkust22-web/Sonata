@@ -588,7 +588,11 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 import re
-
+import base64
+import logging
+from datetime import datetime
+from aiogram import types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -598,35 +602,44 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем конфигурации из панелей
+        # 1. Получаем конфигурации из панелей (возвращает список ссылок vless://)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Безопасное извлечение UUID из первой ссылки списка
-        sub_id = None
+        # 2. ИДЕАЛЬНЫЙ ПАРСЕР UUID КЛИЕНТА (работает по ID, а не по суб-айди)
+        client_uuid = None
         try:
             if vless_links and len(vless_links) > 0:
+                # Берем первую ссылку (например, vless://579686f1-...@78.17.1.43:2053?...)
                 first_link = str(vless_links[0])
-                raw_part = first_link.replace("vless://", "")
-                sub_id = raw_part.split("@")[0].strip()
+                
+                # Отрезаем "vless://" слева
+                without_protocol = first_link.split("vless://")[-1]
+                
+                # Забираем всё, что идет ДО знака "@" — это и есть чистый UUID клиента!
+                client_uuid = without_protocol.split("@")[0].strip()
         except Exception as parse_err:
             logging.error(f"Ошибка парсинга UUID: {parse_err}")
-            sub_id = None
+            client_uuid = None
                 
-        if not sub_id or len(sub_id) < 10:
-            sub_id = f"user_{user_id}"
+        # Если массив пуст или парсер дал сбой, временно ставим ID пользователя
+        if not client_uuid or len(client_uuid) < 20:
+            client_uuid = f"user_{user_id}"
 
-        # 3. Формируем красивую персональную ссылку (ДОБАВЛЕН СЛЭШ)
-        sub_web_url = f"https://sonatavpn.ru/{sub_id}"
+        # 3. Формируем персональную ссылку строго по ID (UUID)
+        sub_web_url = f"https://sonatavpn.ru{client_uuid}"
+
+        # 4. Глубокая ссылка (Deep Link) для автоматического открытия приложения Happ
+        deep_link_happ = f"sing-box://import-remote-profile?url={sub_web_url}"
         
-        # 4. Формируем единый Base64 пакет для ручного ввода
+        # 5. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем статус подписки
+        # 6. Рассчитываем статус подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -635,20 +648,20 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура со специальной кнопкой импорта
+        # 7. Клавиатура с автоматическим Deep Link переходом в Happ
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=sub_web_url)],
+            [InlineKeyboardButton(text="🌐 Импорт в Happ", url=deep_link_happ)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Текст сообщения
+        # 8. Текст сообщения
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Ваш телефон сам откроет приложение Happ и добавит подписку.\n\n"
+            f"• Телефон сам откроет приложение Happ и импортирует обе локации.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
             f"<code>{sub_web_url}</code>\n"
