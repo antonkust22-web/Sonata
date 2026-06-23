@@ -605,24 +605,30 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Железное и безопасное извлечение чистой строки UUID из первой ссылки VLESS
+      
+                # 2. Железное извлечение чистой строки UUID из ПЕРВОЙ ссылки массива
         sub_id = None
         try:
-            first_link = vless_links[0]
-            # Убираем протокол vless://
-            raw_part = first_link.replace("vless://", "")
-            # Отрезаем всё, что идет после знака @ (IP-адрес, порты, параметры)
-            sub_id = raw_part.split("@")[0].strip()
+            if vless_links and isinstance(vless_links, list) and len(vless_links) > 0:
+                # Строго берем СТРОКУ первой ссылки из списка
+                first_link_str = str(vless_links[0]) 
+                
+                # Отрезаем протокол vless://
+                raw_part = first_link_str.replace("vless://", "")
+                
+                # Вытаскиваем только то, что идет ДО знака @ (чистый UUID)
+                sub_id = raw_part.split("@")[0].strip()
         except Exception as parse_err:
             logging.error(f"Ошибка парсинга UUID для user_id {user_id}: {parse_err}")
             sub_id = None
                 
-        # Если вдруг массив ссылок был пуст или парсер сбоит, ставим текстовый ID
+        # Если массив пуст или парсер выдал короткую строку, ставим ID пользователя
         if not sub_id or len(sub_id) < 10:
             sub_id = f"user_{user_id}"
 
-        # 3. Формируем вашу КРАСИВУЮ персональную ссылку (без кривых символов)
+        # 3. Формируем КРАСИВУЮ персональную ссылку (теперь она будет идеальной)
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
+
         
         # 4. Формируем единый Base64 пакет для ручного альтернативного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
