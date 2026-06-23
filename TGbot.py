@@ -591,48 +591,38 @@ async def cabinet(callback: types.CallbackQuery):
 
 import base64
 import logging
-import urllib.parse
 from datetime import datetime
 from aiogram import types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу тушим анимацию загрузки часиков на кнопке в Telegram
+    # Гасим анимацию часиков на кнопке в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем твой метод сборщика (он создает клиентов в X-UI и возвращает ссылки)
+        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. ЖЕЛЕЗОБЕТОННЫЙ ТОКЕН: Чтобы уйти от ошибок "list indices", 
-        # генерируем уникальный фиксированный sub_id для ссылки на основе Telegram ID.
-        # Твой автономный PHP-скрипт на сервере Польши примет его без проблем!
+        # 2. Генерируем уникальный фиксированный токен для этого пользователя
         sub_id = "id" + str(user_id)
 
-        # 3. ЧИСТАЯ ССЫЛКА ДЛЯ ТЕКСТА (обычный HTTPS)
+        # 3. ИДЕАЛЬНЫЕ ЧИСТЫЕ ССЫЛКИ: Склеены через обычный плюс БЕЗ знаков ? и %
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
-        
-        # 🚀 МАТЕМАТИЧЕСКИ ТОЧНОЕ КОДИРОВАНИЕ ДЛЯ КНОПКИ (То, о чем ты просил)
-        # Заставляем Python перевести все символы : и / в безопасные проценты
-        encoded_url = urllib.parse.quote(sub_web_url, safe='')
-        
-        # Собираем диплинк строго через плюсы. Слэш внутри encoded_url уже превратился в %2F,
-        # поэтому Telegram увидит идеальную текстовую строку и пропустит её на 100%!
-        deep_link_happ = "sing-box://import-remote-profile?url=" + encoded_url
+        redirect_url = "https://sonatavpn.ru" + "/connect" + "/" + str(sub_id)
 
         # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем время подписки
+        # 5. Рассчитываем текстовый статус подписки
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -640,9 +630,9 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура со специальной закодированной кнопкой автоматического импорта в Happ
+        # 6. КЛАВИАТУРА: Ровная ссылка https://sonatavpn.ru, которую TG примет СРАЗУ
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -653,7 +643,7 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Ваш телефон сам откроет приложение Happ и импортирует обе локации.\n\n"
+            f"• Система сама откроет приложение Happ и импортирует подписку.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
             f"<code>{sub_web_url}</code>\n"
