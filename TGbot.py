@@ -598,7 +598,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
@@ -612,52 +611,51 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ subId НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
+        # 2. Безопасное получение subId напрямую из первой ссылки
         sub_id = None
-        srv = SERVERS[0]  # Строго берем первый сервер из конфига (Финляндию)
-        jar = aiohttp.CookieJar(unsafe=True)
-        connector = aiohttp.TCPConnector(ssl=False)
-        
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            try:
-                # Авторизуемся в панели X-UI
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
-                
-                # Запрашиваем информацию об инбаунде
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
-                    res_json = await resp.json()
-                    
-                if res_json.get("success"):
-                    settings = json.loads(res_json["obj"]["settings"])
-                    clients = settings.get("clients", [])
-                    # Находим клиента по tgId
-                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-                    if current_client:
-                        # Забираем чистый subId токен подписки (например, ef1a6303291999c2)
-                        sub_id = str(current_client.get("subId", "")).strip()
-            except Exception as e:
-                logging.error(f"Ошибка прямого запроса subId из панели: {e}")
+        try:
+            if vless_links and len(vless_links) > 0:
+                first_link_str = str(vless_links[0])
+                without_protocol = first_link_str.replace("vless://", "")
+                sub_id = without_protocol.split("@")[0].strip()
+        except Exception as e:
+            logging.error(f"Ошибка парсинга sub_id: {e}")
 
-        # ЗАЩИТА: Если панель вернула пустоту, генерируем фиксированный токен на основе Telegram ID
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id{user_id}"
 
-        # 3. СКЛЕИВАЕМ ССЫЛКУ СЛЭШЕМ ВРУЧНУЮ ЧЕРЕЗ ПЛЮС (Исключает любые сбои склейки)
+        # Вычисляем время окончания подписки (в секундах)
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
+
+        # Склеиваем ссылки vless в один текстовый блок
+        full_configs_string = "\n".join(vless_links).strip() + "\n"
+
+        # 🚀 КРИТИЧЕСКИЙ ШАГ: Отправляем готовые рабочие ключи на ваш сайт по сети
+        # Это связывает хостинг бота и сайт без всяких баз данных и прав root!
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "client_id": sub_id,
+                "vpn_config": full_configs_string,
+                "expire": str(expiry_seconds)
+            }
+            headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
+            try:
+                async with session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5) as resp:
+                    await resp.text()
+            except Exception as net_err:
+                logging.error(f"Не удалось передать ключи на сайт: {net_err}")
+
+        # 3. Склеиваем персональную ссылку слэшем вручную через ПЛЮС
         sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
 
-        # 4. Формируем единый Base64 пакет для ручного ввода
-        full_configs_string = "\n".join(vless_links).strip() + "\n"
+        # 4. Формируем единый Base64 пакет для ручного ввода на экране
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем статус подписки
+        # 5. Рассчитываем текстовый статус подписки для сообщения
         if expiry_time_ms > 0:
-            expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
             status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
         else:
-            expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
         # 6. Клавиатура с персональной ссылкой
@@ -681,7 +679,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # Сохраняем в локальную базу бота
+        # Сохраняем в локальную базу хостинга бота (пусть пишется, как и раньше)
         add_or_update_user(
             user_id=user_id, 
             username=username, 
