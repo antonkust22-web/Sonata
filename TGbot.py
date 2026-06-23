@@ -10,6 +10,7 @@ import os
 import base64
 import zlib
 import subprocess
+import re
 import sqlite3  # Используем стандартный встроенный sqlite3
 
 import aiohttp
@@ -587,10 +588,10 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import re
 import base64
 import logging
-import secrets
+import json
+import aiohttp
 from datetime import datetime
 from aiogram import types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -604,44 +605,53 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем ваш метод: он создает/обновляет клиента в 3X-UI и возвращает список ссылок
+        # 1. Запускаем ваш метод создания/обновления клиента в панелях 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. ИДЕАЛЬНЫЙ ПАРСЕР UUID КЛИЕНТА (Извлекает строго чистый ID без скобок и кавычек)
-        client_uuid = None
-        try:
-            if vless_links and isinstance(vless_links, list) and len(vless_links) > 0:
-                # Строго берем ПЕРВЫЙ элемент списка как чистую строку
-                first_link_str = str(vless_links[0])
-                
-                # Отрезаем протокол vless://
-                without_protocol = first_link_str.replace("vless://", "")
-                
-                # Разделяем строку по знаку "@" и забираем левую часть (чистый UUID)
-                client_uuid = without_protocol.split("@")[0].strip()
-        except Exception as parse_err:
-            logging.error(f"Ошибка парсинга UUID для user_id {user_id}: {parse_err}")
-            client_uuid = None
-                
-        # Заглушка на случай сбоя парсера
-        if not client_uuid or len(client_uuid) < 20:
-            client_uuid = f"user_{user_id}"
-
-        # 3. Формируем персональную ссылку строго по ID (UUID) с правильным слэшем
-        sub_web_url = f"https://sonatavpn.ru{client_uuid}"
-
-        # 4. Глубокая ссылка (Deep Link) для автоматического открытия Happ Utility
-        deep_link_happ = f"sing-box://import-remote-profile?url={sub_web_url}"
+        # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ subId НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
+        sub_id = None
+        srv = SERVERS[0]  # Строго берем первый сервер из конфига (Финляндию)
+        jar = aiohttp.CookieJar(unsafe=True)
+        connector = aiohttp.TCPConnector(ssl=False)
         
-        # 5. Формируем единый Base64 пакет для ручного альтернативного ввода
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            try:
+                # Авторизуемся в панели X-UI
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
+                
+                # Запрашиваем информацию об инбаунде
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
+                    res_json = await resp.json()
+                    
+                if res_json.get("success"):
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
+                    # Находим клиента по tgId
+                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if current_client:
+                        # Забираем чистый subId токен подписки (например, ef1a6303291999c2)
+                        sub_id = str(current_client.get("subId", "")).strip()
+            except Exception as e:
+                logging.error(f"Ошибка прямого запроса subId из панели: {e}")
+
+        # ЗАЩИТА: Если панель вернула пустоту, генерируем фиксированный токен на основе Telegram ID
+        if not sub_id or len(sub_id) < 5:
+            sub_id = f"id{user_id}"
+
+        # 3. СКЛЕИВАЕМ ССЫЛКУ СЛЭШЕМ ВРУЧНУЮ ЧЕРЕЗ ПЛЮС (Исключает любые сбои склейки)
+        sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
+
+        # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 6. Рассчитываем статус и дату окончания подписки
+        # 5. Рассчитываем статус подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -650,29 +660,28 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 7. Клавиатура со специальной кнопкой автоматического импорта в Happ
+        # 6. Клавиатура с персональной ссылкой
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
+            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 8. Красивый и понятный текст сообщения для пользователя
+        # 7. Текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
-            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Телефон сам откроет приложение Happ и импортирует обе локации.\n\n"
-            f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
-            f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
-            f"<code>{sub_web_url}</code>\n"
-            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>.\n\n"
-            f"• Либо скопируйте этот код и выберите <b>«Добавить из буфера»</b>:\n"
-            f"<code>{base64_sub_content}</code>"
+            f"<b>📥 Подключение по ссылке (Рекомендуется):</b>\n"
+            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
+            f"2. Скопируйте адрес открывшейся страницы из строки браузера.\n"
+            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
+            f"<b>💡 Альтернативный способ (вручную):</b>\n"
+            f"• Нажмите пальцем на код ниже, чтобы скопировать его:\n"
+            f"<code>{base64_sub_content}</code>\n\n"
+            f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 9. Сохраняем данные в вашу локальную SQLite базу
+        # Сохраняем в локальную базу бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
@@ -681,13 +690,11 @@ async def connect(callback: types.CallbackQuery):
             expiry_time=expiry_seconds
         )
 
-        # 10. Удаляем старое приветственное сообщение
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем готовую карточку VPN
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
