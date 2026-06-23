@@ -151,7 +151,7 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        "panel_url": "http://78.17.152.36:2053",
+        "panel_url": "https://sonatavpn.ru",
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
