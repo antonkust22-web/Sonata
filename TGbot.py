@@ -612,8 +612,9 @@ async def connect(callback: types.CallbackQuery):
             return
 
         # 2. Получение subId напрямую из панели Финляндии
+                # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ subId НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
         sub_id = None
-        srv = SERVERS
+        srv = SERVERS[0]  # СТРОГО: Берем первый сервер из списка (индекс 0)
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -635,12 +636,14 @@ async def connect(callback: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Ошибка прямого запроса subId из панели: {e}")
 
+        # Защита: Если панель недоступна или клиент новый, ставим id_user_id
         if not sub_id or len(sub_id) < 5:
-            sub_id = f"id{user_id}"
+            sub_id = f"id_{user_id}"
 
-        # 3. Чистая, идеальная ссылка для Telegram (с поддержкой авто-открытия приложения)
+        # 3. Чистая ссылка для Telegram-кнопки
         sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
         redirect_url = "https://sonatavpn.ru" + "/" + sub_id
+
 
         # 4. Отправляем готовые рабочие ключи на веб-сайт по сети
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
