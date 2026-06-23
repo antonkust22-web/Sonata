@@ -589,52 +589,47 @@ async def cabinet(callback: types.CallbackQuery):
 
 import re
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем встроенный метод: он создает/обновляет клиента в 3X-UI и генерирует ключи
+        # 1. Получаем конфигурации из панелей
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-      
-                # 2. Железное извлечение чистой строки UUID из ПЕРВОЙ ссылки массива
+        # 2. Безопасное извлечение UUID из списка строк
         sub_id = None
         try:
-            if vless_links and isinstance(vless_links, list) and len(vless_links) > 0:
-                # Строго берем СТРОКУ первой ссылки из списка
-                first_link_str = str(vless_links[0]) 
-                
+            if vless_links and len(vless_links) > 0:
+                # Берем строго ПЕРВУЮ строку из списка
+                first_link = str(vless_links[0])
                 # Отрезаем протокол vless://
-                raw_part = first_link_str.replace("vless://", "")
-                
-                # Вытаскиваем только то, что идет ДО знака @ (чистый UUID)
+                raw_part = first_link.replace("vless://", "")
+                # Берем то, что идет ДО знака @
                 sub_id = raw_part.split("@")[0].strip()
         except Exception as parse_err:
-            logging.error(f"Ошибка парсинга UUID для user_id {user_id}: {parse_err}")
+            logging.error(f"Ошибка парсинга UUID: {parse_err}")
             sub_id = None
                 
-        # Если массив пуст или парсер выдал короткую строку, ставим ID пользователя
         if not sub_id or len(sub_id) < 10:
             sub_id = f"user_{user_id}"
 
-        # 3. Формируем КРАСИВУЮ персональную ссылку (теперь она будет идеальной)
+        # 3. Формируем персональную ссылку
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
-
         
-        # 4. Формируем единый Base64 пакет для ручного альтернативного ввода
+        # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем статус и дату окончания подписки
+        # 5. Рассчитываем статус подписки
         if expiry_time_ms > 0:
             expiry_seconds = int(expiry_time_ms / 1000)
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -643,28 +638,26 @@ async def connect(callback: types.CallbackQuery):
             expiry_seconds = 0
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Строим инлайн-клавиатуру с вашей персональной ссылкой на сайт sonatavpn.ru
+        # 6. Клавиатура БЕЗ ссылки (только кнопка Назад, чтобы исключить BUTTON_URL_INVALID)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ", url=sub_web_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Красивый и понятный текст сообщения для пользователя
+        # 7. Текст сообщения, куда мы вывели саму ссылку
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Автоматическое подключение (Рекомендуется):</b>\n"
-            f"1. Нажмите на кнопку <b>«🌐 СКОПИРОВАТЬ ССЫЛКУ ПОДПИСКИ»</b> ниже.\n"
-            f"2. Скопируйте адрес страницы из строки браузера.\n"
-            f"3. Откройте приложение Happ ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте этот адрес.\n\n"
-            f"<b>💡 Альтернативный способ (вручную):</b>\n"
-            f"• Нажмите пальцем на код ниже, чтобы скопировать его в буфер обмена:\n"
+            f"<b>📥 Способ 1. Подключение по ссылке (Рекомендуется):</b>\n"
+            f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
+            f"<code>{sub_web_url}</code>\n\n"
+            f"• Откройте Happ Utility ➔ нажмите <b>Плюс (➕)</b> вверху ➔ выберите <b>«Добавить по ссылке» (Add by URL)</b> и вставьте её.\n\n"
+            f"<b>💡 Способ 2. Альтернативный (через буфер):</b>\n"
+            f"• Нажмите на код ниже, чтобы скопировать его:\n"
             f"<code>{base64_sub_content}</code>\n\n"
             f"• Откройте Happ ➔ нажмите <b>Плюс (➕)</b> ➔ выберите <b>«Добавить из буфера» (Add from Clipboard)</b>."
         )
 
-        # 8. Сохраняем данные в вашу локальную SQLite базу
         add_or_update_user(
             user_id=user_id, 
             username=username, 
@@ -673,13 +666,11 @@ async def connect(callback: types.CallbackQuery):
             expiry_time=expiry_seconds
         )
 
-        # 9. Удаляем старое приветственное сообщение
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем готовую карточку VPN
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
