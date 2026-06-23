@@ -612,16 +612,16 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Получаем конфигурации из панелей
+        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Получение чистой строки subId из панели Финляндии
+        # 2. Получение subId напрямую из панели Финляндии
         sub_id = None
-        srv = SERVERS[0]  # Индекс 0 — Финляндия
+        srv = SERVERS[0]  # Берем Финляндию
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -646,13 +646,11 @@ async def connect(callback: types.CallbackQuery):
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id_{user_id}"
 
-        # 3. Чистые ссылки для Happ Utility
+        # 3. Идеальные ссылки (СЛЭШИ ПРОПИСАНЫ СТРОГО ВНУТРИ f-СТРОКИ)
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
-        
-        # ЖЕЛЕЗНЫЙ ДИПЛИНК: Telegram пропускает протокол sing-box://, если в нем нет %3A и %2F
-        deep_link_happ = f"sing-box://import-remote-profile?url={sub_web_url}"
+        redirect_url = f"https://sonatavpn.ruconnect/{sub_id}"
 
-        # 4. Отправляем готовые рабочие ключи на сайт по сети
+        # 4. Отправляем готовые рабочие ключи на веб-сайт по сети (POST)
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         
@@ -664,7 +662,8 @@ async def connect(callback: types.CallbackQuery):
             }
             headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
             try:
-                async with session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5) as resp:
+                # Четкий слэш перед index.php
+                async with session.post("https://sonatavpn.ruindex.php", data=payload, headers=headers, timeout=5) as resp:
                     await resp.text()
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
@@ -679,9 +678,9 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 7. Клавиатура со специальной кнопкой автоматического импорта в Happ
+        # 7. Клавиатура: Ведет на защищенный HTTPS-редирект, разрешенный в Telegram!
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -691,7 +690,7 @@ async def connect(callback: types.CallbackQuery):
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Телефон сам откроет приложение Happ и импортирует подписку.\n\n"
+            f"• Система сама откроет приложение Happ и импортирует подписку.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
             f"<code>{sub_web_url}</code>\n"
