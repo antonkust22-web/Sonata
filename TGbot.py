@@ -133,6 +133,12 @@ def get_user_from_db(user_id):
  
 
 
+import secrets
+import uuid
+import aiohttp
+import json
+import urllib.parse
+import logging
 
 SERVERS = [
     {
@@ -145,13 +151,13 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
         "sid": "f2cfb510fbaa",
-        "sni": "://sony.com",
+        "sni": "sony.com",
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
     {
         "id": "de_1",
-        "panel_url": "https://sonatavpn.ru",
+        "panel_url": "https://sonatavpn.ru", # Твой новый защищенный HTTPS адрес Польши без порта!
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
@@ -159,18 +165,16 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
         "sid": "aa72b4f659",
-        "sni": "://sony.com",
+        "sni": "sony.com",
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
 ]
 
-
-
 async def get_vpn_config_clean(user_id, username=""):
     """
-    Универсальный сборщик конфигураций.
-    Забирает ОРИГИНАЛЬНЫЕ, 100% рабочие ссылки VLESS напрямую из базы X-UI панели.
+    Универсальный сборщик конфигураций SonataVPN. 
+    Собирает Reality ключи с двух HTTPS серверов без поломок параметров.
     """
     vless_links = []
     final_expiry_time_ms = 0
@@ -182,10 +186,12 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
+                # 1. Авторизация в панели 3X-UI
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
+                # 2. Получение данных инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
                     res_json = await resp.json()
@@ -201,8 +207,10 @@ async def get_vpn_config_clean(user_id, username=""):
                     old_email = f"user_{user_id}"
                     current_client = next((c for c in clients if c.get("email") == old_email), None)
 
-                # Если клиента нет — создаем его в панели
-                if not current_client:
+                client_uuid = current_client.get("id") if current_client else None
+
+                # 3. Создание / Обновление клиента на сервере
+                if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8) 
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
@@ -215,24 +223,17 @@ async def get_vpn_config_clean(user_id, username=""):
                     }
                     await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
                     expiry_time_ms = 0
-                    
-                    # Перезапрашиваем инбаунд, чтобы панель сгенерировала готовую ссылку для нового клиента
-                    async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as r2:
-                        res_json = await r2.json()
-                        settings = json.loads(res_json["obj"]["settings"])
-                        clients = settings.get("clients", [])
-                        current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     sub_id = current_client.get("subId", "")
                     if not sub_id:
                         sub_id = secrets.token_hex(8)
                     
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{current_client.get('id')}"
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
-                            "id": current_client.get("id"), "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
                             "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
                         }]})
                     }
@@ -241,35 +242,27 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # ВЫТАСКИВАЕМ ОРИГИНАЛЬНУЮ ССЫЛКУ ИЗ ПАНЕЛИ
-                # Панели X-UI сами генерируют готовый vless:// со всеми рабочими флагами и SNI
-                raw_link = current_client.get("link") or current_client.get("links", [""])[0]
-                
-                if not raw_link:
-                    # Если поле пустое, собираем запасной Reality вариант, но подставляя IP и порт инбаунда
-                    my_port = res_json["obj"]["port"]
-                    client_uuid = current_client.get("id")
-                    clean_sni = srv['sni'].replace("://", "").replace("www.", "")
-                    raw_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?type=tcp&security=reality&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
-               
-                if "#" in raw_link:
-                    base_link_str = raw_link.split("#")[0]
-                else:
-                    base_link_str = raw_link
-
-                
-                # Отрезаем старое имя и ставим красивый флаг и название страны
-                base_link = raw_link.split("#")[0]
+                my_port = res_json["obj"]["port"]
+                clean_sni = srv['sni'].replace("://", "").replace("www.", "")
                 remark = f"{srv['country_flag']} {srv['country_name']}"
-                final_link = f"{base_link_str}#{urllib.parse.quote(remark)}"
+
+                # 🚀 ЖЕЛЕЗНАЯ СБОРКА ССЫЛКИ VLESS: flow включен, spx=%2F зафиксирован без декодирования unquote!
+                config_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?type=tcp&security=reality&flow=xtls-rprx-vision&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
+                    f"#{urllib.parse.quote(remark)}"
+                )
                 
-                vless_links.append(final_link)
+                # Добавляем чистую ссылку в массив без unquote!
+                vless_links.append(config_link)
 
             except Exception as e:
                 logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
                 continue
 
     return vless_links, final_expiry_time_ms
+
+
 
 
 
