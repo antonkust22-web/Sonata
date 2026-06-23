@@ -592,30 +592,28 @@ import base64
 import logging
 import json
 import aiohttp
-import urllib.parse
 from datetime import datetime
 from aiogram import types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу гасим анимацию загрузки кнопки в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем ваш метод создания/обновления клиента в панелях 3X-UI
+        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. НАДЕЖНОЕ ПОЛУЧЕНИЕ СУБ-АЙДИ (subId) НАПРЯМУЮ ИЗ ПАНЕЛИ ФИНЛЯНДИИ
+        # 2. Получение subId напрямую из панели Финляндии
         sub_id = None
-        srv = SERVERS[0]  # Строго берем Финляндию
+        srv = SERVERS
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
@@ -637,20 +635,18 @@ async def connect(callback: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Ошибка прямого запроса subId из панели: {e}")
 
-        # Защита: Если панель недоступна, генерируем фиксированный токен по tgId
         if not sub_id or len(sub_id) < 5:
             sub_id = f"id{user_id}"
 
-        # 3. Склеиваем персональную ссылку слэшем вручную через ПЛЮС
+        # 3. Чистая, идеальная ссылка для Telegram (с поддержкой авто-открытия приложения)
         sub_web_url = "https://sonatavpn.ru" + "/" + sub_id
+        redirect_url = "https://sonatavpn.ru" + "/" + sub_id
 
-        # 4. Формируем единый Base64 пакет для ручного ввода
+        # 4. Отправляем готовые рабочие ключи на веб-сайт по сети
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         full_configs_string = "\n".join(vless_links).strip() + "\n"
-        base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
-
-        # 🚀 КРИТИЧЕСКИЙ ШАГ: Отправляем готовые рабочие ключи на ваш веб-сайт по сети
+        
         async with aiohttp.ClientSession() as session:
-            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
             payload = {
                 "client_id": sub_id,
                 "vpn_config": full_configs_string,
@@ -658,37 +654,33 @@ async def connect(callback: types.CallbackQuery):
             }
             headers = {"X-SONATA-TOKEN": "SonataSecureToken123"}
             try:
-                async with session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5) as resp:
-                    await resp.text()
+                await session.post("https://sonatavpn.ru", data=payload, headers=headers, timeout=5)
             except Exception as net_err:
                 logging.error(f"Не удалось передать ключи на сайт: {net_err}")
 
-        # 🚀 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ДЛЯ ОТКРЫТИЯ HAPP:
-        # Кодируем ссылку через urllib.parse.quote, чтобы Telegram пропустил Deep Link протокол
-        encoded_url = urllib.parse.quote(sub_web_url, safe='')
-        deep_link_happ = f"sing-box://import-remote-profile?url={encoded_url}"
+        # 5. Формируем единый Base64 пакет для ручного ввода
+        base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем текстовый статус подписки
+        # 6. Рассчитываем текстовый статус подписки
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
             status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. Клавиатура со специальной кнопкой автоматического перехода в Happ
+        # 7. Клавиатура: Ведет на защищенный HTTPS-редирект, который на 100% разрешен в TG!
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deep_link_happ)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Ваш телефон сам откроет приложение Happ и импортирует подписку.\n\n"
+            f"• Система сама откроет приложение Happ и импортирует подписку.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
             f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
             f"<code>{sub_web_url}</code>\n"
@@ -716,7 +708,6 @@ async def connect(callback: types.CallbackQuery):
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
 
-         
 
 
 
@@ -760,7 +751,7 @@ async def subscription(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "pay_30_days")
 async def send_invoice(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
-    await get_vpn_config_manual(callback.from_user.id, callback.from_user.username or "")
+    await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
     logging.info(f"Диспетчер: Отправка инвойса пользователю {callback.from_user.id}")
     await bot.send_invoice(
         chat_id=callback.from_user.id,
@@ -820,7 +811,7 @@ async def admin_gift_sub(message: types.Message):
     sub_id = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
     
     if sub_id:
-        await get_vpn_config_manual(target_user_id)
+        await get_vpn_config_clean(target_user_id)
         
         # Динамически вытаскиваем IP вашей панели из PANEL_URL, но подставляем порт подписок 2096
         # Если у вас PANEL_URL имеет вид "http://78.17.1.43:2053", скрипт возьмет чистый IP и сделает нужную вам ссылку
