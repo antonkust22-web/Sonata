@@ -169,9 +169,8 @@ SERVERS = [
 
 async def get_vpn_config_clean(user_id, username=""):
     """
-    Универсальный сборщик конфигураций. 
-    Исправляет ошибки Reality параметров (убирает n/a в Happ).
-    В конце ссылки VLESS оставляет ТОЛЬКО флаг и страну БЕЗ ID пользователя.
+    Универсальный сборщик конфигураций.
+    Забирает ОРИГИНАЛЬНЫЕ, 100% рабочие ссылки VLESS напрямую из базы X-UI панели.
     """
     vless_links = []
     final_expiry_time_ms = 0
@@ -181,7 +180,6 @@ async def get_vpn_config_clean(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
-                # Технический email для панели (остаётся уникальным для X-UI)
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
@@ -203,10 +201,8 @@ async def get_vpn_config_clean(user_id, username=""):
                     old_email = f"user_{user_id}"
                     current_client = next((c for c in clients if c.get("email") == old_email), None)
 
-                client_uuid = current_client.get("id") if current_client else None
-
-                # Создание / Обновление клиента в панели X-UI
-                if not client_uuid:
+                # Если клиента нет — создаем его в панели
+                if not current_client:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8) 
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
@@ -219,17 +215,24 @@ async def get_vpn_config_clean(user_id, username=""):
                     }
                     await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
                     expiry_time_ms = 0
+                    
+                    # Перезапрашиваем инбаунд, чтобы панель сгенерировала готовую ссылку для нового клиента
+                    async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as r2:
+                        res_json = await r2.json()
+                        settings = json.loads(res_json["obj"]["settings"])
+                        clients = settings.get("clients", [])
+                        current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     sub_id = current_client.get("subId", "")
                     if not sub_id:
                         sub_id = secrets.token_hex(8)
                     
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{current_client.get('id')}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "id": current_client.get("id"), "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
                             "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
                         }]})
                     }
@@ -238,23 +241,23 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                my_port = res_json["obj"]["port"]
+                # ВЫТАСКИВАЕМ ОРИГИНАЛЬНУЮ ССЫЛКУ ИЗ ПАНЕЛИ
+                # Панели X-UI сами генерируют готовый vless:// со всеми рабочими флагами и SNI
+                raw_link = current_client.get("link") or current_client.get("links", [""])[0]
                 
-                # ИСПРАВЛЕНИЕ ДЛЯ ПИНГА: Очищаем SNI от протоколов, оставляем чистый домен (например, sony.com)
-                clean_sni = srv['sni'].replace("://", "").replace("www.", "")
-                
-                # СТРОГО: Только флаг и страна для отображения в приложении Happ
-                remark = f"{srv['country_flag']} {srv['country_name']}"
+                if not raw_link:
+                    # Если поле пустое, собираем запасной Reality вариант, но подставляя IP и порт инбаунда
+                    my_port = res_json["obj"]["port"]
+                    client_uuid = current_client.get("id")
+                    clean_sni = srv['sni'].replace("://", "").replace("www.", "")
+                    raw_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?type=tcp&security=reality&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
 
-                # ИСПРАВЛЕННАЯ СТРУКТУРА ССЫЛКИ VLESS ( Reality стандарт без лишнего encryption=none)
-                config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
-                    f"#{remark}"
-                )
+                # Отрезаем старое имя и ставим красивый флаг и название страны
+                base_link = raw_link.split("#")[0]
+                remark = f"{srv['country_flag']} {srv['country_name']}"
+                final_link = f"{base_link}#{urllib.parse.quote(remark)}"
                 
-                # Декодируем проценты, записываем чистый текст в UTF-8
-                vless_links.append(config_link)
+                vless_links.append(final_link)
 
             except Exception as e:
                 logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
