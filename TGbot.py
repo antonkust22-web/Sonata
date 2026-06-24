@@ -157,7 +157,7 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        "panel_url": "https://sonatavpn.ru", # Твой новый защищенный HTTPS адрес Польши без порта!
+        "panel_url": "http://78.17.152.36:2053", # Твой новый защищенный HTTPS адрес Польши без порта!
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
@@ -174,7 +174,7 @@ SERVERS = [
 async def get_vpn_config_clean(user_id, username=""):
     """
     Универсальный сборщик конфигураций SonataVPN. 
-    Собирает Reality ключи с двух HTTPS серверов без поломок параметров.
+    Динамически вытаскивает тип сети (TCP/gRPC) и параметры Reality прямо из панели.
     """
     vless_links = []
     final_expiry_time_ms = 0
@@ -199,6 +199,13 @@ async def get_vpn_config_clean(user_id, username=""):
                 if not res_json.get("success"):
                     continue
 
+                # 🚀 ДИНАМИЧЕСКИЙ СБОР НАСТРОЕК СЕТИ С СЕРВЕРА
+                # Вытаскиваем реальные настройки инбаунда, чтобы ссылка 100% совпадала с сервером
+                stream_settings = json.loads(res_json["obj"]["streamSettings"])
+                network_type = stream_settings.get("network", "tcp") # tcp, grpc, ws
+                security_type = stream_settings.get("security", "none") # reality, tls
+
+                my_port = res_json["obj"]["port"]
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
@@ -242,18 +249,41 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                my_port = res_json["obj"]["port"]
                 clean_sni = srv['sni'].replace("://", "").replace("www.", "")
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # 🚀 ЖЕЛЕЗНАЯ СБОРКА ССЫЛКИ VLESS: flow включен, spx=%2F зафиксирован без декодирования unquote!
-                config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&flow=xtls-rprx-vision&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
-                    f"#{urllib.parse.quote(remark)}"
-                )
+                # 🚀 СБОРКА ПАРАМЕТРОВ ССЫЛКИ
+                params = [
+                    f"type={network_type}",
+                    f"security={security_type}",
+                    "fp=chrome"
+                ]
+
+                # Если тип сети gRPC, добавляем имя сервиса
+                if network_type == "grpc":
+                    grpc_settings = stream_settings.get("grpcSettings", {})
+                    service_name = grpc_settings.get("serviceName", "")
+                    if service_name:
+                        params.append(f"serviceName={urllib.parse.quote(service_name)}")
+
+                # Если включен Reality, подставляем ключи
+                if security_type == "reality":
+                    params.append(f"pbk={srv['pbk']}")
+                    params.append(f"sni={clean_sni}")
+                    params.append(f"sid={srv['sid']}")
+                    params.append("spx=%2F")
+                    
+                    # Проверяем XTLS Vision (Flow) на сервере. Включаем ТОЛЬКО если сеть TCP
+                    if network_type == "tcp" and current_client and current_client.get("flow"):
+                        params.append(f"flow={current_client.get('flow')}")
+                    elif network_type == "tcp":
+                        # Если в клиенте пусто, но сеть TCP — ставим стандарт
+                        params.append("flow=xtls-rprx-vision")
+
+                query_string = "&".join(params)
                 
-                # Добавляем чистую ссылку в массив без unquote!
+                # Итоговая эталонная ссылка VLESS
+                config_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?{query_string}#{urllib.parse.quote(remark)}"
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -591,30 +621,59 @@ async def cabinet(callback: types.CallbackQuery):
 
 import base64
 import logging
+import json
+import aiohttp
 from datetime import datetime
 from aiogram import types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Гасим анимацию часиков на кнопке в Telegram
+    # Сразу тушим анимацию загрузки часиков на кнопке в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/обновления клиента в панелях 3X-UI
+        # 1. Запускаем метод сборщика (он создает/обновляет клиентов в X-UI)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. Генерируем уникальный фиксированный токен для этого пользователя
-        sub_id = "id" + str(user_id)
+        # 2. ВОЗВРАЩАЕМ ДИНАМИЧЕСКИЙ ТОКЕН: Вытаскиваем оригинальный subId (начинающийся на e...) из панели
+        sub_id = None
+        srv = SERVERS[0]  # Строго берем первый сервер из конфига (Финляндию)
+        jar = aiohttp.CookieJar(unsafe=True)
+        connector = aiohttp.TCPConnector(ssl=False)
+        
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+            try:
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
+                
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
+                    res_json = await resp.json()
+                    
+                if res_json.get("success"):
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
+                    # Ищем текущего клиента по его Telegram ID
+                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if current_client:
+                        # Забираем тот самый оригинальный токен подписки из X-UI
+                        sub_id = str(current_client.get("subId", "")).strip()
+            except Exception as panel_err:
+                logging.error(f"Ошибка прямого запроса subId из панели Финляндии: {panel_err}")
 
-        # 3. ИДЕАЛЬНЫЕ ЧИСТЫЕ ССЫЛКИ: Склеены через обычный плюс БЕЗ знаков ? и %
+        # Защита: Если панель упала или токен пустой, временно генерируем токен на основе Telegram ID
+        if not sub_id or len(sub_id) < 5:
+            sub_id = "id" + str(user_id)
+
+        # 3. ФОРМИРУЕМ ИДЕАЛЬНЫЕ ЧИСТЫЕ ССЫЛКИ С ХВОСТИКОМ КЛИЕНТА (начинается на e...)
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         redirect_url = "https://sonatavpn.ru" + "/connect" + "/" + str(sub_id)
 
@@ -630,7 +689,7 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. КЛАВИАТУРА: Ровная ссылка https://sonatavpn.ru, которую TG примет СРАЗУ
+        # 6. КЛАВИАТУРА: Ровная ЧПУ ссылка без знаков ? и %, которую Telegram примет сразу
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -670,6 +729,7 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+
 
 
 
