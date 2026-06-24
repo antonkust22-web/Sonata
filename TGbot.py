@@ -157,7 +157,7 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        "panel_url": "http://78.17.152.36:2053", # Твой новый защищенный HTTPS адрес Польши без порта!
+        "panel_url": "https://sonatavpn.ru", # Твой новый защищенный HTTPS адрес Польши без порта!
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
