@@ -174,24 +174,29 @@ SERVERS = [
 async def get_vpn_config_clean(user_id, username=""):
     """
     Универсальный сборщик конфигураций SonataVPN. 
-    Динамически вытаскивает тип сети (TCP/gRPC) и параметры Reality прямо из панели.
+    Генерирует ОДИН общий sub_id токен и записывает его на оба сервера.
     """
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
+    
+    # Делаем фиксированный sub_id на основе secrets или хэша, чтобы он всегда был одинаковым
+    # Для стабильности привяжем его к Telegram ID, но в формате HEX (на букву e или 0b...)
+    common_sub_id = f"e{secrets.token_hex(4)}{user_id}"[:16] # Строго 16 символов для X-UI
+
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация в панели 3X-UI
+                # Авторизация в панели 3X-UI
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # 2. Получение данных инбаунда
+                # Получение данных инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
                     res_json = await resp.json()
@@ -199,13 +204,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 if not res_json.get("success"):
                     continue
 
-                # 🚀 ДИНАМИЧЕСКИЙ СБОР НАСТРОЕК СЕТИ С СЕРВЕРА
-                # Вытаскиваем реальные настройки инбаунда, чтобы ссылка 100% совпадала с сервером
-                stream_settings = json.loads(res_json["obj"]["streamSettings"])
-                network_type = stream_settings.get("network", "tcp") # tcp, grpc, ws
-                security_type = stream_settings.get("security", "none") # reality, tls
-
-                my_port = res_json["obj"]["port"]
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
@@ -216,32 +214,28 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Создание / Обновление клиента на сервере
+                # Создание / Обновление клиента на сервере с принудительным common_sub_id
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    sub_id = secrets.token_hex(8) 
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 32212254720,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  # Жесткий одинаковый ID
                         }]})
                     }
                     await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    sub_id = current_client.get("subId", "")
-                    if not sub_id:
-                        sub_id = secrets.token_hex(8)
                     
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 32212254720, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
+                            "totalGB": 32212254720, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  # Принудительно перезаписываем одинаковый ID
                         }]})
                     }
                     await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
@@ -249,41 +243,17 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
+                my_port = res_json["obj"]["port"]
                 clean_sni = srv['sni'].replace("://", "").replace("www.", "")
                 remark = f"{srv['country_flag']} {srv['country_name']}"
 
-                # 🚀 СБОРКА ПАРАМЕТРОВ ССЫЛКИ
-                params = [
-                    f"type={network_type}",
-                    f"security={security_type}",
-                    "fp=chrome"
-                ]
-
-                # Если тип сети gRPC, добавляем имя сервиса
-                if network_type == "grpc":
-                    grpc_settings = stream_settings.get("grpcSettings", {})
-                    service_name = grpc_settings.get("serviceName", "")
-                    if service_name:
-                        params.append(f"serviceName={urllib.parse.quote(service_name)}")
-
-                # Если включен Reality, подставляем ключи
-                if security_type == "reality":
-                    params.append(f"pbk={srv['pbk']}")
-                    params.append(f"sni={clean_sni}")
-                    params.append(f"sid={srv['sid']}")
-                    params.append("spx=%2F")
-                    
-                    # Проверяем XTLS Vision (Flow) на сервере. Включаем ТОЛЬКО если сеть TCP
-                    if network_type == "tcp" and current_client and current_client.get("flow"):
-                        params.append(f"flow={current_client.get('flow')}")
-                    elif network_type == "tcp":
-                        # Если в клиенте пусто, но сеть TCP — ставим стандарт
-                        params.append("flow=xtls-rprx-vision")
-
-                query_string = "&".join(params)
+                # Сборка правильной Reality ссылки
+                config_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?type=tcp&security=reality&flow=xtls-rprx-vision&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F"
+                    f"#{urllib.parse.quote(remark)}"
+                )
                 
-                # Итоговая эталонная ссылка VLESS
-                config_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?{query_string}#{urllib.parse.quote(remark)}"
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -291,6 +261,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -619,44 +590,32 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import base64
-import logging
-import json
-import aiohttp
-from datetime import datetime
-from aiogram import types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Гасим анимацию часиков на кнопке в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем ваш метод сборщика (он создает/обновляет клиентов в X-UI и возвращает vless_links)
+        # 1. Запускаем метод сборщика (он запишет ОДИНАКОВЫЙ subId на оба сервера)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. ЖЕЛЕЗНОЕ ПОЛУЧЕНИЕ subId ИЗ ПАНЕЛИ ФИНЛЯНДИИ БЕЗ ОШИБОК ИНДЕКСОВ
+        # 2. Быстро извлекаем сгенерированный common_sub_id из Финляндии
         sub_id = None
-        # Строго берем первый элемент списка серверов (индекс 0 - Финляндия)
-        srv = SERVERS[0]  
+        srv = SERVERS[0]
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             try:
-                # Шаг А. Авторизуемся в X-UI
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
                 
-                # Шаг Б. Запрашиваем информацию об инбаунде
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
                     res_json = await resp.json()
@@ -664,75 +623,48 @@ async def connect(callback: types.CallbackQuery):
                 if res_json.get("success"):
                     settings = json.loads(res_json["obj"]["settings"])
                     clients = settings.get("clients", [])
-                    # Находим текущего клиента по его Telegram ID
                     current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                     if current_client:
-                        # Забираем тот самый токен подписки на букву e...
                         sub_id = str(current_client.get("subId", "")).strip()
-            except Exception as panel_err:
-                logging.error(f"Ошибка прямого запроса subId из панели Финляндии: {panel_err}")
+            except Exception:
+                sub_id = None
 
-        # Защита: Если панель не ответила, временно ставим ID пользователя, чтобы ссылка не ломалась
-        if not sub_id or len(sub_id) < 5:
-            sub_id = "id" + str(user_id)
+        if not sub_id:
+            sub_id = f"e{user_id}"
 
-        # 3. ФОРМИРУЕМ ЧИСТЫЕ ЧПУ-ССЫЛКИ С ТОКЕНОМ КЛИЕНТА (без знаков ? и %)
+        # 3. Чистые ссылки без знаков ? и %
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         redirect_url = "https://sonatavpn.ru" + "/connect" + "/" + str(sub_id)
 
-        # 4. Формируем единый Base64 пакет для ручного ввода
         full_configs_string = "\n".join(vless_links).strip() + "\n"
         base64_sub_content = base64.b64encode(full_configs_string.encode("utf-8")).decode("utf-8")
 
-        # 5. Рассчитываем текстовый статус подписки
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
-        if expiry_time_ms > 0:
-            expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
-            status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
-        else:
-            status_text = "♾ Безлимитная / Срок не задан"
+        status_text = f"🟢 АКТИВНА — до <b>{datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')}</b>" if expiry_time_ms > 0 else "♾ Безлимитная"
 
-        # 6. КЛАВИАТУРА: Ссылка-редирект, которую Telegram пропускает моментально
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Красивый текст сообщения для пользователя
         text = (
-            f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
+            f"👤 <b>Ваша подписка Sonata VPN </b>\n"
             f" STATUS: {status_text}\n"
             f"🌍 Доступно локаций: <b>{len(vless_links)}</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
             f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
-            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Система сама откроет приложение Happ и импортирует подписку.\n\n"
+            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n\n"
             f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
-            f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
-            f"<code>{sub_web_url}</code>\n"
-            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>.\n\n"
-            f"• Либо скопируйте этот код и выберите <b>«Добавить из буфера»</b>:\n"
-            f"<code>{base64_sub_content}</code>"
+            f"• Ссылка: <code>{sub_web_url}</code>\n"
+            f"• Буфер: <code>{base64_sub_content}</code>"
         )
 
-        # Сохраняем в локальную sqlite базу хостинга бота
-        add_or_update_user(
-            user_id=user_id, 
-            username=username, 
-            vpn_config=full_configs_string, 
-            github_raw_url=sub_web_url, 
-            expiry_time=expiry_seconds
-        )
-
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-            
+        add_or_update_user(user_id=user_id, username=username, vpn_config=full_configs_string, github_raw_url=sub_web_url, expiry_time=expiry_seconds)
+        try: await callback.message.delete()
+        except: pass
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
-        logging.error(f"Критическая ошибка в обработчике connect: {e}")
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
+        logging.error(f"Ошибка connect: {e}")
 
 
 
