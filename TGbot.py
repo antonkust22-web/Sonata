@@ -241,7 +241,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 0, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
+                            "totalGB": 32212254720, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": sub_id
                         }]})
                     }
                     await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
