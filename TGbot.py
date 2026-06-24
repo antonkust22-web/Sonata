@@ -629,31 +629,34 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    # Сразу тушим анимацию загрузки часиков на кнопке в Telegram
+    # Гасим анимацию часиков на кнопке в Telegram
     await callback.answer()
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод сборщика (он создает/обновляет клиентов в X-UI)
+        # 1. Запускаем ваш метод сборщика (он создает/обновляет клиентов в X-UI и возвращает vless_links)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         if not vless_links:
             await callback.message.answer("⚠️ Не удалось настроить серверы. Обратитесь в техподдержку.")
             return
 
-        # 2. ВОЗВРАЩАЕМ ДИНАМИЧЕСКИЙ ТОКЕН: Вытаскиваем оригинальный subId (начинающийся на e...) из панели
+        # 2. ЖЕЛЕЗНОЕ ПОЛУЧЕНИЕ subId ИЗ ПАНЕЛИ ФИНЛЯНДИИ БЕЗ ОШИБОК ИНДЕКСОВ
         sub_id = None
-        srv = SERVERS[0]  # Строго берем первый сервер из конфига (Финляндию)
+        # Строго берем первый элемент списка серверов (индекс 0 - Финляндия)
+        srv = SERVERS[0]  
         jar = aiohttp.CookieJar(unsafe=True)
         connector = aiohttp.TCPConnector(ssl=False)
         
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             try:
+                # Шаг А. Авторизуемся в X-UI
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 await session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5)
                 
+                # Шаг Б. Запрашиваем информацию об инбаунде
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=5) as resp:
                     res_json = await resp.json()
@@ -661,19 +664,19 @@ async def connect(callback: types.CallbackQuery):
                 if res_json.get("success"):
                     settings = json.loads(res_json["obj"]["settings"])
                     clients = settings.get("clients", [])
-                    # Ищем текущего клиента по его Telegram ID
+                    # Находим текущего клиента по его Telegram ID
                     current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                     if current_client:
-                        # Забираем тот самый оригинальный токен подписки из X-UI
+                        # Забираем тот самый токен подписки на букву e...
                         sub_id = str(current_client.get("subId", "")).strip()
             except Exception as panel_err:
                 logging.error(f"Ошибка прямого запроса subId из панели Финляндии: {panel_err}")
 
-        # Защита: Если панель упала или токен пустой, временно генерируем токен на основе Telegram ID
+        # Защита: Если панель не ответила, временно ставим ID пользователя, чтобы ссылка не ломалась
         if not sub_id or len(sub_id) < 5:
             sub_id = "id" + str(user_id)
 
-        # 3. ФОРМИРУЕМ ИДЕАЛЬНЫЕ ЧИСТЫЕ ССЫЛКИ С ХВОСТИКОМ КЛИЕНТА (начинается на e...)
+        # 3. ФОРМИРУЕМ ЧИСТЫЕ ЧПУ-ССЫЛКИ С ТОКЕНОМ КЛИЕНТА (без знаков ? и %)
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         redirect_url = "https://sonatavpn.ru" + "/connect" + "/" + str(sub_id)
 
@@ -689,13 +692,13 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 6. КЛАВИАТУРА: Ровная ЧПУ ссылка без знаков ? и %, которую Telegram примет сразу
+        # 6. КЛАВИАТУРА: Ссылка-редирект, которую Telegram пропускает моментально
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # 7. Текст сообщения для пользователя
+        # 7. Красивый текст сообщения для пользователя
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n"
@@ -711,6 +714,7 @@ async def connect(callback: types.CallbackQuery):
             f"<code>{base64_sub_content}</code>"
         )
 
+        # Сохраняем в локальную sqlite базу хостинга бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
