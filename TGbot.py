@@ -151,7 +151,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
         "sid": "aec08f750ac0",
-        "sni": "sonatavpn.ru",
+        "sni": "sony.com",
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -165,7 +165,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
         "sid": "bf959789af04",
-        "sni": "sonatavpn.ru",
+        "sni": "sony.com",
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
