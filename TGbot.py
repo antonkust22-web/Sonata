@@ -617,18 +617,21 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/продления клиента на серверах
+        # 1. Запускаем метод создания/продления клиента на серверах (возвращает список vless:// строк)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         # 2. Формируем токен подписки
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # 🚀 ИСПРАВЛЕНО: Прямое сложение строк через плюсы и слэш, как вы просили!
-        # Теперь слипание домена и токена физически невозможно.
+        # Жесткая склейка строк через плюсы и слэш, чтобы ссылка была идеальной
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
-        # 3. Расчет лимитов времени
+        # 3. Извлекаем прямые ключи для диагностики
+        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Финляндия: Ошибка генерации ключа"
+        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Польша: Ошибка генерации ключа"
+
+        # 4. Расчет лимитов времени
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -636,23 +639,29 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 4. Сборка клавиатуры с валидной HTTPS ссылкой (Telegram её пропустит)
+        # 5. Клавиатура (Telegram пропустит валидный HTTPS)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=auto_connect_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ В ОДИН КЛИК", url=auto_connect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
+        # Выводим ВСЕ данные наружу для поиска бага
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
-            f" STATUS: {status_text}\n"
-            f"🌍 Доступно локаций: <b>2</b> (Финляндия 🇫🇮, Польша 🇵🇱)\n\n"
-            f"<b>📥 Способ 1. Автоматический (Рекомендуется):</b>\n"
-            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n"
-            f"• Ваш телефон сам откроет приложение Happ и импортирует подписку.\n\n"
-            f"<b>💡 Способ 2. Альтернативный (вручную):</b>\n"
-            f"• Нажмите на ссылку ниже, чтобы скопировать её:\n"
-            f"<code>{sub_web_url}</code>\n"
-            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>."
+            f" STATUS: {status_text}\n\n"
+            
+            f"<b>⚙️ ДИАГНОСТИКА (Прямые ключи):</b>\n\n"
+            
+            f"<b>🇫🇮 Ключ Финляндия (Скопируйте и вставьте в Happ):</b>\n"
+            f"<code>{fi_key}</code>\n\n"
+            
+            f"<b>🇵🇱 Ключ Польша (Скопируйте и вставьте в Happ):</b>\n"
+            f"<code>{pl_key}</code>\n\n"
+            
+            f"<b>🔗 Ссылка на веб-подписку:</b>\n"
+            f"<code>{sub_web_url}</code>\n\n"
+            
+            f"<i>👉 Попробуйте добавить сначала по очереди прямые ключи Финляндии и Польши. Напишите, пошел ли по ним пинг!</i>"
         )
 
         # Сохраняем в локальную базу SQLite вашего бота
