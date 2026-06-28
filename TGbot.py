@@ -145,7 +145,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Родной рабочий ключ
         "sid": "32b6a4ff54ef1812",                           # Родной рабочий SID
-        "sni": "://sony.com",                                # Обязательные символы ://
+        "sni": "sony.com",                                # Обязательные символы ://
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -159,7 +159,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
         "sid": "bf959789af04",
-        "sni": "://sony.com",                                # Обязательные символы ://
+        "sni": "sony.com",                                # Обязательные символы ://
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
