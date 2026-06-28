@@ -606,6 +606,8 @@ async def cabinet(callback: types.CallbackQuery):
 from datetime import datetime
 import hashlib
 import urllib.parse
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -615,16 +617,18 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
+        # 1. Запускаем метод создания/продления клиента на серверах
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
+        # 2. Формируем токен подписки
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # ИСПРАВЛЕНО: Идеальная f-строка, исключающая слипание домена и токена
-        sub_web_url = f"https://sonatavpn.ru{sub_id}"
-        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+        # 🚀 ИСПРАВЛЕНО: Прямое сложение строк через плюсы и слэш, как вы просили!
+        # Теперь слипание домена и токена физически невозможно.
+        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
+        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
-
-
+        # 3. Расчет лимитов времени
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -632,6 +636,7 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
+        # 4. Сборка клавиатуры с валидной HTTPS ссылкой (Telegram её пропустит)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=auto_connect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -650,6 +655,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>."
         )
 
+        # Сохраняем в локальную базу SQLite вашего бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
