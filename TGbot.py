@@ -133,14 +133,7 @@ def get_user_from_db(user_id):
  
 
 
-import secrets
-import uuid
-import hashlib
-import json
-import aiohttp
-import urllib.parse
-import logging
-
+# ИСПРАВЛЕНО: Все параметры, ключи и SNI строго перенесены из вашего рабочего конфига!
 SERVERS = [
     {
         "id": "fi_1",
@@ -150,15 +143,14 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc",
-        "sid": "aec08f750ac0",
-        "sni": "sony.com",
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Родной рабочий ключ
+        "sid": "32b6a4ff54ef1812",                           # Родной рабочий SID
+        "sni": "://sony.com",                                # Обязательные символы ://
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
     {
         "id": "de_1",
-        # НАСТРОЕНО: Внешний HTTPS адрес Польши без портов
         "panel_url": "https://sonatavpn.ru", 
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
@@ -167,7 +159,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
         "sid": "bf959789af04",
-        "sni": "sony.com",
+        "sni": "://sony.com",                                # Обязательные символы ://
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -179,6 +171,7 @@ async def get_vpn_config_clean(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
+    # Вечный стабильный subId на основе хэша Telegram ID
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -186,22 +179,18 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация
+                # 1. Авторизация в панели X-UI
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=12) as resp:
                     await resp.text()
 
-                # 2. Получение инбаунда
+                # 2. Получение данных инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=12) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
                     continue
-
-                stream_settings = json.loads(res_json["obj"]["streamSettings"])
-                network_type = stream_settings.get("network", "tcp")
-                security_type = stream_settings.get("security", "reality")
 
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
@@ -217,51 +206,40 @@ async def get_vpn_config_clean(user_id, username=""):
                     "id": client_uuid if client_uuid else str(uuid.uuid4()),
                     "email": email_for_panel,
                     "limitIp": current_client.get("limitIp", 2) if current_client else 2,
-                    "totalGB": 32212254720,
+                    "totalGB": 32212254720, # Жесткий лимит 30 ГБ
                     "expiryTime": current_client.get("expiryTime", 0) if current_client else 0,
                     "enable": True,
                     "tgId": user_id,
                     "subId": common_sub_id
                 }
 
+                # 3. Синхронизация клиента с базой данных сервера
                 if not client_uuid:
                     client_uuid = single_client_payload["id"]
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                    payload = {
-                        "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [single_client_payload]})
-                    }
+                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
                     await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = single_client_payload["expiryTime"]
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    payload = {
-                        "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [single_client_payload]})
-                    }
+                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
                     await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
+                # 4. Формирование оригинальной рабочей ссылки VLESS Reality
                 my_port = res_json["obj"]["port"]
-                clean_sni = srv['sni'].replace("://", "").replace("www.", "")
-                
-                # ИСПРАВЛЕНО: Чистые имена для вывода
-                remark = f"{srv['country_flag']} {srv['country_name']}"
+                remark = f"{srv['country_flag']} {srv['country_name']}?Premium"
+                safe_remark = urllib.parse.quote(remark)
 
-                client_flow = current_client.get("flow", "") if current_client else ""
-                
-                params = [f"type={network_type}", f"security={security_type}", "fp=chrome"]
-                if security_type == "reality":
-                    params.append(f"pbk={srv['pbk']}")
-                    params.append(f"sni={clean_sni}")
-                    if srv.get('sid'): params.append(f"sid={srv['sid']}")
-                    if client_flow: params.append(f"flow={client_flow}")
-
-                query_string = "&".join(params)
-                config_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?{query_string}#{urllib.parse.quote(remark)}"
+                # ИСПРАВЛЕНО: Строго сохранен оригинальный формат параметров (включая spx=%2F)
+                config_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
+                    f"#{safe_remark}"
+                )
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -617,21 +595,17 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод создания/продления клиента на серверах (возвращает список vless:// строк)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # 2. Формируем токен подписки
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # Жесткая склейка строк через плюсы и слэш, чтобы ссылка была идеальной
+        # ИСПРАВЛЕНО: Явное сложение строк через плюсы и слэш
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
-        # 3. Извлекаем прямые ключи для диагностики
-        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Финляндия: Ошибка генерации ключа"
-        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Польша: Ошибка генерации ключа"
+        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Финляндия: Ошибка"
+        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Польша: Ошибка"
 
-        # 4. Расчет лимитов времени
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -639,32 +613,27 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Клавиатура (Telegram пропустит валидный HTTPS)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ В ОДИН КЛИК", url=auto_connect_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=auto_connect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # Выводим ВСЕ данные наружу для поиска бага
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n\n"
             
-            f"<b>⚙️ ДИАГНОСТИКА (Прямые ключи):</b>\n\n"
+            f"<b>⚙️ ПРЯМЫЕ КЛЮЧИ (Для проверки пинга):</b>\n\n"
+            f"<b>🇫🇮 Финляндия:</b>\n<code>{fi_key}</code>\n\n"
+            f"<b>🇵🇱 Польша:</b>\n<code>{pl_key}</code>\n\n"
             
-            f"<b>🇫🇮 Ключ Финляндия (Скопируйте и вставьте в Happ):</b>\n"
-            f"<code>{fi_key}</code>\n\n"
-            
-            f"<b>🇵🇱 Ключ Польша (Скопируйте и вставьте в Happ):</b>\n"
-            f"<code>{pl_key}</code>\n\n"
-            
-            f"<b>🔗 Ссылка на веб-подписку:</b>\n"
-            f"<code>{sub_web_url}</code>\n\n"
-            
-            f"<i>👉 Попробуйте добавить сначала по очереди прямые ключи Финляндии и Польши. Напишите, пошел ли по ним пинг!</i>"
+            f"<b>📥 Способ 1. Автоматический:</b>\n"
+            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n\n"
+            f"<b>💡 Способ 2. Вручную по ссылке подписки:</b>\n"
+            f"• Скопируйте ссылку подписки:\n"
+            f"<code>{sub_web_url}</code>\n"
+            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Add by URL»</b>."
         )
 
-        # Сохраняем в локальную базу SQLite вашего бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
@@ -683,7 +652,6 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
 
 
 
