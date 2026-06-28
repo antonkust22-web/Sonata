@@ -138,6 +138,7 @@ from datetime import datetime
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# НАСТРОЕНО: Точные параметры SNI и ключей из вашей рабочей строки
 SERVERS = [
     {
         "id": "fi_1",
@@ -149,7 +150,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
         "sid": "32b6a4ff54ef1812",                           
-        "sni": "://sony.com",                                
+        "sni": "www.sony.com",                               # Изменено на рабочий формат
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -161,9 +162,9 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", # Ваш новый PBK
-        "sid": "e13b1466",                                   # ВАЖНО: Поставьте сюда ваш НОВЫЙ 8-символьный SID из панели!
-        "sni": "://sony.com",                                
+        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
+        "sid": "e13b1466",                             # Ваш реальный SID из рабочей ссылки
+        "sni": "www.sony.com",                               # Изменено на рабочий формат
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -221,7 +222,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     update_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/updateClient/" + str(client_uuid)
                     client_data = {
-                        "id": str(srv['inbound_id']), # ИСПРАВЛЕНО: Убрана опечатка падения цикла
+                        "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
                             "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
@@ -233,13 +234,15 @@ async def get_vpn_config_clean(user_id, username=""):
                     final_expiry_time_ms = expiry_time_ms
 
                 my_port = res_json["obj"]["port"]
-                remark = srv['country_flag'] + " " + srv['country_name']
-                safe_remark = urllib.parse.quote(remark)
+                
+                # ИСПРАВЛЕНО: Формат хэштега имени сервера встык со знаком % строго как в панели
+                remark = f"%{srv['country_flag']}{srv['country_name']}"
 
+                # 🚀 ИСПРАВЛЕНО: Сборка строки символ-в-символ по вашему рабочему шаблону панели (с encryption=none)
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
-                    f"#{safe_remark}"
+                    f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
+                    f"#{remark}"
                 )
                 vless_links.append(config_link)
 
@@ -248,6 +251,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
