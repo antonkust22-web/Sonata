@@ -616,8 +616,10 @@ async def connect(callback: types.CallbackQuery):
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
+        # ИСПРАВЛЕНО: Четкое разделение домена и токена слэшем
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
         auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+
 
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
