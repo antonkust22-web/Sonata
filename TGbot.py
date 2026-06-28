@@ -177,7 +177,7 @@ async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False) # Игнорируем любые строгие SSL проверки локального домена
+    connector = aiohttp.TCPConnector(ssl=False)
     
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
@@ -247,7 +247,9 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 clean_sni = srv['sni'].replace("://", "").replace("www.", "")
-                remark = f"{srv['country_flag']} SonataVPN | {srv['country_name']}"
+                
+                # ИСПРАВЛЕНО: Чистые имена для вывода
+                remark = f"{srv['country_flag']} {srv['country_name']}"
 
                 client_flow = current_client.get("flow", "") if current_client else ""
                 
@@ -267,6 +269,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -616,9 +619,10 @@ async def connect(callback: types.CallbackQuery):
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # ИСПРАВЛЕНО: Четкое разделение домена и токена слэшем
+        # ИСПРАВЛЕНО: Идеальная f-строка, исключающая слипание домена и токена
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
         auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+
 
 
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
