@@ -157,8 +157,8 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
-        "sid": "bf959789af04",
+        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ",
+        "sid": "bfb0e0d2c85acc",
         "sni": "sony.com",                                # Обязательные символы ://
         "country_flag": "🇵🇱",
         "country_name": "Польша"
