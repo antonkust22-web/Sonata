@@ -128,12 +128,16 @@ def get_user_from_db(user_id):
 
 
 
+import hashlib
+import json
+import uuid
+import aiohttp
+import urllib.parse
+import logging
+from datetime import datetime
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-
- 
-
-
-# ИСПРАВЛЕНО: Все параметры, ключи и SNI строго перенесены из вашего рабочего конфига!
 SERVERS = [
     {
         "id": "fi_1",
@@ -143,9 +147,9 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Родной рабочий ключ
-        "sid": "32b6a4ff54ef1812",                           # Родной рабочий SID
-        "sni": "sony.com",                                # Обязательные символы ://
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
+        "sid": "32b6a4ff54ef1812",                           
+        "sni": "://sony.com",                                
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -157,9 +161,9 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ",
-        "sid": "bfb0e0d2c85acc",
-        "sni": "sony.com",                                # Обязательные символы ://
+        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", # Ваш новый PBK
+        "sid": "e13b1466",                                   # ВАЖНО: Поставьте сюда ваш НОВЫЙ 8-символьный SID из панели!
+        "sni": "://sony.com",                                
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -171,7 +175,6 @@ async def get_vpn_config_clean(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Вечный стабильный subId на основе хэша Telegram ID
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -179,14 +182,14 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация в панели X-UI
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=12) as resp:
+                login_url = srv['panel_url'] + srv['base_path'] + "/login"
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=12) as resp:
+                headers = {"Accept": "application/json"}
+
+                get_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/get/" + str(srv['inbound_id'])
+                async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
@@ -202,39 +205,37 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                single_client_payload = {
-                    "id": client_uuid if client_uuid else str(uuid.uuid4()),
-                    "email": email_for_panel,
-                    "limitIp": current_client.get("limitIp", 2) if current_client else 2,
-                    "totalGB": 32212254720, # Жесткий лимит 30 ГБ
-                    "expiryTime": current_client.get("expiryTime", 0) if current_client else 0,
-                    "enable": True,
-                    "tgId": user_id,
-                    "subId": common_sub_id
-                }
-
-                # 3. Синхронизация клиента с базой данных сервера
                 if not client_uuid:
-                    client_uuid = single_client_payload["id"]
-                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
-                    await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
+                    client_uuid = str(uuid.uuid4())
+                    add_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/addClient"
+                    client_data = {
+                        "id": str(srv['inbound_id']), 
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                        }]})
+                    }
+                    await session.post(add_url, headers=headers, data=client_data, timeout=10)
                     expiry_time_ms = 0
                 else:
-                    expiry_time_ms = single_client_payload["expiryTime"]
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
-                    await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
+                    expiry_time_ms = current_client.get("expiryTime", 0)
+                    update_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/updateClient/" + str(client_uuid)
+                    client_data = {
+                        "id": str(srv['inbound_id']), # ИСПРАВЛЕНО: Убрана опечатка падения цикла
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                        }]})
+                    }
+                    await session.post(update_url, headers=headers, data=client_data, timeout=10)
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # 4. Формирование оригинальной рабочей ссылки VLESS Reality
                 my_port = res_json["obj"]["port"]
-                remark = f"{srv['country_flag']} {srv['country_name']}?Premium"
+                remark = srv['country_flag'] + " " + srv['country_name']
                 safe_remark = urllib.parse.quote(remark)
 
-                # ИСПРАВЛЕНО: Строго сохранен оригинальный формат параметров (включая spx=%2F)
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
@@ -243,14 +244,10 @@ async def get_vpn_config_clean(user_id, username=""):
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
+                logging.error(f"Ошибка сервера {srv['id']}: {e}")
                 continue
 
     return vless_links, final_expiry_time_ms
-
-
-
-
 
 
 
@@ -581,12 +578,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-from datetime import datetime
-import hashlib
-import urllib.parse
-from aiogram import types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -599,12 +590,12 @@ async def connect(callback: types.CallbackQuery):
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # ИСПРАВЛЕНО: Явное сложение строк через плюсы и слэш
+        # Железобетонная склейка строк по вашему стандарту
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
-        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Финляндия: Ошибка"
-        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Польша: Ошибка"
+        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Ошибка Финляндии"
+        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Ошибка Польши"
 
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
@@ -621,11 +612,9 @@ async def connect(callback: types.CallbackQuery):
         text = (
             f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
             f" STATUS: {status_text}\n\n"
-            
-            f"<b>⚙️ ПРЯМЫЕ КЛЮЧИ (Для проверки пинга):</b>\n\n"
+            f"<b>⚙️ ВЫДАННЫЕ КЛЮЧИ:</b>\n\n"
             f"<b>🇫🇮 Финляндия:</b>\n<code>{fi_key}</code>\n\n"
             f"<b>🇵🇱 Польша:</b>\n<code>{pl_key}</code>\n\n"
-            
             f"<b>📥 Способ 1. Автоматический:</b>\n"
             f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n\n"
             f"<b>💡 Способ 2. Вручную по ссылке подписки:</b>\n"
@@ -634,13 +623,7 @@ async def connect(callback: types.CallbackQuery):
             f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Add by URL»</b>."
         )
 
-        add_or_update_user(
-            user_id=user_id, 
-            username=username, 
-            vpn_config=sub_web_url, 
-            github_raw_url=sub_web_url, 
-            expiry_time=expiry_seconds
-        )
+        add_or_update_user(user_id, username, sub_web_url, sub_web_url, expiry_seconds)
 
         try:
             await callback.message.delete()
@@ -650,9 +633,8 @@ async def connect(callback: types.CallbackQuery):
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
-        logging.error(f"Критическая ошибка в обработчике connect: {e}")
+        logging.error(f"Критическая ошибка в connect: {e}")
         await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
 
 
 
