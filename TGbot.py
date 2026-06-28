@@ -158,8 +158,8 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        # ИСПРАВЛЕНО: Бот на сервере обращается к панели Польши локально
-        "panel_url": "http://127.0.0.1:2053", 
+        # НАСТРОЕНО: Внешний HTTPS адрес Польши без портов
+        "panel_url": "https://sonatavpn.ru", 
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
@@ -177,7 +177,7 @@ async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False)
+    connector = aiohttp.TCPConnector(ssl=False) # Игнорируем любые строгие SSL проверки локального домена
     
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
@@ -188,12 +188,12 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 # 1. Авторизация
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=12) as resp:
                     await resp.text()
 
                 # 2. Получение инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
+                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=12) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
@@ -224,7 +224,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     "subId": common_sub_id
                 }
 
-                # ИСПРАВЛЕНО: Правильный синтаксис упаковки данных для API X-UI
                 if not client_uuid:
                     client_uuid = single_client_payload["id"]
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
@@ -232,7 +231,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [single_client_payload]})
                     }
-                    await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=10)
+                    await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = single_client_payload["expiryTime"]
@@ -241,7 +240,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [single_client_payload]})
                     }
-                    await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=10)
+                    await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
@@ -268,6 +267,8 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
+
 
 
 
@@ -611,19 +612,13 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем метод синхронизации баз серверов
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # 2. Формируем токен
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # 3. Чистая внешняя ЧПУ ссылка
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
-        
-        # ИСПРАВЛЕНО: Глубокая ссылка, заставляющая приложение Happ автоматически скачать подписку
-        deeplink_url = f"sing-box://import-remote?url={urllib.parse.quote(sub_web_url)}#🚀Sonata%20VPN"
+        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
 
-        # 4. Расчет лимитов времени
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -631,9 +626,8 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Сборка клавиатуры с прямой deep-link активацией
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deeplink_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=auto_connect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
