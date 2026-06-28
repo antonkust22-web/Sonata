@@ -135,8 +135,9 @@ def get_user_from_db(user_id):
 
 import secrets
 import uuid
-import aiohttp
+import hashlib
 import json
+import aiohttp
 import urllib.parse
 import logging
 
@@ -157,7 +158,8 @@ SERVERS = [
     },
     {
         "id": "de_1",
-        "panel_url": "https://sonatavpn.ru", # Твой новый защищенный HTTPS адрес Польши без порта!
+        # ИСПРАВЛЕНО: Бот на сервере обращается к панели Польши локально
+        "panel_url": "http://127.0.0.1:2053", 
         "base_path": "/dsjwEGmmrbon",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
@@ -171,26 +173,12 @@ SERVERS = [
     }
 ]
 
-import secrets
-import uuid
-import hashlib
-import json
-import aiohttp
-import urllib.parse
-import logging
-
 async def get_vpn_config_clean(user_id, username=""):
-    """
-    Универсальный сборщик конфигураций SonataVPN.
-    Принудительно создает ОДИНАКОВЫЙ вечный subId для обоих серверов и включает лимит 30 ГБ.
-    """
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # 🚀 СТАБИЛЬНЫЙ ВЕЧНЫЙ subId: Хэшируем Telegram ID, чтобы токен всегда был одинаковым
-    # Добавляем букву 'e' в начало. Общая длина 16 символов — идеальный стандарт для X-UI панели.
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -198,18 +186,22 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация в панели 3X-UI
+                # 1. Авторизация
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # 2. Получение данных инбаунда
+                # 2. Получение инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers={"Accept": "application/json"}, timeout=10) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
                     continue
+
+                stream_settings = json.loads(res_json["obj"]["streamSettings"])
+                network_type = stream_settings.get("network", "tcp")
+                security_type = stream_settings.get("security", "reality")
 
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
@@ -221,46 +213,54 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Создание / Обновление клиента на сервере с жестким лимитом 30 ГБ (в байтах)
+                single_client_payload = {
+                    "id": client_uuid if client_uuid else str(uuid.uuid4()),
+                    "email": email_for_panel,
+                    "limitIp": current_client.get("limitIp", 2) if current_client else 2,
+                    "totalGB": 32212254720,
+                    "expiryTime": current_client.get("expiryTime", 0) if current_client else 0,
+                    "enable": True,
+                    "tgId": user_id,
+                    "subId": common_sub_id
+                }
+
+                # ИСПРАВЛЕНО: Правильный синтаксис упаковки данных для API X-UI
                 if not client_uuid:
-                    client_uuid = str(uuid.uuid4())
+                    client_uuid = single_client_payload["id"]
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                    client_data = {
-                        "id": str(srv['inbound_id']), 
-                        "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 32212254720,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
-                        }]})
+                    payload = {
+                        "id": str(srv['inbound_id']),
+                        "settings": json.dumps({"clients": [single_client_payload]})
                     }
-                    await session.post(add_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
+                    await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=10)
                     expiry_time_ms = 0
                 else:
-                    expiry_time_ms = current_client.get("expiryTime", 0)
-                    
+                    expiry_time_ms = single_client_payload["expiryTime"]
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    client_data = {
+                    payload = {
                         "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": 32212254720, "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
-                        }]})
+                        "settings": json.dumps({"clients": [single_client_payload]})
                     }
-                    await session.post(update_url, headers={"Accept": "application/json"}, data=client_data, timeout=10)
+                    await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=10)
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # Формируем базовый конфиг (Сайт сам заберет его и упакует, но боту он нужен для вывода в буфер)
                 my_port = res_json["obj"]["port"]
                 clean_sni = srv['sni'].replace("://", "").replace("www.", "")
-                remark = f"{srv['country_flag']} {srv['country_name']}"
+                remark = f"{srv['country_flag']} SonataVPN | {srv['country_name']}"
 
-                config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&flow=xtls-rprx-vision&fp=chrome&pbk={srv['pbk']}&sni={clean_sni}&sid={srv['sid']}&spx=%2F&headerType=none"
-                    f"#{urllib.parse.quote(remark)}"
-                )
+                client_flow = current_client.get("flow", "") if current_client else ""
                 
+                params = [f"type={network_type}", f"security={security_type}", "fp=chrome"]
+                if security_type == "reality":
+                    params.append(f"pbk={srv['pbk']}")
+                    params.append(f"sni={clean_sni}")
+                    if srv.get('sid'): params.append(f"sid={srv['sid']}")
+                    if client_flow: params.append(f"flow={client_flow}")
+
+                query_string = "&".join(params)
+                config_link = f"vless://{client_uuid}@{srv['my_ip']}:{my_port}?{query_string}#{urllib.parse.quote(remark)}"
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -268,6 +268,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -598,11 +599,9 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import hashlib
-import logging
 from datetime import datetime
-from aiogram import types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import hashlib
+import urllib.parse
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
@@ -612,18 +611,19 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # 1. Запускаем ваш метод get_vpn_config_clean (он просто создаст/продлит клиента в X-UI)
+        # 1. Запускаем метод синхронизации баз серверов
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # 2. ЖЕЛЕЗОБЕТОННЫЙ ВЕЧНЫЙ ТОКЕН (Всегда одинаковый для этого пользователя)
-        # Хэшируем Telegram ID, добавляем букву 'e' в начало (всего 16 символов для совместимости с X-UI)
+        # 2. Формируем токен
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # 3. Идеальные чистые ЧПУ ссылки для выдачи пользователю БЕЗ знаков ? и %
-        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
-        redirect_url = "https://sonatavpn.ru" + "/connect" + "/" + str(sub_id)
+        # 3. Чистая внешняя ЧПУ ссылка
+        sub_web_url = f"https://sonatavpn.ru{sub_id}"
+        
+        # ИСПРАВЛЕНО: Глубокая ссылка, заставляющая приложение Happ автоматически скачать подписку
+        deeplink_url = f"sing-box://import-remote?url={urllib.parse.quote(sub_web_url)}#🚀Sonata%20VPN"
 
-        # 4. Рассчитываем текстовый статус подписки
+        # 4. Расчет лимитов времени
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
             expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
@@ -631,9 +631,9 @@ async def connect(callback: types.CallbackQuery):
         else:
             status_text = "♾ Безлимитная / Срок не задан"
 
-        # 5. Клавиатура со ссылкой-редиректом, которую Telegram пропустит без ошибок
+        # 5. Сборка клавиатуры с прямой deep-link активацией
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=redirect_url)],
+            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=deeplink_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
@@ -650,7 +650,6 @@ async def connect(callback: types.CallbackQuery):
             f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Добавить по ссылке» (Add by URL)</b>."
         )
 
-        # Сохраняем в локальную базу SQLite вашего бота
         add_or_update_user(
             user_id=user_id, 
             username=username, 
