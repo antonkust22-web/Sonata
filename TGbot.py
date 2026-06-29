@@ -146,7 +146,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
         "sid": "32b6a4ff54ef1812",                           
-        "sni": "sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
+        "sni": "://sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
