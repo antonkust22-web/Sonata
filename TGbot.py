@@ -233,16 +233,16 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 # РАЗДЕЛЕНИЕ ЛОГИКИ СБОРКИ ССЫЛОК ПОД КАЖДЫЙ СЕРВЕР ИНДИВИДУАЛЬНО
                 if srv["id"] == "fi_1":
-                    # Стерильный классический Reality-шаблон для Финляндии (БЕЗ spx и БЕЗ encryption=none)
-                    remark = f"%23🇫🇮Финляндия"
+                    # ИСПРАВЛЕНО: Стерильное текстовое имя БЕЗ знаков %23
+                    remark = f"{srv['country_flag']} {srv['country_name']}"
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                         f"?type=tcp&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
                         f"#{remark}"
                     )
                 else:
-                    # Расширенный 3X-UI шаблон строго по вашей живой рабочей строке из панели Польши
-                    remark = f"%🇵🇱Польша"
+                    # ИСПРАВЛЕНО: Чистое имя для Польши встык с флагом, символ-в-символ как из панели
+                    remark = f"{srv['country_flag']}{srv['country_name']}"
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                         f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
@@ -256,6 +256,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
