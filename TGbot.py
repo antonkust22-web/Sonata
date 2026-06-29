@@ -10,6 +10,7 @@ import os
 import base64
 import zlib
 import subprocess
+import hashlib
 import re
 import sqlite3  # Используем стандартный встроенный sqlite3
 
