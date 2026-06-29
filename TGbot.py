@@ -128,17 +128,12 @@ def get_user_from_db(user_id):
 
 
 
-import hashlib
-import json
-import uuid
-import aiohttp
-import urllib.parse
-import logging
-from datetime import datetime
-from aiogram import types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# НАСТРОЕНО: Точные параметры SNI и ключей из вашей рабочей строки
+
+
+
+
+# НАСТРОЕНО: Финляндия и Польша разделены по своим уникальным рабочим параметрам маскировки
 SERVERS = [
     {
         "id": "fi_1",
@@ -150,7 +145,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
         "sid": "32b6a4ff54ef1812",                           
-        "sni": "www.sony.com",                               # Изменено на рабочий формат
+        "sni": "sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -163,8 +158,8 @@ SERVERS = [
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
-        "sid": "e13b1466",                             # Ваш реальный SID из рабочей ссылки
-        "sni": "www.sony.com",                               # Изменено на рабочий формат
+        "sid": "bfb0e0d2c85acc",                             
+        "sni": "://sony.com",                               # Польша строго требует маскировку с www.
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -235,15 +230,24 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # ИСПРАВЛЕНО: Формат хэштега имени сервера встык со знаком % строго как в панели
-                remark = f"%{srv['country_flag']}{srv['country_name']}"
-
-                # 🚀 ИСПРАВЛЕНО: Сборка строки символ-в-символ по вашему рабочему шаблону панели (с encryption=none)
-                config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
-                    f"#{remark}"
-                )
+                # РАЗДЕЛЕНИЕ ЛОГИКИ СБОРКИ ССЫЛОК ПОД КАЖДЫЙ СЕРВЕР ИНДИВИДУАЛЬНО
+                if srv["id"] == "fi_1":
+                    # Стерильный классический Reality-шаблон для Финляндии (БЕЗ spx и БЕЗ encryption=none)
+                    remark = f"%23🇫🇮Финляндия"
+                    config_link = (
+                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                        f"?type=tcp&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
+                        f"#{remark}"
+                    )
+                else:
+                    # Расширенный 3X-UI шаблон строго по вашей живой рабочей строке из панели Польши
+                    remark = f"%🇵🇱Польша"
+                    config_link = (
+                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                        f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
+                        f"#{remark}"
+                    )
+                    
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -251,8 +255,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
-
-
 
 
 
