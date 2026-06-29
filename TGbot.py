@@ -134,6 +134,12 @@ def get_user_from_db(user_id):
 
 
 
+import hashlib
+import json
+import logging
+import uuid
+import aiohttp
+
 # НАСТРОЕНО: Финляндия и Польша разделены по своим уникальным рабочим параметрам маскировки
 SERVERS = [
     {
@@ -146,7 +152,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
         "sid": "32b6a4ff54ef1812",                           
-        "sni": "://sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
+        "sni": "sony.com",  # Очищено от :// для валидности Reality
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -160,7 +166,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc",                             
-        "sni": "://sony.com",                               # Польша строго требует маскировку с www.
+        "sni": "://sony.com",  # Очищено от :// для валидности Reality
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -179,17 +185,24 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                login_url = srv['panel_url'] + srv['base_path'] + "/login"
+                # 1. Авторизация
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                headers = {"Accept": "application/json"}
+                # Устанавливаем строгие заголовки для API панели
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
 
-                get_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/get/" + str(srv['inbound_id'])
+                # 2. Получение данных инбаунда
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
+                    logging.error(f"Панель {srv['id']} вернула success=False: {res_json}")
                     continue
 
                 settings = json.loads(res_json["obj"]["settings"])
@@ -202,46 +215,47 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
+                # 3. Добавление или обновление клиента (ИСПРАВЛЕНО: передача через json= вместо data=)
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    add_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/addClient"
+                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
-                        "id": str(srv['inbound_id']), 
+                        "id": int(srv['inbound_id']), # Некоторые панели требуют строго int, а не str
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
                             "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
                         }]})
                     }
-                    await session.post(add_url, headers=headers, data=client_data, timeout=10)
+                    async with session.post(add_url, headers=headers, json=client_data, timeout=10) as r:
+                        await r.text()
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    update_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/updateClient/" + str(client_uuid)
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
-                        "id": str(srv['inbound_id']),
+                        "id": int(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
                             "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
                         }]})
                     }
-                    await session.post(update_url, headers=headers, data=client_data, timeout=10)
+                    async with session.post(update_url, headers=headers, json=client_data, timeout=10) as r:
+                        await r.text()
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
                 my_port = res_json["obj"]["port"]
                 
-                # РАЗДЕЛЕНИЕ ЛОГИКИ СБОРКИ ССЫЛОК ПОД КАЖДЫЙ СЕРВЕР ИНДИВИДУАЛЬНО
+                # 4. Сборка ссылок (ИСПРАВЛЕНО: добавлен encryption=none для Финляндии)
                 if srv["id"] == "fi_1":
-                    # ИСПРАВЛЕНО: Стерильное текстовое имя БЕЗ знаков %23
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                        f"?type=tcp&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
+                        f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
                         f"#{remark}"
                     )
                 else:
-                    # ИСПРАВЛЕНО: Чистое имя для Польши встык с флагом, символ-в-символ как из панели
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
@@ -252,7 +266,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Ошибка сервера {srv['id']}: {e}")
+                logging.error(f"КРИТИЧЕСКИЙ СБОЙ КОДА НА СЕРВЕРЕ {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
