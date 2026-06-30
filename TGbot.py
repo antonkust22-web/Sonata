@@ -135,7 +135,15 @@ def get_user_from_db(user_id):
 
 
 
-# НАСТРОЕНО: Финляндия и Польша разделены по своим уникальным рабочим параметрам маскировки
+import hashlib
+import json
+import logging
+import uuid
+import secrets
+import urllib.parse
+import aiohttp
+
+# НАСТРОЕНО: Точные и чистые параметры без мусорных символов "://" в SNI
 SERVERS = [
     {
         "id": "fi_1",
@@ -147,7 +155,7 @@ SERVERS = [
         "my_ip": "78.17.1.43",
         "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
         "sid": "32b6a4ff54ef1812",                           
-        "sni": "sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
+        "sni": "sony.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -161,7 +169,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc",                             
-        "sni": "://sony.com",                               # Польша строго требует маскировку с www.
+        "sni": "www.sony.com",                               # ИСПРАВЛЕНО: Чистый домен без ://
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -172,25 +180,26 @@ async def get_vpn_config_clean(user_id, username=""):
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
-    common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                login_url = srv['panel_url'] + srv['base_path'] + "/login"
+                # 1. Авторизация (Классический рабочий метод через data=)
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
                 headers = {"Accept": "application/json"}
 
-                get_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/get/" + str(srv['inbound_id'])
+                # 2. Получение данных инбаунда
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
+                    logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
                     continue
 
                 settings = json.loads(res_json["obj"]["settings"])
@@ -203,60 +212,67 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
+                # 3. Добавление или обновление клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    add_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/addClient"
+                    sub_id = secrets.token_hex(8)
+                    
+                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    await session.post(add_url, headers=headers, data=client_data, timeout=10)
+                    async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
+                        await r.text()
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    update_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/updateClient/" + str(client_uuid)
+                    sub_id = current_client.get("subId", "")
+                    if not sub_id:
+                        sub_id = secrets.token_hex(8)
+                        
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    await session.post(update_url, headers=headers, data=client_data, timeout=10)
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                        await r.text()
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
                 my_port = res_json["obj"]["port"]
                 
-                # РАЗДЕЛЕНИЕ ЛОГИКИ СБОРКИ ССЫЛОК ПОД КАЖДЫЙ СЕРВЕР ИНДИВИДУАЛЬНО
+                # 4. Сборка ссылки строго по вашему рабочему эталону
                 if srv["id"] == "fi_1":
-                    # Стерильный классический Reality-шаблон для Финляндии (БЕЗ spx и БЕЗ encryption=none)
-                    remark = f"%23🇫🇮Финляндия"
-                    config_link = (
-                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                        f"?type=tcp&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
-                        f"#{remark}"
-                    )
+                    remark = f"{srv['country_flag']} {srv['country_name']}"
+                    safe_remark = urllib.parse.quote(remark)
                 else:
-                    # Расширенный 3X-UI шаблон строго по вашей живой рабочей строке из панели Польши
-                    remark = f"%🇵🇱Польша"
-                    config_link = (
-                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                        f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
-                        f"#{remark}"
-                    )
+                    remark = f"{srv['country_flag']}{srv['country_name']}"
+                    safe_remark = urllib.parse.quote(remark)
+                
+                # ИСПРАВЛЕНО: Полное соответствие эталонной строке параметров + правильный слэш перед #
+                config_link = (
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"?flow=&type=tcp&headerType=none&security=reality&fp=chrome"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/#{safe_remark}"
+                )
                     
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Ошибка сервера {srv['id']}: {e}")
+                logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
