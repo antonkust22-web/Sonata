@@ -153,9 +153,9 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
-        "sid": "32b6a4ff54ef1812",                           
-        "sni": "sony.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
+        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc", 
+        "sid": "3aa002",                           
+        "sni": "www.sony.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
