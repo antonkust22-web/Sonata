@@ -144,9 +144,9 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Родной рабочий ключ
-        "sid": "32b6a4ff54ef1812",                           # Родной рабочий SID
-        "sni": "sony.com",                                # Обязательные символы ://
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
+        "sid": "32b6a4ff54ef1812",                           
+        "sni": "sony.com",                                   # Финляндия требует чистый домен БЕЗ www.
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -158,9 +158,9 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "pbk": "XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY",
-        "sid": "bf959789af04",
-        "sni": "sony.com",                                # Обязательные символы ://
+        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
+        "sid": "bfb0e0d2c85acc",                             
+        "sni": "://sony.com",                               # Польша строго требует маскировку с www.
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -172,7 +172,6 @@ async def get_vpn_config_clean(user_id, username=""):
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Вечный стабильный subId на основе хэша Telegram ID
     common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -180,14 +179,14 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация в панели X-UI
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=12) as resp:
+                login_url = srv['panel_url'] + srv['base_path'] + "/login"
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                async with session.get(get_url, headers={"Accept": "application/json"}, timeout=12) as resp:
+                headers = {"Accept": "application/json"}
+
+                get_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/get/" + str(srv['inbound_id'])
+                async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
@@ -203,48 +202,57 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                single_client_payload = {
-                    "id": client_uuid if client_uuid else str(uuid.uuid4()),
-                    "email": email_for_panel,
-                    "limitIp": current_client.get("limitIp", 2) if current_client else 2,
-                    "totalGB": 32212254720, # Жесткий лимит 30 ГБ
-                    "expiryTime": current_client.get("expiryTime", 0) if current_client else 0,
-                    "enable": True,
-                    "tgId": user_id,
-                    "subId": common_sub_id
-                }
-
-                # 3. Синхронизация клиента с базой данных сервера
                 if not client_uuid:
-                    client_uuid = single_client_payload["id"]
-                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
-                    await session.post(add_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
+                    client_uuid = str(uuid.uuid4())
+                    add_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/addClient"
+                    client_data = {
+                        "id": str(srv['inbound_id']), 
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                        }]})
+                    }
+                    await session.post(add_url, headers=headers, data=client_data, timeout=10)
                     expiry_time_ms = 0
                 else:
-                    expiry_time_ms = single_client_payload["expiryTime"]
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    payload = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [single_client_payload]})}
-                    await session.post(update_url, headers={"Accept": "application/json"}, data=payload, timeout=12)
+                    expiry_time_ms = current_client.get("expiryTime", 0)
+                    update_url = srv['panel_url'] + srv['base_path'] + "/panel/api/inbounds/updateClient/" + str(client_uuid)
+                    client_data = {
+                        "id": str(srv['inbound_id']),
+                        "settings": json.dumps({"clients": [{
+                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                        }]})
+                    }
+                    await session.post(update_url, headers=headers, data=client_data, timeout=10)
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # 4. Формирование оригинальной рабочей ссылки VLESS Reality
                 my_port = res_json["obj"]["port"]
-                remark = f"{srv['country_flag']} {srv['country_name']}?Premium"
-                safe_remark = urllib.parse.quote(remark)
-
-                # ИСПРАВЛЕНО: Строго сохранен оригинальный формат параметров (включая spx=%2F)
-                config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
-                    f"#{safe_remark}"
-                )
+                
+                # РАЗДЕЛЕНИЕ ЛОГИКИ СБОРКИ ССЫЛОК ПОД КАЖДЫЙ СЕРВЕР ИНДИВИДУАЛЬНО
+                if srv["id"] == "fi_1":
+                    # ИСПРАВЛЕНО: Стерильное текстовое имя БЕЗ знаков %23
+                    remark = f"{srv['country_flag']} {srv['country_name']}"
+                    config_link = (
+                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                        f"?type=tcp&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
+                        f"#{remark}"
+                    )
+                else:
+                    # ИСПРАВЛЕНО: Чистое имя для Польши встык с флагом, символ-в-символ как из панели
+                    remark = f"{srv['country_flag']}{srv['country_name']}"
+                    config_link = (
+                        f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                        f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
+                        f"#{remark}"
+                    )
+                    
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Ошибка сбора конфигурации для сервера {srv['id']}: {e}")
+                logging.error(f"Ошибка сервера {srv['id']}: {e}")
                 continue
 
     return vless_links, final_expiry_time_ms
