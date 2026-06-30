@@ -138,9 +138,11 @@ import hashlib
 import json
 import logging
 import uuid
+import secrets
+import urllib.parse
 import aiohttp
 
-# НАСТРОЕНО: Финляндия и Польша разделены по своим уникальным рабочим параметрам маскировки
+# НАСТРОЕНО: Актуальные рабочие параметры для обоих серверов
 SERVERS = [
     {
         "id": "fi_1",
@@ -150,11 +152,12 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
-        "sid": "32b6a4ff54ef1812",                           
-        "sni": "sony.com",  # Очищено от :// для валидности Reality
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Ваш новый актуальный ключ
+        "sid": "32b6a4ff54ef1812",                           # Ваш новый актуальный ключ
+        "sni": "://sony.com",                                # Ваш новый SNI
         "country_flag": "🇫🇮",
-        "country_name": "Финляндия"
+        "country_name": "Финляндия",
+        "remark_suffix": ""
     },
     {
         "id": "de_1",
@@ -166,9 +169,10 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc",                             
-        "sni": "://sony.com",  # Очищено от :// для валидности Reality
+        "sni": "://sony.com",                                
         "country_flag": "🇵🇱",
-        "country_name": "Польша"
+        "country_name": "Польша",
+        "remark_suffix": ""
     }
 ]
 
@@ -177,8 +181,6 @@ async def get_vpn_config_clean(user_id, username=""):
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
-    common_sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
@@ -190,11 +192,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
-                # Устанавливаем строгие заголовки для API панели
-                headers = {
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
-                }
+                headers = {"Accept": "application/json"}
 
                 # 2. Получение данных инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
@@ -202,7 +200,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
-                    logging.error(f"Панель {srv['id']} вернула success=False: {res_json}")
+                    logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
                     continue
 
                 settings = json.loads(res_json["obj"]["settings"])
@@ -215,31 +213,37 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Добавление или обновление клиента (ИСПРАВЛЕНО: передача через json= вместо data=)
+                # 3. Добавление или обновление клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
+                    sub_id = secrets.token_hex(8)  # Как в старом рабочем коде
+                    
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
-                        "id": int(srv['inbound_id']), # Некоторые панели требуют строго int, а не str
+                        "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    async with session.post(add_url, headers=headers, json=client_data, timeout=10) as r:
+                    async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                         await r.text()
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
+                    sub_id = current_client.get("subId", "")
+                    if not sub_id:
+                        sub_id = secrets.token_hex(8)
+                        
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
-                        "id": int(srv['inbound_id']),
+                        "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": True, "tgId": user_id, "subId": common_sub_id  
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    async with session.post(update_url, headers=headers, json=client_data, timeout=10) as r:
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                         await r.text()
 
                 if expiry_time_ms > 0:
@@ -247,26 +251,32 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                # 4. Сборка ссылок (ИСПРАВЛЕНО: добавлен encryption=none для Финляндии)
+                # 4. Формирование названий и экранирование под Happ (Как в старом коде)
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
+                    safe_remark = urllib.parse.quote(remark)
+                    
+                    # Возвращена оригинальная строка параметров для Финляндии (без encryption=none, но с spx=%2F)
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                        f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}"
-                        f"#{remark}"
+                        f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
+                        f"#{safe_remark}"
                     )
                 else:
+                    # Польша (стык-в-стык без пробелов, как требовала её панель)
                     remark = f"{srv['country_flag']}{srv['country_name']}"
+                    safe_remark = urllib.parse.quote(remark)
+                    
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                         f"?type=tcp&encryption=none&security=reality&pbk={srv['pbk']}&fp=chrome&sni={srv['sni']}&sid={srv['sid']}&spx=%2F"
-                        f"#{remark}"
+                        f"#{safe_remark}"
                     )
                     
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"КРИТИЧЕСКИЙ СБОЙ КОДА НА СЕРВЕРЕ {srv['id']}: {e}", exc_info=True)
+                logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
