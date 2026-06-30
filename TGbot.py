@@ -142,7 +142,7 @@ import secrets
 import urllib.parse
 import aiohttp
 
-# НАСТРОЕНО: Актуальные рабочие параметры для обоих серверов
+# НАСТРОЕНО: Новые актуальные параметры для обоих серверов
 SERVERS = [
     {
         "id": "fi_1",
@@ -152,12 +152,11 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.1.43",
-        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", # Ваш новый актуальный ключ
-        "sid": "32b6a4ff54ef1812",                           # Ваш новый актуальный ключ
-        "sni": "://sony.com",                                # Ваш новый SNI
+        "pbk": "MaiX75YfQdaUmvHJAMxBBt2bYldgZWA7RFJURoTGQ38", 
+        "sid": "32b6a4ff54ef1812",                           
+        "sni": "://sony.com",                                
         "country_flag": "🇫🇮",
-        "country_name": "Финляндия",
-        "remark_suffix": ""
+        "country_name": "Финляндия"
     },
     {
         "id": "de_1",
@@ -171,15 +170,16 @@ SERVERS = [
         "sid": "bfb0e0d2c85acc",                             
         "sni": "://sony.com",                                
         "country_flag": "🇵🇱",
-        "country_name": "Польша",
-        "remark_suffix": ""
+        "country_name": "Польша"
     }
 ]
 
 async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
-    jar = aiohttp.CookieJar(unsafe=True)
+    
+    # Используем стандартный CookieJar для безопасности сессий
+    jar = aiohttp.CookieJar()
     connector = aiohttp.TCPConnector(ssl=False)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -187,12 +187,19 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
-                    await resp.text()
+                # Строгие заголовки для API
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
 
-                headers = {"Accept": "application/json"}
+                # 1. Логин (Используем универсальный json= вместо data=)
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                login_payload = {"username": srv['panel_user'], "password": srv['panel_password']}
+                
+                async with session.post(login_url, headers=headers, json=login_payload, timeout=10) as resp:
+                    login_text = await resp.text()
+                    logging.info(f"Статус логина {srv['id']}: {resp.status}, Ответ: {login_text}")
 
                 # 2. Получение данных инбаунда
                 get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
@@ -200,7 +207,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     res_json = await resp.json()
                     
                 if not res_json.get("success"):
-                    logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
+                    logging.error(f"Панель {srv['id']} вернула success=False при получении инбаунда. Ответ: {res_json}")
                     continue
 
                 settings = json.loads(res_json["obj"]["settings"])
@@ -216,18 +223,19 @@ async def get_vpn_config_clean(user_id, username=""):
                 # 3. Добавление или обновление клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    sub_id = secrets.token_hex(8)  # Как в старом рабочем коде
+                    sub_id = secrets.token_hex(8)
                     
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
-                    client_data = {
-                        "id": str(srv['inbound_id']), 
+                    client_payload = {
+                        "id": int(srv['inbound_id']), # Изменено на int для строгости API
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
                             "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
-                        await r.text()
+                    async with session.post(add_url, headers=headers, json=client_payload, timeout=10) as r:
+                        add_text = await r.text()
+                        logging.info(f"Ответ на добавление клиента {srv['id']}: {add_text}")
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
@@ -236,34 +244,33 @@ async def get_vpn_config_clean(user_id, username=""):
                         sub_id = secrets.token_hex(8)
                         
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    client_data = {
-                        "id": str(srv['inbound_id']),
+                    client_payload = {
+                        "id": int(srv['inbound_id']), # Изменено на int для строгости API
                         "settings": json.dumps({"clients": [{
                             "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
                             "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id  
                         }]})
                     }
-                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                        await r.text()
+                    async with session.post(update_url, headers=headers, json=client_payload, timeout=10) as r:
+                        update_text = await r.text()
+                        logging.info(f"Ответ на обновление клиента {srv['id']}: {update_text}")
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
                 my_port = res_json["obj"]["port"]
                 
-                # 4. Формирование названий и экранирование под Happ (Как в старом коде)
+                # 4. Сборка строк конфигураций с кодированием (Как в вашем старом рабочем коде)
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     
-                    # Возвращена оригинальная строка параметров для Финляндии (без encryption=none, но с spx=%2F)
                     config_link = (
                         f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                         f"?type=tcp&security=reality&sni={srv['sni']}&fp=chrome&pbk={srv['pbk']}&sid={srv['sid']}&spx=%2F"
                         f"#{safe_remark}"
                     )
                 else:
-                    # Польша (стык-в-стык без пробелов, как требовала её панель)
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     
@@ -276,10 +283,11 @@ async def get_vpn_config_clean(user_id, username=""):
                 vless_links.append(config_link)
 
             except Exception as e:
-                logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
+                logging.error(f"Критический сбой выполнения на сервере {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
