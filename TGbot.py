@@ -129,7 +129,7 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     logging.info("-" * 80)
-    logging.info(f"[{timestamp}] [МАРШРУТИЗАЦИЯ ИИ] Запрос подписки от @{username} (ID: {user_id})")
+    logging.info(f"[{timestamp}] [МАРШРУТИЗАЦИЯ] Запрос подписки от @{username} (ID: {user_id})")
     logging.info(f"[{timestamp}] [БАЗА ДАННЫХ] Данные записаны в файл -> {absolute_db_path}")
     logging.info(f"[{timestamp}] [ТОКЕН] Сайт index.php заберет данные по токену: {sub_id}")
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
@@ -280,6 +280,21 @@ async def get_vpn_config_clean(user_id, username=""):
 
 
 
+async def send_sub_to_website(token, b64_content, expiry):
+    """Отправляет сгенерированный Base64 подписки на ваш PHP-сайт"""
+    url = "https://sonatavpn.ru"
+    data = {
+        "token": token,
+        "content": b64_content,
+        "expiry": expiry
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data, timeout=5) as response:
+                res_text = await response.text()
+                logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Синхронизация токена {token} с сайтом: {res_text}")
+    except Exception as ex:
+        logging.error(f"[ОШИБКА] Не удалось передать подписку на сайт: {ex}")
 
 
 
