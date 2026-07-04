@@ -282,7 +282,7 @@ async def get_vpn_config_clean(user_id, username=""):
 
 async def send_sub_to_website(token, b64_content, expiry):
     """Отправляет сгенерированный Base64 подписки на ваш PHP-сайт"""
-    # ИСПРАВЛЕНО: Четкий слэш перед index.php для отправки на ваш сервер
+    # МЕНЯЕМ URL: передаем секретный ключ прямо в пути, обходя ловушку try_files в Nginx
     url = "https://sonatavpn.ru"
     data = {
         "token": token,
