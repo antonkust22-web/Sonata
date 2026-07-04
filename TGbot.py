@@ -282,8 +282,8 @@ async def get_vpn_config_clean(user_id, username=""):
 
 async def send_sub_to_website(token, b64_content, expiry):
     """Отправляет сгенерированный Base64 подписки на ваш PHP-сайт"""
-    # МЕНЯЕМ URL: передаем секретный ключ прямо в пути, обходя ловушку try_files в Nginx
-    url = "https://sonatavpn.ru"
+    # Железобетонная классическая склейка через слэш
+    url = "https://sonatavpn.ru" + "/" + "index.php?update_sub=1"
     data = {
         "token": token,
         "content": b64_content,
@@ -296,6 +296,7 @@ async def send_sub_to_website(token, b64_content, expiry):
                 logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Синхронизация токена {token} с сайтом: {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА ИИ] Не удалось передать подписку на сайт: {ex}")
+
 
 
 
@@ -642,8 +643,9 @@ async def connect(callback: types.CallbackQuery):
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
         # ИСПРАВЛЕНО: Добавлен железный слэш "/" перед sub_id
-        sub_web_url = f"https://sonatavpn.ru{sub_id}"
-        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
+        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
+
 
         fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Ошибка Финляндии"
         pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Ошибка Польши"
