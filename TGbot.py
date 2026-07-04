@@ -634,21 +634,22 @@ async def connect(callback: types.CallbackQuery):
     username = callback.from_user.username or ""
 
     try:
-        # Получаем массив из двух VLESS-ссылок, не меняя код вашей функции get_vpn_config_clean
+        # 1. Получаем чистые VLESS ссылки из панелей (ваш оригинальный метод)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # Генерация уникального sub_id на основе md5 от ID пользователя
+        # 2. Генерируем токен подписки sub_id
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # Формирование ссылок под ваш домен
+        # ИСПРАВЛЕНО: Теперь слэш железно на месте!
         sub_web_url = f"https://sonatavpn.ru{sub_id}"
         auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
 
         fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Ошибка Финляндии"
         pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Ошибка Польши"
 
-        # Склеиваем чистые конфигурации через перенос строки для сохранения в БД
+        # 3. Кодируем чистый текст конфигов в Base64 для сайта
         combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
         if expiry_time_ms > 0:
@@ -673,20 +674,22 @@ async def connect(callback: types.CallbackQuery):
             f"<b>💡 Способ 2. Вручную по ссылке подписки:</b>\n"
             f"• Скопируйте ссылку подписки:\n"
             f"<code>{sub_web_url}</code>\n"
-            f"• Вставьте её в Hiddify/Streisand через Плюс (➕) ➔ <b>«Add by URL»</b>."
+            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Add by URL»</b>."
         )
 
-        # Сохраняем чистый текст ссылок в vpn_config, а уникальный sub_id в github_raw_url
-        add_or_update_user(
-            user_id=user_id, 
-            username=username, 
-            vpn_config=combined_configs, 
-            github_raw_url=sub_id, 
-            expiry_time=expiry_seconds
-        )
+        # 4. Пересылаем Base64 на ваш сайт в фоновом режиме
+        asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
 
-        # Выводим информацию о путях в логи
-        log_subscription_routing(user_id, username, sub_id, sub_web_url)
+        # Сохраняем локально в БД Amvera для истории программы
+        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+        
+        # Печатаем ИИ-логи маршрутизации в Amvera
+        absolute_db_path = os.path.abspath(DB_PATH)
+        logging.info("-" * 80)
+        logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Подписка сгенерирована для @{username}")
+        logging.info(f"[БАЗА ДАННЫХ AMVERA] Локальный лог записан в -> {absolute_db_path}")
+        logging.info(f"[СИНХРОНИЗАЦИЯ] Ссылка отправлена на внешний сервер -> {sub_web_url}")
+        logging.info("-" * 80)
 
         try:
             await callback.message.delete()
@@ -697,8 +700,7 @@ async def connect(callback: types.CallbackQuery):
             
     except Exception as e:
         logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота. Пожалуйста, попробуйте позже.")
-
+        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
 
 
 @dp.callback_query(F.data == "back")
