@@ -12,16 +12,22 @@ import zlib
 import subprocess
 import hashlib
 import re
-import sqlite3  # Используем стандартный встроенный sqlite3
+import sqlite3  
+import datetime
+
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
+from datetime import datetime
+
 
 # --- ПРАВА АДМИНИСТРАТОРА ---
 ADMIN_ID = 8759913724  # ОБЯЗАТЕЛЬНО: Замените эти цифры на ваш настоящий Telegram ID
+
+
 
 
 # --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
@@ -32,12 +38,11 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DB_PATH = os.path.join(BASE_DIR, "users.db")
 
-# Настройка логирования
+# Настройка логирования (чтобы логи красиво отображались в панели Amvera)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
 # --- Настройки (ОБЯЗАТЕЛЬНО ОБНОВИТЕ ТОКЕН И ПАРОЛЬ) ---
 API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 
@@ -59,24 +64,21 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 
-import os
-import sqlite3
-import logging
-import asyncio
+def log_system_routing():
+    """Выводит в логи информацию о путях БД при старте бота"""
+    absolute_db_path = os.path.abspath(DB_PATH)
+    logging.info("=" * 70)
+    logging.info(f"⚙️  БАЗА ДАННЫХ УСПЕШНО ИНИЦИАЛИЗИРОВАНА ПО АДРЕСУ -> {absolute_db_path}")
+    logging.info("=" * 70)
 
-# Путь к вашей базе данных (замените на свой, если нужно)
-DB_PATH = "users.db"
 def init_db():
     logging.info(f"Диспетчер: Инициализация базы данных: {DB_PATH}")
-    # timeout=30.0 заставляет запросы послушно ждать, если база занята
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    # Включаем режим WAL. Это ускоряет запись в 10 раз и исключает зависания
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # Создаем продвинутую таблицу пользователей с новыми полями
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -88,24 +90,20 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+    log_system_routing()
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
-    """Синхронное добавление или обновление данных пользователя (без await)"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-
-    # Проверяем, есть ли уже юзер
     cursor.execute('SELECT user_id, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if not row:
-        # Если пользователя нет — создаем запись
         cursor.execute(
             'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time) VALUES (?, ?, ?, ?, ?)',
             (user_id, username, vpn_config, github_raw_url, expiry_time if expiry_time is not None else 0)
         )
     else:
-        # Если пользователь есть — обновляем только то, что передано
         new_config = vpn_config if vpn_config is not None else row[1]
         new_github = github_raw_url if github_raw_url is not None else row[2]
         new_expiry = expiry_time if expiry_time is not None else row[3]
@@ -114,12 +112,10 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
             'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ? WHERE user_id = ?',
             (username, new_config, new_github, new_expiry, user_id)
         )
-
     conn.commit()
     conn.close()
 
 def get_user_from_db(user_id):
-    """Получение всех данных о пользователе из локальной БД"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT username, vpn_config, github_raw_url, expiry_time FROM users WHERE user_id = ?', (user_id,))
@@ -127,11 +123,9 @@ def get_user_from_db(user_id):
     conn.close()
     return row
 
-
-
 def log_subscription_routing(user_id, username, sub_id, sub_url):
     """Логирует направление базы данных и сформированную ссылку"""
-    absolute_db_path = os.path.abspath("users.db")
+    absolute_db_path = os.path.abspath(DB_PATH)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     logging.info("-" * 80)
@@ -140,6 +134,7 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     logging.info(f"[{timestamp}] [ТОКЕН] Сайт index.php заберет данные по токену: {sub_id}")
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
     logging.info("-" * 80)
+
 
 
 
