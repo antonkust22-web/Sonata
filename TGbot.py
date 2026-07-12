@@ -50,10 +50,10 @@ API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPkalP7wKyMAAH_vTgOUzFJwmlWpL0gAAK-pAACEEihSmiGy2gxe_D9PAQ"
+VIDEO_MAIN = "https://telegra.ph/Vpn-07-12-2"
 
 text1 = (
-    "👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
+    "</b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
     " 🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
     "📖 Выберите действие:"
 )
