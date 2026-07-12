@@ -50,14 +50,12 @@ API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 # File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPgakEN5AT5DVSJOrHYylLARiBKaBEAAg2aAAJySQhKz4hRRxBHoK08BA"
+VIDEO_MAIN = "BAACAgIAAxkBAAPialNvwuv_Pz4ejDsD0JzYdbYrrSIAAnGkAAJJBaFKPtFAR1MztGY8BA"
 
 text1 = (
-    "👋 <b>Обходите блокировки легко!</b>\n"
-    " ✅ Невидим для DPI\n"
-    " ✅ Работает в строгих сетях\n"
-    " ✅ Подключение в один клик\n\n"
-    "Дальше здесь будет информация о подписке"
+    "👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
+    " 🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
+    "📖 Выберите действие:"
 )
 
 bot = Bot(token=API_TOKEN)
@@ -152,15 +150,15 @@ import aiohttp
 SERVERS = [
     {
         "id": "fi_1",
-        "panel_url": "https://78.17.1.43:2053",
-        "base_path": "/bqPVI4YlUguDhw0MvD", 
+        "panel_url": "http://78.17.11.14:2053",
+        "base_path": "/xD2SJTfdphAmQqisoB", 
         "panel_user": "Asad",
         "panel_password": "Lodka120259",
         "inbound_id": 1,
-        "my_ip": "78.17.1.43",
-        "pbk": "aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc", 
-        "sid": "3aa002",                           
-        "sni": "www.sony.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
+        "my_ip": "78.17.11.14",
+        "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
+        "sid": "a45ff3",                           
+        "sni": "www.amd.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
