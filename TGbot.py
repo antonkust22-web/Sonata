@@ -558,10 +558,12 @@ def back_kb():
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Обычный быстрый вызов без await — sqlite3 отработает мгновенно
+    # Добавление/обновление пользователя в БД
     add_or_update_user(message.from_user.id, message.from_user.username or "Unknown")
-    await message.answer_video(
-        video=VIDEO_MAIN,
+    
+    # Меняем answer_video на answer_animation
+    await message.answer_animation(
+        animation=VIDEO_MAIN,  # Сюда можно вставить как старый file_id, так и прямую URL-ссылку на гифку
         caption=text1,
         reply_markup=main_kb(),
         parse_mode="HTML"
