@@ -147,6 +147,7 @@ import urllib.parse
 import aiohttp
 
 # НАСТРОЕНО: Точные и чистые параметры без мусорных символов "://" в SNI
+
 SERVERS = [
     {
         "id": "fi_1",
@@ -157,8 +158,9 @@ SERVERS = [
         "inbound_id": 1,
         "my_ip": "78.17.11.14",
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
-        "sid": "a45ff3",                           
-        "sni": "www.amd.com",                                   # ИСПРАВЛЕНО: Чистый домен без ://
+        "sid": "d35e733e16c7a4d0", # Убедитесь, что SID полный
+        "sni": "://amd.com",
+        "fp": "firefox",                                     # ДОБАВЛЕНО: Рабочий фингерпринт
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -171,12 +173,14 @@ SERVERS = [
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
-        "sid": "bfb0e0d2c85acc",                             
-        "sni": "www.sony.com",                               # ИСПРАВЛЕНО: Чистый домен без ://
+        "sid": "bfb0e0d2c85acc", 
+        "sni": "://sony.com",
+        "fp": "chroome",                                     # ДОБАВЛЕНО: Рабочий фингерпринт
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
 ]
+
 
 async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
@@ -215,7 +219,7 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Добавление или обновление клиента
+                # 3. Добавление или更新 клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
@@ -261,11 +265,11 @@ async def get_vpn_config_clean(user_id, username=""):
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                 
-                # ИСПРАВЛЕНО: Полное соответствие эталонной строке параметров + правильный слэш перед #
+                # ИСПРАВЛЕНО: flow= сохранен, fp берется динамически из настроек каждого сервера через {srv['fp']}
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?flow=&type=tcp&headerType=none&security=reality&fp=chrome"
-                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/#{safe_remark}"
+                    f"?flow=&type=tcp&headerType=none&security=reality&fp={srv['fp']}"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
                     
                 vless_links.append(config_link)
@@ -275,6 +279,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -627,7 +632,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -635,17 +639,28 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
+    # Временное сообщение-заглушка на время генерации ключей
+    loading_text = "⏳ <b>Ваша ссылка на подписку формируется, пожалуйста, подождите...</b>"
+
     try:
-        # 1. Получаем чистые VLESS ссылки из панелей
+        # Изменяем текущую панель на текст ожидания (поддерживает как фото/видео, так и текст)
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
+    except Exception as e:
+        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
+
+    try:
+        # 1. Получаем чистые VLESS ссылки из панелей (это занимает время)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         # 2. Генерируем токен подписки sub_id
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
 
-        # ИСПРАВЛЕНО: Добавлен железный слэш "/" перед sub_id
+        # Добавлен железный слэш "/" перед sub_id
         sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
         auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
-
 
         fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Ошибка Финляндии"
         pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Ошибка Польши"
@@ -682,22 +697,29 @@ async def connect(callback: types.CallbackQuery):
             f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Add by URL»</b>."
         )
 
-        # Пересылаем Base64 данные на внешний сайт в фоновом режиме (тут внутри функции send_sub_to_website тоже исправлен слэш)
+        # Пересылаем Base64 данные на внешний сайт в фоновом режиме
         asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
 
         # Сохраняем локально в БД Amvera
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
+        # Удаляем сообщение с текстом "Ваша ссылка формируется..."
         try:
             await callback.message.delete()
         except Exception:
             pass
             
+        # Отправляем новое готовое сообщение с ключами и кнопкой импорта
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
         logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
-        await callback.message.answer("⚠️ Произошла внутренняя ошибка бота.")
+        # В случае ошибки убираем текст ожидания и пишем уведомление о сбое
+        try:
+            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
+        except Exception:
+            pass
+
 
 
 
@@ -728,33 +750,77 @@ async def info(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
     await callback.answer()
+    
+    # ИСПРАВЛЕНО: Добавлены новые кнопки для тарифов на 3 и 5 месяцев
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить 150 руб. / месяц", callback_data="pay_30_days")],
+        [InlineKeyboardButton(text="💳 1 месяц — 150 руб.", callback_data="pay_30_days")],
+        [InlineKeyboardButton(text="💳 3 месяца — 350 руб.", callback_data="pay_90_days")],
+        [InlineKeyboardButton(text="💳 5 месяцев — 650 руб.", callback_data="pay_150_days")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
+    
     try:
         await callback.message.edit_caption(
-            caption="Выбор тарифа:\n\nПодписка на 30 дней снимет ограничения по времени работы ключа.",
+            caption=(
+                "Выбор тарифа:\n\n"
+                "Оплатите подписку, чтобы снять ограничения по времени работы ваших VPN-ключей.\n\n"
+                "📖 Доступные варианты подписки:"
+            ),
             reply_markup=buy_kb,
             parse_mode="HTML"
         )
     except TelegramBadRequest:
         pass
 
+# 1 МЕСЯЦ (Остался без изменений)
 @dp.callback_query(F.data == "pay_30_days")
-async def send_invoice(callback: types.CallbackQuery, bot: Bot):
+async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    logging.info(f"Диспетчер: Отправка инвойса пользователю {callback.from_user.id}")
+    logging.info(f"Диспетчер: Отправка инвойса 30 дней пользователю {callback.from_user.id}")
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Подписка на VPN (30 дней)",
-        description="Продление доступа к высокоскоростному VPN Sonata на 1 месяц.",
+        description="Пrodление доступа к высокоскоростному VPN Sonata на 1 месяц.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)],
+        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)], # 150.00 RUB
         start_parameter="vpn-sub-30-days"
+    )
+
+# 3 МЕСЯЦА (ДОБАВЛЕНО)
+@dp.callback_query(F.data == "pay_90_days")
+async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
+    await callback.answer()
+    await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
+    logging.info(f"Диспетчер: Отправка инвойса 90 дней пользователю {callback.from_user.id}")
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Подписка на VPN (3 месяца)",
+        description="Продление доступа к высокоскоростному VPN Sonata на 3 месяца со скидкой.",
+        payload="vpn_90_days_subscription", # Изменен payload для отслеживания при оплате
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label="3 месяца подписки", amount=35000)], # 350.00 RUB в копейках
+        start_parameter="vpn-sub-90-days"
+    )
+
+# 5 МЕСЯЦЕВ (ДОБАВЛЕНО)
+@dp.callback_query(F.data == "pay_150_days")
+async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
+    await callback.answer()
+    await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
+    logging.info(f"Диспетчер: Отправка инвойса 150 дней пользователю {callback.from_user.id}")
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Подписка на VPN (5 месяцев)",
+        description="Выгодное продление доступа к высокоскоростному VPN Sonata на 5 месяцев.",
+        payload="vpn_150_days_subscription", # Изменен payload для отслеживания при оплате
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label="5 месяцев подписки", amount=65000)], # 650.00 RUB в копейках
+        start_parameter="vpn-sub-150-days"
     )
 
 # --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
@@ -869,6 +935,8 @@ async def admin_revoke_sub(message: types.Message):
 
 
 
+
+
 # --- Валидация платежа ---
 @dp.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery, bot: Bot):
@@ -881,40 +949,82 @@ async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery,
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: types.Message):
     user_id = message.from_user.id
+    username = message.from_user.username or ""
     payload = message.successful_payment.invoice_payload
 
-    if payload == "vpn_30_days_subscription":
-        # Вызываем вашу стандартную функцию продления на 30 дней для ЮKassa
-        success = await renew_vpn_subscription(user_id)
-        
-        # Получаем обновленные данные (теперь во второй переменной возвращается чистый веб-URL подписки)
-        _, sub_web_url = await get_vpn_config_manual(user_id, message.from_user.username or "")
+    # 1. Определение тарифа
+    days_to_add = 0
+    tariff_name = ""
 
-        # Формируем клавиатуру под новый формат ссылки
-        kb = InlineKeyboardMarkup(inline_keyboard=[])
-        if sub_web_url:
-            kb.inline_keyboard.append([
-                InlineKeyboardButton(text="🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)", url=sub_web_url)
-            ])
+    if payload == "vpn_30_days_subscription":
+        days_to_add = 30
+        tariff_name = "30 дней"
+    elif payload == "vpn_90_days_subscription":
+        days_to_add = 90
+        tariff_name = "3 месяца"
+    elif payload == "vpn_150_days_subscription":
+        days_to_add = 150
+        tariff_name = "5 месяцев"
+
+    if days_to_add == 0:
+        logging.error(f"Неизвестный payload платежа: {payload} от пользователя {user_id}")
+        return
+
+    # 2. Продление подписки в БД
+    success = True
+    try:
+        loops = days_to_add // 30
+        for _ in range(loops):
+            res = await renew_vpn_subscription(user_id)
+            if not res:
+                success = False
+    except Exception as e:
+        logging.error(f"Ошибка при вызове renew_vpn_subscription для {user_id}: {e}")
+        success = False
+
+    try:
+        # 3. Фоновая сборка данных подписки (без вывода ключей на экран)
+        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+        
+        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
+        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
+
+        combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
+
+        # Кнопка по вашему запросу
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Импорт в Happ", url=auto_connect_url)]
+        ])
 
         if success:
-            await message.answer(
-                f"✅ <b>Оплата прошла успешно!</b>\n"
-                f"Ваша подписка успешно продлена на 30 дней 🎉\n\n"
-                f"<b>📥 Как подключиться:</b>\n"
-                f"Нажмите на кнопку <b>«🌐 ОТКРЫТЬ ПОДПИСКУ (HAPP)»</b> ниже, чтобы автоматически импортировать настройки или открыть веб-страницу вашей подписки со статистикой.\n\n"
-                f"<i>Также вы в любой момент можете управлять вашим подключением через кнопку «Подключиться» в главном меню бота.</i>",
-                reply_markup=kb if sub_web_url else None, 
-                parse_mode="HTML"
+            text = (
+                f"🎉 <b>Спасибо, что выбираете наш сервис!</b>\n\n"
+                f"Оплата прошла успешно, ваша подписка продлена на <b>{tariff_name}</b>.\n\n"
+                f"🔗 <b>Ваша постоянная ссылка подписки:</b>\n"
+                f"<code>{sub_web_url}</code>\n\n"
+                f"👇 Нажмите кнопку ниже для быстрой настройки приложения."
             )
         else:
-            await message.answer(
-                f"⚠️ <b>Оплата прошла успешно, но возник сбой автоматической синхронизации!</b>\n"
-                f"Не переживайте, платеж зафиксирован. Администратор уже уведомлен и активирует вам доступ вручную в ближайшее время.\n\n"
-                f"Ваш ID для поддержки: <code>{user_id}</code>",
-                reply_markup=kb if sub_web_url else None, 
-                parse_mode="HTML"
+            text = (
+                f"⚠️ <b>Оплата прошла успешно, но возник сбой синхронизации!</b>\n"
+                f"Не переживайте, ваш платеж зафиксирован. Подписка на <b>{tariff_name}</b> будет активирована администратором вручную в ближайшее время.\n\n"
+                f"🔗 <b>Ваша ссылка для настройки:</b> <code>{sub_web_url}</code>\n"
+                f"🆔 Ваш ID для поддержки: <code>{user_id}</code>"
             )
+
+        # 4. Пересылка данных на сайт и запись в БД Amvera
+        asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+
+        await message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка в обработчике успешного платежа: {e}", exc_info=True)
+        await message.answer("⚠️ Оплата прошла успешно, но при генерации ссылки возникла ошибка. Пожалуйста, обратитесь в поддержку.")
+
 
 
 
