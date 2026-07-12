@@ -562,8 +562,8 @@ async def cmd_start(message: types.Message):
     add_or_update_user(message.from_user.id, message.from_user.username or "Unknown")
     
     # Меняем answer_video на answer_animation
-    await message.answer_animation(
-        animation=VIDEO_MAIN,  # Сюда можно вставить как старый file_id, так и прямую URL-ссылку на гифку
+    await message.answer_video(
+        video=VIDEO_MAIN,  # Сюда можно вставить как старый file_id, так и прямую URL-ссылку на гифку
         caption=text1,
         reply_markup=main_kb(),
         parse_mode="HTML"
