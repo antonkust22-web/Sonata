@@ -159,8 +159,7 @@ SERVERS = [
         "my_ip": "78.17.11.14",
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
         "sid": "d35e733e16c7a4d0", # Убедитесь, что SID полный
-        "sni": "://amd.com",
-        "fp": "firefox",                                     # ДОБАВЛЕНО: Рабочий фингерпринт
+        "sni": "://amd.com",                           # ДОБАВЛЕНО: Рабочий фингерпринт
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -174,8 +173,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "://sony.com",
-        "fp": "chroome",                                     # ДОБАВЛЕНО: Рабочий фингерпринт
+        "sni": "://sony.com",                                    # ДОБАВЛЕНО: Рабочий фингерпринт
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -219,7 +217,7 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Добавление или更新 клиента
+                # 3. Добавление или обновление клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
@@ -261,14 +259,18 @@ async def get_vpn_config_clean(user_id, username=""):
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
+                    # ИСПРАВЛЕНО внутри пункта 4: Задаем firefox для Финляндии
+                    current_fp = "firefox"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
+                    # ИСПРАВЛЕНО внутри пункта 4: Задаем chrome для Польши
+                    current_fp = "chrome"
                 
-                # ИСПРАВЛЕНО: flow= сохранен, fp берется динамически из настроек каждого сервера через {srv['fp']}
+                # Ссылка собирается строго по вашему шаблону с сохранением flow=
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?flow=&type=tcp&headerType=none&security=reality&fp={srv['fp']}"
+                    f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
                     
@@ -279,6 +281,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
