@@ -259,22 +259,23 @@ async def get_vpn_config_clean(user_id, username=""):
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
-                    # ИСПРАВЛЕНО: для Финляндии ставим firefox
                     current_fp = "firefox"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
-                    # ИСПРАВЛЕНО: для остальных серверов ставим chrome
                     current_fp = "chrome"
                 
-                # Полное соответствие твоей строке параметров без изменения структуры
+                # Ссылка для импорта кодируется через safe_remark
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
-                    
+                
+                # ХИТРОСТЬ: Чтобы в тексте бота выводилось красиво, добавляем к ссылке скрытую метку оригинального имени
+                # Бот сможет прочитать чистый текст srv["country_name"] в твоем хендлере connect
                 vless_links.append(config_link)
+
 
             except Exception as e:
                 logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
