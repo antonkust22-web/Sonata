@@ -255,31 +255,33 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 my_port = res_json["obj"]["port"]
                 
-                                # 4. Сборка ссылки строго по вашему рабочему эталону
+                # 4. Сборка ссылки строго по вашему рабочему эталону
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
+                    # ИСПРАВЛЕНО: для Финляндии ставим firefox
                     current_fp = "firefox"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
+                    # ИСПРАВЛЕНО: для остальных серверов ставим chrome
                     current_fp = "chrome"
                 
-                # ИСПРАВЛЕНО: Убран лишний пробел перед {safe_remark}
+                # Полное соответствие твоей строке параметров без изменения структуры
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
-                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/#{safe_remark}"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
                     
                 vless_links.append(config_link)
-
 
             except Exception as e:
                 logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
