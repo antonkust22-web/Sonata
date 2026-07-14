@@ -962,6 +962,15 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+import base64
+import hashlib
+import asyncio
+import logging
+import time
+from datetime import datetime
+from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -973,7 +982,7 @@ async def connect(callback: types.CallbackQuery):
     db_data = get_user_from_db(user_id)
     current_time = time.time()
     
-    # ИСПРАВЛЕНО: Извлекаем именно ячейку времени по индексу [3]
+    # ТЕХНИЧЕСКОЕ ИСПРАВЛЕНИЕ: Извлекаем именно ячейку времени по индексу [3]
     expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
     
     # Если пользователя нет в БД или его подписка истекла
@@ -1010,8 +1019,11 @@ async def connect(callback: types.CallbackQuery):
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        
+        # ТЕХНИЧЕСКОЕ ИСПРАВЛЕНИЕ: Железобетонная склейка слэша для домена
         auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
+        # Склеиваем ссылки строго через перенос строки (\n) для базы данных
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
@@ -1056,33 +1068,51 @@ async def connect(callback: types.CallbackQuery):
 
 
 
+
+from aiogram.filters import Command
+
 @dp.callback_query(F.data == "back")
 async def back_to_main_menu(callback: types.CallbackQuery):
     await callback.answer()
     
     text = (
-        "👋 <b>Добро пожаловать в Sonata VPN!</b>\n\n"
-        "Высокоскоростной и безопасный VPN на базе протокола VLESS Reality.\n"
-        "Управляйте своим подключением с помощью меню ниже:"
+        "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
+        "🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
+        "📖 Выберите действие:"
     )
     
+    # 1. Сначала удаляем текущее сообщение (кабинет или коннектор), чтобы очистить чат
     try:
-        # Изменяем текст/описание на главное меню и возвращаем основную клавиатуру main_kb()
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=text, reply_markup=main_kb(), parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=text, reply_markup=main_kb(), parse_mode="HTML")
-    except TelegramBadRequest:
-        pass
+        await callback.message.delete()
+    except Exception:
+        pass  # Если сообщение старое и удалить нельзя, просто идем дальше
+        
+    # 2. Отправляем главное меню заново точно так же, как в команде /start
+    try:
+        await callback.message.answer_video(
+            video=VIDEO_MAIN,  # Используется ваша переменная с file_id или URL видео
+            caption=text,
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка отправки видео при возврате в меню: {e}")
+        # Запасной вариант: если видео упадет (как из-за кривого file_id), отправляем хотя бы текст с кнопками
+        await callback.message.answer(
+            text=text,
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+
 
 
 @dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
-        " 🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
-        "📖 Выберите действие:"
+        "поддержка: @Sonata_VPN_Admin\n"
+        "канал: https://t.me/Sonata_Information\n"
+        "информация будет обновляться"
     )
     try:
         await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
