@@ -488,13 +488,14 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
     """
     # ---- 1. Расчет времени ----
     user_data = get_user_from_db(user_id)
-    # user_data[3] — это expiry_time в секундах из вашей БД users
-    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3) else 0
+    
+    # ИСПРАВЛЕНО: берем именно индекс [3] (expiry_time), если строка в БД найдена
+    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
     
     current_time_seconds = int(time.time())
     seconds_to_add = days_to_add * 24 * 60 * 60
     
-    # Если подписка истекла или безлимитная (равна 0/меньше текущего времени) -> считаем от сейчас
+    # Если подписка истекла или равна 0 -> считаем от сейчас
     if current_expiry_seconds <= current_time_seconds:
         new_expiry_seconds = current_time_seconds + seconds_to_add
     else:
@@ -541,7 +542,6 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
                     async with session.get(get_url, headers=headers, timeout=10) as r_retry:
                         res_json = await r_retry.json()
                     settings = json.loads(res_json["obj"]["settings"])
-                    # ИСПРАВЛЕНО: Закрывающая скобка генератора поставлена правильно в конце условия if
                     current_client = next((c for c in settings.get("clients", []) if c.get("tgId") == user_id), None)
 
                 if not current_client:
@@ -550,7 +550,7 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
                 client_uuid = current_client.get("id")
                 sub_id = current_client.get("subId", secrets.token_hex(8))
 
-                # Отправляем новый expiryTime (в мс) на panel
+                # Отправляем новый expiryTime (в мс) на панель
                 update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                 client_data = {
                     "id": str(srv['inbound_id']),
@@ -560,7 +560,7 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
                         "limitIp": current_client.get("limitIp", 2),
                         "totalGB": current_client.get("totalGB", 0),
                         "expiryTime": new_expiry_ms, 
-                        "enable": True, # Принудительно включаем, если был забанен по истечению срока
+                        "enable": True,
                         "tgId": user_id,
                         "subId": sub_id  
                     }]})
@@ -570,6 +570,22 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
 
             except Exception as e:
                 logging.error(f"Ошибка применения промокода на сервере {srv['id']}: {e}")
+
+    # ---- 3. Генерация обновленного Base64 и синхронизация с сайтом ----
+    try:
+        vless_links, _ = await get_vpn_config_clean(user_id, username)
+        combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+        
+        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        
+        await send_sub_to_website(sub_id, base64_payload, new_expiry_seconds)
+        add_or_update_user(user_id, username, combined_configs, sub_id, new_expiry_seconds)
+        
+    except Exception as e:
+        logging.error(f"Ошибка синхронизации сайта при промокоде: {e}")
+        add_or_update_user(user_id, username, None, None, new_expiry_seconds)
+
 
 
 
@@ -891,29 +907,22 @@ async def enter_promo_callback(callback: types.CallbackQuery):
 
 
 
-from aiogram.exceptions import TelegramBadRequest
-
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Синхронизируем данные с панелью X-UI
     await get_vpn_config_clean(user_id, callback.from_user.username or "")
-
-    # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
 
-    # Создаем клавиатуру для ЛК
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    if db_data and len(db_data) > 3:  # Если запись существует в базе
-        expiry_timestamp = db_data[3] # Получаем Unix-время окончания из БД
+    if db_data and len(db_data) > 3:  
+        # ИСПРАВЛЕНО: Вытаскиваем именно 4-й элемент из кортежа [3]
+        expiry_timestamp = db_data[3] if db_data[3] is not None else 0
         current_time = time.time()
 
-        # ПРОВЕРКА: Если подписка активна (время окончания больше текущего)
         if expiry_timestamp > current_time:
-            # Рассчитываем оставшиеся дни
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
@@ -921,13 +930,11 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
+                f"✨ Ваша подписка active! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
-            # В активном кабинете оставляем кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
         else:
-            # ЕСЛИ ПОДПИСКА НЕ ОПЛАЧЕНА ИЛИ ИСТЕКЛА
             status_text = "🔴 Не активна (требуется оплата)"
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
@@ -935,7 +942,6 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>Статус подписки:</b> {status_text}\n\n"
                 f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
             )
-            # Добавляем кнопки покупки, промокода и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
@@ -954,6 +960,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -965,8 +972,11 @@ async def connect(callback: types.CallbackQuery):
     db_data = get_user_from_db(user_id)
     current_time = time.time()
     
-    # Если пользователя нет в БД или его подписка истекла/равна 0
-    if not db_data or len(db_data) <= 3 or db_data[3] <= current_time:
+    # ИСПРАВЛЕНО: Извлекаем именно ячейку времени expiry_time из кортежа БД
+    expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
+    
+    # Если пользователя нет в БД или его подписка истекла
+    if expiry_in_db <= current_time:
         kb_no_access = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
             [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
@@ -996,18 +1006,15 @@ async def connect(callback: types.CallbackQuery):
         logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
 
     try:
-        # Получаем чистые VLESS ссылки из панелей 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # Генерируем токен подписки sub_id
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
 
-        # Склеиваем и кодируем в Base64 для передачи сайту
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(db_data[3])
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
         expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1022,19 +1029,14 @@ async def connect(callback: types.CallbackQuery):
             f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
         )
 
-        # Пересылаем Base64 данные на внешний сайт в фоновом режиме
         asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
-
-        # Сохраняем локально в БД Amvera
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
-        # Удаляем сообщение с текстом ожидания
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем чистое и красивое финальное сообщение
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
@@ -1043,6 +1045,7 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
         except Exception:
             pass
+
 
 
 
