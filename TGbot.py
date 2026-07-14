@@ -75,9 +75,10 @@ def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    cursor.execute('PRAGMA journal_mode=WAL;')
-    cursor.execute('PRAGMA synchronous=NORMAL;')
+    cursor.pragma('journal_mode=WAL;')
+    cursor.pragma('synchronous=NORMAL;')
 
+    # Ваша старая таблица пользователей (остается нетронутой!)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -87,9 +88,23 @@ def init_db():
             expiry_time INTEGER DEFAULT 0
         )
     ''')
+
+    # БЕЗОПАСНО ДОБАВЛЯЕМ: Таблица для промокодов
+    # Если её нет — она создастся. Если она уже есть — этот код ничего не сломает
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS promocodes (
+            code TEXT PRIMARY KEY,
+            days INTEGER NOT NULL,
+            is_used INTEGER DEFAULT 0,
+            used_by_id INTEGER DEFAULT NULL,
+            used_at TEXT DEFAULT NULL
+        )
+    ''')
+    
     conn.commit()
     conn.close()
     log_system_routing()
+
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
@@ -1463,24 +1478,7 @@ async def main():
 
 
 
-# ПРИНУДИТЕЛЬНОЕ СОЗДАНИЕ ТАБЛИЦЫ ПРОМОКОДОВ ПРИ СТАРТЕ
-try:
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS promocodes (
-            code TEXT PRIMARY KEY,
-            days INTEGER NOT NULL,
-            is_used INTEGER DEFAULT 0,
-            used_by_id INTEGER DEFAULT NULL,
-            used_at TEXT DEFAULT NULL
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logging.info(" Проверка/создание таблицы promocodes успешно завершено.")
-except Exception as e:
-    logging.error(f" Не удалось создать таблицу промокодов: {e}")
+
 
 
     
