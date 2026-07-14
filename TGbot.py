@@ -371,7 +371,8 @@ async def send_sub_to_website(token, b64_content, expiry):
 #-----------команды------------
 
 
-@router.message(F.text.startswith("/gen"))
+
+@dp.message(F.text.startswith("/gen"))
 async def handle_generate_promo(message: Message):
     if message.from_user.id != ADMIN_ID:
         return # Игнорируем не-админов
@@ -385,7 +386,7 @@ async def handle_generate_promo(message: Message):
         days = int(parts[1])
         custom_code = parts[2].strip().upper() if len(parts) > 2 else None
         
-        # Генерируем и пишем в БД промокодов (функция из прошлого ответа)
+        # Генерируем и пишем в БД промокодов
         result_code = generate_new_promocode(days, custom_code)
         
         if result_code == "EXISTS":
@@ -402,13 +403,11 @@ async def handle_generate_promo(message: Message):
         await message.answer("❌ Ошибка: количество дней должно быть целым числом.")
 
 
-from aiogram import Router, F, types
+
+from aiogram import types
 from aiogram.types import Message
 
-# Если у вас используется dp = Dispatcher(), замените router на dp
-dp = Router()
-
-@router.message(F.text.startswith("/promo") | F.text.startswith("/activate"))
+@dp.message(F.text.startswith("/promo") | F.text.startswith("/activate"))
 async def handle_promo_activation(message: Message):
     parts = message.text.split()
     if len(parts) < 2:
@@ -423,7 +422,7 @@ async def handle_promo_activation(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     
-    # 1. Проверяем и гасим промокод в локальной SQLite (функция из прошлого ответа)
+    # 1. Проверяем и гасим промокод в локальной SQLite
     db_result = activate_promo_in_db(promo_code, user_id)
     
     if db_result == "NOT_FOUND":
@@ -444,7 +443,7 @@ async def handle_promo_activation(message: Message):
         # Получаем обновленную дату для красивого вывода пользователю
         user_data = get_user_from_db(user_id)
         updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
-        expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y %H:%M')
+        expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
         
         await status_msg.edit_text(
             f"✅ <b>Промокод успешно активирован!</b>\n\n"
