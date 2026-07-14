@@ -1012,7 +1012,7 @@ async def connect(callback: types.CallbackQuery):
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        auto_connect_url = f"https://sonatavpn.ru" + "/" + {sub_id}?auto=1"
+        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
