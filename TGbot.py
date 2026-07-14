@@ -731,75 +731,102 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int):
 
 async def revoke_vpn_subscription(user_id: int) -> bool:
     """
-    Аннулирует подписку в 3X-UI, переводя её в неактивное состояние (поиск по tgId).
+    Аннулирует подписку на ВСЕХ серверах из списка SERVERS в 3X-UI,
+    отключая клиентов и сбрасывая время окончания в локальной БД.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
+    
+    any_server_updated = False
 
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
+            for srv in SERVERS:
+                try:
+                    # Динамически формируем email под конкретный сервер
+                    email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                    
+                    # 1. Авторизация на конкретной панели
+                    login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                    async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                        await resp.text()
 
-            headers = {"Accept": "application/json"}
+                    headers = {"Accept": "application/json"}
 
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
+                    # 2. Получаем текущие данные инбаунда
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
 
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для отзыва подписки: {res_json}")
-                return False
+                    if not res_json.get("success"):
+                        logging.error(f"Не удалось получить данные инбаунда на сервере {srv['id']}: {res_json}")
+                        continue
 
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
+                    settings = json.loads(res_json["obj"]["settings"])
+                    clients = settings.get("clients", [])
 
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
+                    # Поиск строго по уникальному tgId или по старому email
+                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                    if not current_client:
+                        old_email = f"user_{user_id}"
+                        current_client = next((c for c in clients if c.get("email") == old_email), None)
 
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-            past_expiry = 1
+                    if not current_client:
+                        logging.warning(f"Клиент {user_id} не найден на сервере {srv['id']}. Пропускаем.")
+                        continue
 
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": past_expiry,
-                        "enable": False,  # Выключаем активность
-                        "tgId": user_id,
-                        "subId": client.get("subId", "")
-                    }]
-                })
-            }
+                    client_uuid = current_client['id']
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    
+                    # Переводим в неактивное состояние
+                    past_expiry = 1 
 
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
+                    client_data = {
+                        "id": str(srv['inbound_id']),
+                        "settings": json.dumps({
+                            "clients": [{
+                                "id": client_uuid,
+                                "email": email_for_panel,
+                                "limitIp": current_client.get("limitIp", 2),
+                                "totalGB": current_client.get("totalGB", 0),
+                                "expiryTime": past_expiry,
+                                "enable": False,  # Полностью деактивируем
+                                "tgId": user_id,
+                                "subId": current_client.get("subId", "")
+                            }]
+                        })
+                    }
 
-            success = update_resp.get("success", False)
-            if success:
-                add_or_update_user(user_id, "", expiry_time=0)
-                logging.info(f"Подписка для пользователя {user_id} успешно отозвана.")
-                
-            return success
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
+                        update_resp = await resp.json()
+
+                    if update_resp.get("success", False):
+                        logging.info(f"Клиент {user_id} успешно отключен на сервере {srv['id']}.")
+                        any_server_updated = True
+                    else:
+                        logging.error(f"Панель {srv['id']} вернула ошибку при обновлении: {update_resp}")
+
+                except Exception as srv_err:
+                    logging.error(f"Ошибка при отзыве подписки на сервере {srv['id']}: {srv_err}")
+                    continue
+
+        # Если успешно отключили хотя бы на одном сервере, сбрасываем время подписки в локальной БД Amvera
+        if any_server_updated:
+            # Получаем текущее имя из БД, чтобы не затереть его пустым значением
+            user_data = get_user_from_db(user_id)
+            current_username = user_data[0] if user_data else ""
+            
+            # Обнуляем подписку локально
+            add_or_update_user(user_id, current_username, expiry_time=0)
+            logging.info(f"Локальная подписка для пользователя {user_id} успешно обнулена.")
+            return True
+            
+        return False
 
     except Exception as e:
-        logging.error(f"Ошибка при отзыве подписки: {e}")
+        logging.error(f"Критическая ошибка в revoke_vpn_subscription: {e}")
         return False
+
 
 
 
