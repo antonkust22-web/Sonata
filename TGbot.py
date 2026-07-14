@@ -78,11 +78,10 @@ def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    # ИСПРАВЛЕНО: Возвращен рабочий синтаксис через execute
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # Ваша существующая таблица пользователей (не затрагивается)
+    # 1. Ваша существующая таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -93,20 +92,39 @@ def init_db():
         )
     ''')
 
-    # Создание таблицы промокодов рядом
+    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
             days INTEGER NOT NULL,
-            is_used INTEGER DEFAULT 0,
-            used_by_id INTEGER DEFAULT NULL,
-            used_at TEXT DEFAULT NULL
+            max_uses INTEGER DEFAULT 1,     -- 1 = одноразовый, 0 = без ограничений
+            current_uses INTEGER DEFAULT 0  -- Сколько раз уже активировали всего
+        )
+    ''')
+    
+    # ТЕХНИЧЕСКИЙ ХАК: Если таблица promocodes уже была на Amvera, 
+    # эти запросы добавят новые колонки max_uses и current_uses, не сломав старые промокоды
+    try:
+        cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
+        cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
+    except sqlite3.OperationalError:
+        pass # Если колонки уже есть, SQLite выдаст ошибку, мы её просто игнорируем
+
+    # 3. Новая таблица для логирования активаций многоразовых промокодов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS promocode_activations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            activated_at TEXT DEFAULT NULL,
+            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
         )
     ''')
     
     conn.commit()
     conn.close()
     log_system_routing()
+
 
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None):
@@ -154,12 +172,11 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
 
 
 
-def generate_new_promocode(days: int, custom_code: str = None) -> str:
-    """Генерирует случайный промокод или добавляет кастомный в БД"""
+def generate_new_promocode(days: int, custom_code: str = None, max_uses: int = 1) -> str:
+    """Генерирует промокод. max_uses=1 (для одного), max_uses=0 (многоразовый)"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # Если админ не ввел свой код, создаем случайный (например: SONATA-A1B2C3D4)
     if not custom_code:
         random_part = secrets.token_hex(4).upper()
         code = f"SONATA-{random_part}"
@@ -168,47 +185,69 @@ def generate_new_promocode(days: int, custom_code: str = None) -> str:
         
     try:
         cursor.execute(
-            'INSERT INTO promocodes (code, days, is_used) VALUES (?, ?, 0)',
-            (code, days)
+            'INSERT INTO promocodes (code, days, max_uses, current_uses) VALUES (?, ?, ?, 0)',
+            (code, days, max_uses)
         )
         conn.commit()
         return code
     except sqlite3.IntegrityError:
-        return "EXISTS" # Такой промокод уже есть
+        return "EXISTS"
     finally:
         conn.close()
 
+
+
 def activate_promo_in_db(code: str, user_id: int) -> str | int:
     """
-    Проверяет промокод в БД. 
-    Если валиден — помечает использованным и возвращает количество дней (int).
-    Иначе возвращает строку-ошибку.
+    Проверяет промокод с учетом лимитов использования.
+    Защищает от повторного ввода одним и тем же пользователем.
     """
     code = code.strip().upper()
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT days, is_used FROM promocodes WHERE code = ?', (code,))
+    # 1. Ищем сам промокод
+    cursor.execute('SELECT days, max_uses, current_uses FROM promocodes WHERE code = ?', (code,))
     row = cursor.fetchone()
     
     if not row:
         conn.close()
         return "NOT_FOUND"
         
-    days, is_used = row
-    if is_used == 1:
+    days, max_uses, current_uses = row
+    
+    # 2. Проверяем, не активировал ли ЭТОТ пользователь ЭТОТ промокод ранее
+    cursor.execute('SELECT 1 FROM promocode_activations WHERE code = ? AND user_id = ?', (code, user_id))
+    already_activated_by_me = cursor.fetchone()
+    if already_activated_by_me:
         conn.close()
-        return "ALREADY_USED"
-        
-    # Маркируем промокод как использованный
+        return "YOU_ALREADY_USED" # Личная ошибка: вы этот код уже вводили
+
+    # 3. Проверяем глобальный лимит использований (только если max_uses > 0, то есть код не бесконечный)
+    if max_uses > 0 and current_uses >= max_uses:
+        conn.close()
+        return "ALREADY_USED" # Код исчерпал лимиты полностью
+
+    # 4. Если всё отлично, фиксируем активацию
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute(
-        'UPDATE promocodes SET is_used = 1, used_by_id = ?, used_at = ? WHERE code = ?',
-        (user_id, now_str, code)
-    )
-    conn.commit()
-    conn.close()
-    return days
+    try:
+        # Логируем, что этот юзер ввел этот код
+        cursor.execute(
+            'INSERT INTO promocode_activations (code, user_id, activated_at) VALUES (?, ?, ?)',
+            (code, user_id, now_str)
+        )
+        # Увеличиваем счетчик использований промокода на +1
+        cursor.execute(
+            'UPDATE promocodes SET current_uses = current_uses + 1 WHERE code = ?',
+            (code,)
+        )
+        conn.commit()
+        return days
+    except sqlite3.IntegrityError:
+        conn.close()
+        return "YOU_ALREADY_USED"
+    finally:
+        conn.close()
 
 
 def delete_promocode_from_db(code: str) -> bool:
@@ -405,44 +444,63 @@ async def send_sub_to_website(token, b64_content, expiry):
 #-----------команды------------
 
 
+ 
 
 @dp.message(F.text.startswith("/gen"))
-async def handle_generate_promo(message: Message):
+async def handle_generate_promo(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        return # Игнорируем не-админов
+        return 
 
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование:\n<code>/gen [дни]</code> или <code>/gen [дни] [свой_код]</code>", parse_mode="HTML")
+        await message.answer(
+            "Использование:\n"
+            "• Одноразовый: <code>/gen [дни] [код]</code>\n"
+            "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
+            "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>", 
+            parse_mode="HTML"
+        )
         return
         
     try:
         days = int(parts[1])
         custom_code = parts[2].strip().upper() if len(parts) > 2 else None
         
-        # Генерируем и пишем в БД промокодов
-        result_code = generate_new_promocode(days, custom_code)
+        # Определяем лимит использований (если указан 3-й параметр, берем его, иначе ставим 1)
+        max_uses = int(parts[3]) if len(parts) > 3 else 1
+        
+        # Вызываем обновленную генерацию
+        result_code = generate_new_promocode(days, custom_code, max_uses)
         
         if result_code == "EXISTS":
             await message.answer("❌ Такой кастомный промокод уже существует в базе данных!")
+            return
+            
+        # Формируем красивый статус для админа
+        if max_uses == 0:
+            uses_text = "♾ Без ограничений (каждый юзер по 1 разу)"
+        elif max_uses == 1:
+            uses_text = "👤 Одноразовый (для 1 человека)"
         else:
-            await message.answer(
-                f"🎟 <b>Промокод успешно создан!</b>\n\n"
-                f"🔑 Код: <code>{result_code}</code>\n"
-                f"⏳ Срок: <b>{days} дней</b>\n\n"
-                f"<i>Вы можете передать его пользователю для активации.</i>", 
-                parse_mode="HTML"
-            )
+            uses_text = f"👥 Ограниченный (для {max_uses} разных человек)"
+
+        await message.answer(
+            f"🎟 <b>Промокод успешно создан!</b>\n\n"
+            f"🔑 Код: <code>{result_code}</code>\n"
+            f"⏳ Срок: <b>{days} дней</b>\n"
+            f"📊 Лимит активаций: <b>{uses_text}</b>\n\n"
+            f"<i>Вы можете передать его пользователям.</i>", 
+            parse_mode="HTML"
+        )
     except ValueError:
-        await message.answer("❌ Ошибка: количество дней должно быть целым числом.")
+        await message.answer("❌ Ошибка: количество дней и лимит активаций должны быть целыми числами.")
 
 
 
-from aiogram import types
-from aiogram.types import Message
+
 
 @dp.message(F.text.startswith("/promo") | F.text.startswith("/activate"))
-async def handle_promo_activation(message: Message):
+async def handle_promo_activation(message: types.Message): # Используем types.Message
     parts = message.text.split()
     if len(parts) < 2:
         await message.answer(
@@ -463,12 +521,15 @@ async def handle_promo_activation(message: Message):
         await message.answer("❌ <b>Такого промокода не существует.</b> Проверьте правильность букв.", parse_mode="HTML")
         return
     elif db_result == "ALREADY_USED":
-        await message.answer("❌ <b>Этот промокод уже был активирован ранее другим пользователем.</b>", parse_mode="HTML")
+        await message.answer("❌ <b>Этот промокод больше не активен.</b> Лимит его активаций полностью исчерпан.", parse_mode="HTML")
+        return
+    elif db_result == "YOU_ALREADY_USED":
+        await message.answer("❌ <b>Вы уже активировали этот промокод ранее!</b> Повторная активация невозможна.", parse_mode="HTML")
         return
         
     # Если проверка успешна, db_result вернет количество дней (int)
     days_to_add = db_result
-    status_msg = await message.answer(f"🔄 <b>Промокод принят!</b> Начисляю {days_to_add} дней подписки и обновляю сервера...")
+    status_msg = await message.answer(f"🔄 <b>Промокод принят!</b>\n Начисляю {days_to_add} дней подписки и обновляю сервера...")
     
     try:
         # 2. Запуск комплексного обновления (Панели + Локальная БД + Сайт)
@@ -493,6 +554,7 @@ async def handle_promo_activation(message: Message):
             "Пожалуйста, напишите администратору, вам начислят дни вручную.", 
             parse_mode="HTML"
         )
+
 
 
 
