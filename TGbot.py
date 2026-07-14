@@ -464,13 +464,6 @@ async def handle_promo_activation(message: Message):
 
 
 
-import time
-import json
-import secrets
-import logging
-import aiohttp
-from datetime import datetime
-
 async def apply_subscription_extension(user_id: int, username: str, days_to_add: int):
     """
     Полностью продлевает подписку пользователя:
@@ -533,7 +526,8 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
                     async with session.get(get_url, headers=headers, timeout=10) as r_retry:
                         res_json = await r_retry.json()
                     settings = json.loads(res_json["obj"]["settings"])
-                    current_client = next((c for c in settings.get("clients", [])) if c.get("tgId") == user_id, None)
+                    # ИСПРАВЛЕНО: Закрывающая скобка генератора поставлена правильно в конце условия if
+                    current_client = next((c for c in settings.get("clients", []) if c.get("tgId") == user_id), None)
 
                 if not current_client:
                     continue
@@ -541,7 +535,7 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
                 client_uuid = current_client.get("id")
                 sub_id = current_client.get("subId", secrets.token_hex(8))
 
-                # Отправляем новый expiryTime (в мс) на панель
+                # Отправляем новый expiryTime (в мс) на panel
                 update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                 client_data = {
                     "id": str(srv['inbound_id']),
@@ -562,26 +556,6 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
             except Exception as e:
                 logging.error(f"Ошибка применения промокода на сервере {srv['id']}: {e}")
 
-    # ---- 3. Генерация обновленного Base64 и синхронизация с сайтом ----
-    try:
-        # Вызываем ваш метод получения конфигов (он вернет ссылки)
-        vless_links, _ = await get_vpn_config_clean(user_id, username)
-        combined_configs = "\n".join(vless_links) if vless_links else ""
-        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
-        
-        # Токен sub_id по вашему алгоритму из хендлера connect
-        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        
-        # Синхронизируем с вашим сайтом (как в хендлере connect)
-        await send_sub_to_website(sub_id, base64_payload, new_expiry_seconds)
-        
-        # Сохраняем локально в БД Amvera (ваша функция)
-        add_or_update_user(user_id, username, combined_configs, sub_id, new_expiry_seconds)
-        
-    except Exception as e:
-        logging.error(f"Ошибка синхронизации сайта/БД при активации промокода: {e}")
-        # Локально в БД всё равно пишем апдейт времени, даже если сайт прилег
-        add_or_update_user(user_id, username, None, None, new_expiry_seconds)
 
 
 
