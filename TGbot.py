@@ -15,7 +15,6 @@ import re
 import sqlite3  
 import datetime
 
-
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
@@ -23,6 +22,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from datetime import datetime
+from aiogram import types
 
 
 # --- ПРАВА АДМИНИСТРАТОРА ---
@@ -61,6 +61,9 @@ text1 = (
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+
+
+#-----------Работа с базой данных----------------
 
 
 def log_system_routing():
@@ -149,8 +152,7 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
     logging.info("-" * 80)
 
-import secrets
-from datetime import datetime
+
 
 def generate_new_promocode(days: int, custom_code: str = None) -> str:
     """Генерирует случайный промокод или добавляет кастомный в БД"""
@@ -209,18 +211,34 @@ def activate_promo_in_db(code: str, user_id: int) -> str | int:
     return days
 
 
+def delete_promocode_from_db(code: str) -> bool:
+    """Полностью удаляет промокод из базы данных. Возвращает True, если код существовал и удален."""
+    code = code.strip().upper()
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Сначала проверяем, есть ли такой код
+    cursor.execute('SELECT 1 FROM promocodes WHERE code = ?', (code,))
+    exists = cursor.fetchone()
+    
+    if not exists:
+        conn.close()
+        return False
+        
+    # Удаляем промокод
+    cursor.execute('DELETE FROM promocodes WHERE code = ?', (code,))
+    conn.commit()
+    conn.close()
+    return True
 
 
 
-import hashlib
-import json
-import logging
-import uuid
-import secrets
-import urllib.parse
-import aiohttp
 
-# НАСТРОЕНО: Точные и чистые параметры без мусорных символов "://" в SNI
+
+
+
+
+
 
 SERVERS = [
     {
@@ -233,7 +251,7 @@ SERVERS = [
         "my_ip": "78.17.11.14",
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
         "sid": "d35e733e16c7a4d0", # Убедитесь, что SID полный
-        "sni": "www.amd.com",                           # ДОБАВЛЕНО: Рабочий фингерпринт
+        "sni": "www.amd.com",                           
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -247,7 +265,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "www.sony.com",                                    # ДОБАВЛЕНО: Рабочий фингерпринт
+        "sni": "www.sony.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     }
@@ -478,6 +496,41 @@ async def handle_promo_activation(message: Message):
 
 
 
+@dp.message(F.text.startswith("/delpromo"))
+async def handle_delete_promo(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return # Игнорируем обычных пользователей
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "⚠️ <b>Пожалуйста, укажите промокод для удаления!</b>\n\n"
+            "Пример использования:\n<code>/delpromo SONATA-A1B2C3D4</code>", 
+            parse_mode="HTML"
+        )
+        return
+        
+    promo_code = parts[1].strip().upper()
+    
+    # Вызываем функцию удаления из БД
+    is_deleted = delete_promocode_from_db(promo_code)
+    
+    if is_deleted:
+        await message.answer(
+            f"🗑 <b>Промокод успешно удален!</b>\n\n"
+            f"🔑 Код: <code>{promo_code}</code>\n"
+            f"❌ Больше никто не сможет его активировать.", 
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"❌ <b>Ошибка:</b> Промокод <code>{promo_code}</code> не найден в базе данных.", 
+            parse_mode="HTML"
+        )
+
+
+
+
 
 async def apply_subscription_extension(user_id: int, username: str, days_to_add: int):
     """
@@ -593,155 +646,151 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
 
 async def renew_vpn_subscription(user_id: int) -> bool:
     """
-    Стандартная функция продления на 30 дней для ЮKassa (поиск по tgId).
+    Стандартная функция продления подписки на 30 дней для платежной системы ЮKassa.
+    Итерируется по всем серверам из SERVERS, рассчитывает время, 
+    активирует клиентов и обновляет локальную БД Amvera вместе с сайтом.
     """
-    country_flag = "🇫🇮"
-    country_name = "Финляндия"
-    # Добавлено нижнее подчеркивание между флагом и страной для единого стиля
-    email = f"{country_flag}_{country_name}_#{user_id}".replace(" ", "_")
-
-    jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False)
-
     try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            # 1. Авторизация в панели
-            login_url = f"{PANEL_URL}{BASE_PATH}/login"
-            async with session.post(login_url, data={"username": PANEL_USER, "password": PANEL_PASSWORD}, timeout=10) as resp:
-                await resp.text()
-
-            headers = {"Accept": "application/json"}
-
-            # 2. Получаем текущие данные инбаунда
-            get_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/get/{INBOUND_ID}"
-            async with session.get(get_url, headers=headers, timeout=10) as resp:
-                res_json = await resp.json()
-
-            if not res_json.get("success"):
-                logging.error(f"Не удалось получить данные инбаунда для продления подписки ЮKassa: {res_json}")
-                return False
-
-            settings = json.loads(res_json["obj"]["settings"])
-            clients = settings.get("clients", [])
-
-            # Поиск строго по уникальному tgId
-            client = next((c for c in clients if c.get("tgId") == user_id), None)
-            if not client:
-                logging.error(f"Клиент с tgId {user_id} не найден в панели X-UI.")
-                return False
-
-            # 3. Расчет времени (30 дней)
-            current_time_ms = int(time.time() * 1000)
-            thirty_days_ms = 30 * 24 * 60 * 60 * 1000
-
-            if client.get("expiryTime", 0) > current_time_ms:
-                new_expiry = client["expiryTime"] + thirty_days_ms
-            else:
-                new_expiry = current_time_ms + thirty_days_ms
-
-            client_uuid = client['id']
-            update_url = f"{PANEL_URL}{BASE_PATH}/panel/api/inbounds/updateClient/{client_uuid}"
-
-            client_sub_id = client.get("subId", "")
-            if not client_sub_id:
-                client_sub_id = secrets.token_hex(8)
-
-            client_data = {
-                "id": str(INBOUND_ID),
-                "settings": json.dumps({
-                    "clients": [{
-                        "id": client_uuid,
-                        "email": email,
-                        "limitIp": client.get("limitIp", 2),
-                        "totalGB": client.get("totalGB", 0),
-                        "expiryTime": new_expiry,
-                        "enable": True,
-                        "tgId": user_id,
-                        "subId": client_sub_id
-                    }]
-                })
-            }
-
-            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                update_resp = await resp.json()
-
-            success = update_resp.get("success", False)
-            if success:
-                expiry_seconds = int(new_expiry / 1000)
-                add_or_update_user(user_id, "", expiry_time=expiry_seconds)
-                logging.info(f"Подписка для пользователя {user_id} через ЮKassa успешно продлена в X-UI.")
-                
-            return success
-
+        logging.info(f"💳 [ЮKassa] Получено уведомление об оплате. Запуск продления на 30 дней для ID: {user_id}")
+        
+        # Получаем имя пользователя из БД, чтобы не затереть его при обновлении
+        user_data = get_user_from_db(user_id)
+        username = user_data[0] if (user_data and len(user_data) > 0) else ""
+        
+        # Вызываем нашу универсальную функцию гибкого продления на 30 дней
+        success = await renew_vpn_subscription_flexible(user_id=user_id, days=30, username=username)
+        
+        if success:
+            logging.info(f"✅ [ЮKassa] Подписка для пользователя {user_id} успешно продлена на 30 дней на всех серверах.")
+            return True
+        else:
+            logging.error(f"❌ [ЮKassa] Ошибка при вызове гибкого продления для пользователя {user_id}.")
+            return False
+            
     except Exception as e:
-        logging.error(f"Ошибка при продлении подписки через ЮKassa: {e}")
+        logging.error(f"⚠️ Критическая ошибка внутри renew_vpn_subscription (ЮKassa) для {user_id}: {e}", exc_info=True)
         return False
 
 
-
-
-
-import time
-
-async def renew_vpn_subscription_flexible(user_id: int, days: int):
+async def renew_vpn_subscription_flexible(user_id: int, days: int, username: str = ""):
     """
-    Продлевает подписку на указанное количество дней на обоих серверах.
-    Активирует UUID пользователя в X-UI панелях.
+    Продлевает подписку на указанное количество дней на ВСЕХ серверах из SERVERS.
+    Если подписка активна — прибавляет дни сверху. Если истекла — считает от текущего момента.
+    Активирует/включает клиентов в X-UI панелях и сохраняет в локальную БД.
     """
+    # ---- 1. Расчет времени (Секунды для БД, Миллисекунды для панелей) ----
+    user_data = get_user_from_db(user_id)
+    # Извлекаем именно ячейку времени по индексу [3]
+    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
+    
+    current_time_seconds = int(time.time())
+    seconds_to_add = days * 24 * 60 * 60
+    
+    # Если подписка активна -> плюсуем сверху. Если истекла/нет -> считаем от сейчас
+    if current_expiry_seconds > current_time_seconds:
+        new_expiry_seconds = current_expiry_seconds + seconds_to_add
+    else:
+        new_expiry_seconds = current_time_seconds + seconds_to_add
+        
+    new_expiry_ms = new_expiry_seconds * 1000  # Переводим в мс для 3X-UI панелей
+
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
-    # Тот же самый постоянный UUID клиента
-    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
-    
-    current_time_ms = int(time.time() * 1000)
-    new_expiry = current_time_ms + (days * 24 * 60 * 60 * 1000)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        # --- 1. АКТИВАЦИЯ ФИНЛЯНДИИ ---
-        try:
-            login_fi = "https://78.17.1"
-            await session.post(login_fi, data={"username": "Asad", "password": "Lodka120259"}, timeout=5)
-            
-            headers = {"Accept": "application/json"}
-            update_fi = f"https://78.17.1{client_uuid}"
-            
-            payload_fi = {
-                "id": "1",
-                "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇫🇮_Финляндия_#{user_id}",
-                    "limitIp": 2, "totalGB": 0, "expiryTime": new_expiry, "enable": True,
-                    "tgId": user_id, "subId": secrets.token_hex(8)
-                }]})
-            }
-            await session.post(update_fi, headers=headers, data=payload_fi, timeout=5)
-        except Exception as e:
-            logging.error(f"Не удалось продлить Финляндию: {e}")
+        for srv in SERVERS:
+            try:
+                # Динамически собираем email под конкретную страну
+                email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                
+                # 1. Авторизация на конкретной панели
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                    await resp.text()
 
-        # --- 2. АКТИВАЦИЯ ПОЛЬШИ ---
-        try:
-            login_pl = "http://78.17.152"
-            await session.post(login_pl, data={"username": "Soul", "password": "Lodka1321"}, timeout=5)
-            
-            update_pl = f"http://78.17.152{client_uuid}"
-            payload_pl = {
-                "id": "1",
-                "settings": json.dumps({"clients": [{
-                    "id": client_uuid, "email": f"🇵🇱_Польша_#{user_id}",
-                    "limitIp": 2, "totalGB": 0, "expiryTime": new_expiry, "enable": True,
-                    "tgId": user_id, "subId": secrets.token_hex(8)
-                }]})
-            }
-            await session.post(update_pl, headers=headers, data=payload_pl, timeout=5)
-        except Exception as e:
-            logging.error(f"Не удалось продлить Польшу: {e}")
+                headers = {"Accept": "application/json"}
 
+                # 2. Получение текущих данных инбаунда, чтобы узнать UUID и subId клиента
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers=headers, timeout=10) as resp:
+                    res_json = await resp.json()
+                    
+                if not res_json.get("success"):
+                    logging.error(f"Не удалось получить данные инбаунда на сервере {srv['id']}: {res_json}")
+                    continue
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
+                
+                # Ищем клиента по tgId или email
+                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not current_client:
+                    old_email = f"user_{user_id}"
+                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+
+                # Если клиента на этой панели физически нет, создаем его через ваш чистый метод
+                if not current_client:
+                    await get_vpn_config_clean(user_id, username)
+                    # Перезапрашиваем данные
+                    async with session.get(get_url, headers=headers, timeout=10) as r_retry:
+                        res_json = await r_retry.json()
+                    settings = json.loads(res_json["obj"]["settings"])
+                    current_client = next((c for c in settings.get("clients", []) if c.get("tgId") == user_id), None)
+
+                if not current_client:
+                    logging.error(f"Не удалось найти/создать клиента {user_id} на сервере {srv['id']}")
+                    continue
+
+                client_uuid = current_client.get("id")
+                sub_id = current_client.get("subId", secrets.token_hex(8))
+
+                # 3. Отправляем обновление с новым expiryTime на панель
+                update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                client_data = {
+                    "id": str(srv['inbound_id']),
+                    "settings": json.dumps({"clients": [{
+                        "id": client_uuid,
+                        "email": email_for_panel,
+                        "limitIp": current_client.get("limitIp", 2),
+                        "totalGB": current_client.get("totalGB", 0),
+                        "expiryTime": new_expiry_ms, # Наш новый рассчитанный срок
+                        "enable": True,              # Принудительно включаем
+                        "tgId": user_id,
+                        "subId": sub_id  
+                    }]})
+                }
+                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                    await r.text()
+
+                logging.info(f"Сервер {srv['id']} успешно продлен на {days} дн. для {user_id}")
+
+            except Exception as e:
+                logging.error(f"Ошибка гибкого продления на сервере {srv['id']}: {e}")
+                continue
+
+    # ---- 4. Обновление локальной БД Amvera и синхронизация с сайтом ----
     try:
-        add_or_update_user(user_id, "", expiry_time=int(new_expiry / 1000))
-    except Exception:
-        pass
+        # Перегенерируем чистые ссылки с учетом новых сроков
+        vless_links, _ = await get_vpn_config_clean(user_id, username)
+        combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+        
+        # Токен подписки по вашему стандарту
+        sub_id_db = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        
+        # Обновляем сайт, чтобы ссылка sonatavpn.ru сразу отдавала новые данные
+        await send_sub_to_website(sub_id_db, base64_payload, new_expiry_seconds)
+        
+        # Пишем в локальную SQLite3 (в секундах)
+        real_username = username or (user_data[0] if user_data else "")
+        add_or_update_user(user_id, real_username, combined_configs, sub_id_db, new_expiry_seconds)
+    except Exception as db_err:
+        logging.error(f"Ошибка финальной записи в БД/Сайт при гибком продлении: {db_err}")
+        # Запасной вариант апдейта только времени в БД
+        add_or_update_user(user_id, username, None, None, new_expiry_seconds)
         
     return True
+
 
 
 
@@ -844,8 +893,10 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
         return False
 
 
-
-
+@dp.pre_checkout_query()
+async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
+    # Одобряем платеж со стороны бота
+    await pre_checkout_query.answer(ok=True)
 
 
 
@@ -1194,6 +1245,63 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
         prices=[LabeledPrice(label="5 месяцев подписки", amount=65000)], # 650.00 RUB в копейках
         start_parameter="vpn-sub-150-days"
     )
+
+
+
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or f"user_{user_id}"
+    
+    # Получаем payload, который мы указывали при создании инвойса
+    payload = message.successful_payment.invoice_payload
+    logging.info(f"💳 [ПЛАТЕЖ] Успешная оплата от {user_id}. Payload: {payload}")
+    
+    # Определяем количество дней в зависимости от купленного тарифа
+    days_to_add = 0
+    tariff_name = ""
+    
+    if payload == "vpn_30_days_subscription":
+        days_to_add = 30
+        tariff_name = "1 месяц"
+    elif payload == "vpn_90_days_subscription":
+        days_to_add = 90
+        tariff_name = "3 месяца"
+    elif payload == "vpn_150_days_subscription":
+        days_to_add = 150
+        tariff_name = "5 месяцев"
+        
+    if days_to_add > 0:
+        try:
+            # Начисляем дни на ВСЕ сервера и синхронизируем с БД/Сайтом
+            await renew_vpn_subscription_flexible(user_id=user_id, days=days_to_add, username=username)
+            
+            # Получаем обновленную дату для вывода пользователю
+            user_data = get_user_from_db(user_id)
+            updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
+            expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y %H:%M')
+            
+            await message.answer(
+                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                f"📦 Тариф: <b>{tariff_name} (+{days_to_add} дн.)</b>\n"
+                f"📅 Подписка продлена до: <b>{expiry_date}</b>\n\n"
+                f"<i>✨ Сервера обновлены. Вы можете зайти в меню «Подключиться» и обновить конфигурацию. Спасибо, что вы с нами!</i>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка при начислении дней после оплаты для {user_id}: {e}", exc_info=True)
+            await message.answer(
+                "⚠️ <b>Оплата получена, но произошел сбой обновления серверов.</b>\n"
+                "Пожалуйста, перешлите этот чек администратору, вам активируют подписку вручную.",
+                parse_mode="HTML"
+            )
+    else:
+        logging.error(f"Неизвестный payload платежа: {payload}")
+        await message.answer("⚠️ Произошла ошибка: неизвестный тип подписки.")
+
+
+
 
 # --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
 
