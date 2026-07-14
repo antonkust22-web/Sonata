@@ -75,10 +75,11 @@ def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
 
-    cursor.pragma('journal_mode=WAL;')
-    cursor.pragma('synchronous=NORMAL;')
+    # ИСПРАВЛЕНО: Возвращен рабочий синтаксис через execute
+    cursor.execute('PRAGMA journal_mode=WAL;')
+    cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # Ваша старая таблица пользователей (остается нетронутой!)
+    # Ваша существующая таблица пользователей (не затрагивается)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -89,8 +90,7 @@ def init_db():
         )
     ''')
 
-    # БЕЗОПАСНО ДОБАВЛЯЕМ: Таблица для промокодов
-    # Если её нет — она создастся. Если она уже есть — этот код ничего не сломает
+    # Создание таблицы промокодов рядом
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
