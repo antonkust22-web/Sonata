@@ -912,14 +912,16 @@ async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    await get_vpn_config_clean(user_id, callback.from_user.username or "")
+    # ИСПРАВЛЕНО: Удален тяжелый await get_vpn_config_clean(...)
+    # Теперь бот не опрашивает панели при каждом клике на ЛК, убирая лаги и таймауты.
+    
+    # Читаем актуальные данные напрямую из локальной SQLite3 (это мгновенно)
     db_data = get_user_from_db(user_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if db_data and len(db_data) > 3:  
-        # ИСПРАВЛЕНО: Вытаскиваем именно 4-й элемент из кортежа [3]
-        expiry_timestamp = db_data[3] if db_data[3] is not None else 0
+        expiry_timestamp = db_data if db_data is not None else 0
         current_time = time.time()
 
         if expiry_timestamp > current_time:
@@ -930,7 +932,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"✨ Ваша подписка active! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
+                f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
@@ -940,7 +942,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
+                f"⚠️ Для получения доступа к подписке, пожалуйста, приобретите подписку или активируйте промокод."
             )
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
@@ -956,6 +958,7 @@ async def cabinet(callback: types.CallbackQuery):
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
         pass
+
 
 
 
@@ -1009,7 +1012,7 @@ async def connect(callback: types.CallbackQuery):
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+        auto_connect_url = f"https://sonatavpn.ru" + "/" + {sub_id}?auto=1"
 
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
