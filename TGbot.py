@@ -912,16 +912,14 @@ async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # ИСПРАВЛЕНО: Удален тяжелый await get_vpn_config_clean(...)
-    # Теперь бот не опрашивает панели при каждом клике на ЛК, убирая лаги и таймауты.
-    
-    # Читаем актуальные данные напрямую из локальной SQLite3 (это мгновенно)
+    # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if db_data and len(db_data) > 3:  
-        expiry_timestamp = db_data if db_data is not None else 0
+        # ИСПРАВЛЕНО: Добавлен индекс [3] для извлечения числа из кортежа базы данных
+        expiry_timestamp = db_data[3] if db_data[3] is not None else 0
         current_time = time.time()
 
         if expiry_timestamp > current_time:
@@ -942,7 +940,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к подписке, пожалуйста, приобретите подписку или активируйте промокод."
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
             )
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
@@ -975,7 +973,7 @@ async def connect(callback: types.CallbackQuery):
     db_data = get_user_from_db(user_id)
     current_time = time.time()
     
-    # ИСПРАВЛЕНО: Извлекаем именно ячейку времени expiry_time из кортежа БД
+    # ИСПРАВЛЕНО: Извлекаем именно ячейку времени по индексу [3]
     expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
     
     # Если пользователя нет в БД или его подписка истекла
@@ -1057,21 +1055,34 @@ async def connect(callback: types.CallbackQuery):
 
 
 
+
 @dp.callback_query(F.data == "back")
-async def back(callback: types.CallbackQuery):
+async def back_to_main_menu(callback: types.CallbackQuery):
     await callback.answer()
+    
+    text = (
+        "👋 <b>Добро пожаловать в Sonata VPN!</b>\n\n"
+        "Высокоскоростной и безопасный VPN на базе протокола VLESS Reality.\n"
+        "Управляйте своим подключением с помощью меню ниже:"
+    )
+    
     try:
-        await callback.message.edit_caption(caption=text1, reply_markup=main_kb(), parse_mode="HTML")
+        # Изменяем текст/описание на главное меню и возвращаем основную клавиатуру main_kb()
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=text, reply_markup=main_kb(), parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text, reply_markup=main_kb(), parse_mode="HTML")
     except TelegramBadRequest:
         pass
+
 
 @dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "Новый VPN будет обеспечивать высокую скорость соединения и улучшенную конфиденциальность пользователей. "
-        "Планируется внедрение современных протоколов безопасности и удобный интерфейс.\n\n"
-        "Тех.поддержка @Sonata_VPN_Admin"
+        "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
+        " 🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
+        "📖 Выберите действие:"
     )
     try:
         await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
