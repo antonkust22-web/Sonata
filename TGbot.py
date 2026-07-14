@@ -133,6 +133,64 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
     logging.info("-" * 80)
 
+import secrets
+from datetime import datetime
+
+def generate_new_promocode(days: int, custom_code: str = None) -> str:
+    """Генерирует случайный промокод или добавляет кастомный в БД"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Если админ не ввел свой код, создаем случайный (например: SONATA-A1B2C3D4)
+    if not custom_code:
+        random_part = secrets.token_hex(4).upper()
+        code = f"SONATA-{random_part}"
+    else:
+        code = custom_code.strip().upper()
+        
+    try:
+        cursor.execute(
+            'INSERT INTO promocodes (code, days, is_used) VALUES (?, ?, 0)',
+            (code, days)
+        )
+        conn.commit()
+        return code
+    except sqlite3.IntegrityError:
+        return "EXISTS" # Такой промокод уже есть
+    finally:
+        conn.close()
+
+def activate_promo_in_db(code: str, user_id: int) -> str | int:
+    """
+    Проверяет промокод в БД. 
+    Если валиден — помечает использованным и возвращает количество дней (int).
+    Иначе возвращает строку-ошибку.
+    """
+    code = code.strip().upper()
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT days, is_used FROM promocodes WHERE code = ?', (code,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        return "NOT_FOUND"
+        
+    days, is_used = row
+    if is_used == 1:
+        conn.close()
+        return "ALREADY_USED"
+        
+    # Маркируем промокод как использованный
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute(
+        'UPDATE promocodes SET is_used = 1, used_by_id = ?, used_at = ? WHERE code = ?',
+        (user_id, now_str, code)
+    )
+    conn.commit()
+    conn.close()
+    return days
 
 
 
@@ -310,9 +368,220 @@ async def send_sub_to_website(token, b64_content, expiry):
 
 
 
+#-----------команды------------
+
+
+@router.message(F.text.startswith("/gen"))
+async def handle_generate_promo(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return # Игнорируем не-админов
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование:\n<code>/gen [дни]</code> или <code>/gen [дни] [свой_код]</code>", parse_mode="HTML")
+        return
+        
+    try:
+        days = int(parts[1])
+        custom_code = parts[2].strip().upper() if len(parts) > 2 else None
+        
+        # Генерируем и пишем в БД промокодов (функция из прошлого ответа)
+        result_code = generate_new_promocode(days, custom_code)
+        
+        if result_code == "EXISTS":
+            await message.answer("❌ Такой кастомный промокод уже существует в базе данных!")
+        else:
+            await message.answer(
+                f"🎟 <b>Промокод успешно создан!</b>\n\n"
+                f"🔑 Код: <code>{result_code}</code>\n"
+                f"⏳ Срок: <b>{days} дней</b>\n\n"
+                f"<i>Вы можете передать его пользователю для активации.</i>", 
+                parse_mode="HTML"
+            )
+    except ValueError:
+        await message.answer("❌ Ошибка: количество дней должно быть целым числом.")
+
+
+from aiogram import Router, F, types
+from aiogram.types import Message
+
+# Если у вас используется dp = Dispatcher(), замените router на dp
+dp = Router()
+
+@router.message(F.text.startswith("/promo") | F.text.startswith("/activate"))
+async def handle_promo_activation(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer(
+            "⚠️ <b>Пожалуйста, укажите промокод!</b>\n\n"
+            "Пример ввода:\n<code>/promo СONATA_FREE</code> (нажмите для копирования)", 
+            parse_mode="HTML"
+        )
+        return
+        
+    promo_code = parts[1].strip().upper()
+    user_id = message.from_user.id
+    username = message.from_user.username or f"user_{user_id}"
+    
+    # 1. Проверяем и гасим промокод в локальной SQLite (функция из прошлого ответа)
+    db_result = activate_promo_in_db(promo_code, user_id)
+    
+    if db_result == "NOT_FOUND":
+        await message.answer("❌ <b>Такого промокода не существует.</b> Проверьте правильность букв.", parse_mode="HTML")
+        return
+    elif db_result == "ALREADY_USED":
+        await message.answer("❌ <b>Этот промокод уже был активирован ранее другим пользователем.</b>", parse_mode="HTML")
+        return
+        
+    # Если проверка успешна, db_result вернет количество дней (int)
+    days_to_add = db_result
+    status_msg = await message.answer(f"🔄 <b>Промокод принят!</b> Начисляю {days_to_add} дней подписки и обновляю сервера...")
+    
+    try:
+        # 2. Запуск комплексного обновления (Панели + Локальная БД + Сайт)
+        await apply_subscription_extension(user_id, username, days_to_add)
+        
+        # Получаем обновленную дату для красивого вывода пользователю
+        user_data = get_user_from_db(user_id)
+        updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
+        expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y %H:%M')
+        
+        await status_msg.edit_text(
+            f"✅ <b>Промокод успешно активирован!</b>\n\n"
+            f"➕ Начислено: <b>{days_to_add} дней</b>\n"
+            f"📅 Новая дата окончания: <b>{expiry_date}</b>\n\n"
+            f"<i>💡 Конфигурации на вашем устройстве обновятся автоматически, переподключать заново ничего не нужно!</i>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка выполнения apply_subscription_extension для {user_id}: {e}", exc_info=True)
+        await status_msg.edit_text(
+            "⚠️ <b>Промокод зафиксирован, но произошел сбой обновления серверов.</b>\n"
+            "Пожалуйста, напишите администратору, вам начислят дни вручную.", 
+            parse_mode="HTML"
+        )
 
 
 
+
+import time
+import json
+import secrets
+import logging
+import aiohttp
+from datetime import datetime
+
+async def apply_subscription_extension(user_id: int, username: str, days_to_add: int):
+    """
+    Полностью продлевает подписку пользователя:
+    1. Пересчитывает время (в БД секунды, на панелях мс)
+    2. Обновляет 3X-UI панели
+    3. Перезапускает генерацию конфигов и пушит новый Base64 на сайт
+    """
+    # ---- 1. Расчет времени ----
+    user_data = get_user_from_db(user_id)
+    # user_data[3] — это expiry_time в секундах из вашей БД users
+    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3) else 0
+    
+    current_time_seconds = int(time.time())
+    seconds_to_add = days_to_add * 24 * 60 * 60
+    
+    # Если подписка истекла или безлимитная (равна 0/меньше текущего времени) -> считаем от сейчас
+    if current_expiry_seconds <= current_time_seconds:
+        new_expiry_seconds = current_time_seconds + seconds_to_add
+    else:
+        # Если еще активна -> плюсуем сверху
+        new_expiry_seconds = current_expiry_seconds + seconds_to_add
+        
+    new_expiry_ms = new_expiry_seconds * 1000 # Для панелей переводим в мс
+
+    # ---- 2. Обновление внешних панелей 3X-UI ----
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        for srv in SERVERS:
+            try:
+                email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                
+                # Авторизация на панели
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                    await resp.text()
+
+                headers = {"Accept": "application/json"}
+
+                # Получение данных инбаунда
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                async with session.get(get_url, headers=headers, timeout=10) as resp:
+                    res_json = await resp.json()
+                    
+                if not res_json.get("success"):
+                    continue
+
+                settings = json.loads(res_json["obj"]["settings"])
+                clients = settings.get("clients", [])
+                
+                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                if not current_client:
+                    old_email = f"user_{user_id}"
+                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+
+                # Если клиента нет, создаем базового через ваш чистый метод
+                if not current_client:
+                    await get_vpn_config_clean(user_id, username)
+                    async with session.get(get_url, headers=headers, timeout=10) as r_retry:
+                        res_json = await r_retry.json()
+                    settings = json.loads(res_json["obj"]["settings"])
+                    current_client = next((c for c in settings.get("clients", [])) if c.get("tgId") == user_id, None)
+
+                if not current_client:
+                    continue
+
+                client_uuid = current_client.get("id")
+                sub_id = current_client.get("subId", secrets.token_hex(8))
+
+                # Отправляем новый expiryTime (в мс) на панель
+                update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                client_data = {
+                    "id": str(srv['inbound_id']),
+                    "settings": json.dumps({"clients": [{
+                        "id": client_uuid,
+                        "email": email_for_panel,
+                        "limitIp": current_client.get("limitIp", 2),
+                        "totalGB": current_client.get("totalGB", 0),
+                        "expiryTime": new_expiry_ms, 
+                        "enable": True, # Принудительно включаем, если был забанен по истечению срока
+                        "tgId": user_id,
+                        "subId": sub_id  
+                    }]})
+                }
+                async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                    await r.text()
+
+            except Exception as e:
+                logging.error(f"Ошибка применения промокода на сервере {srv['id']}: {e}")
+
+    # ---- 3. Генерация обновленного Base64 и синхронизация с сайтом ----
+    try:
+        # Вызываем ваш метод получения конфигов (он вернет ссылки)
+        vless_links, _ = await get_vpn_config_clean(user_id, username)
+        combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+        
+        # Токен sub_id по вашему алгоритму из хендлера connect
+        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        
+        # Синхронизируем с вашим сайтом (как в хендлере connect)
+        await send_sub_to_website(sub_id, base64_payload, new_expiry_seconds)
+        
+        # Сохраняем локально в БД Amvera (ваша функция)
+        add_or_update_user(user_id, username, combined_configs, sub_id, new_expiry_seconds)
+        
+    except Exception as e:
+        logging.error(f"Ошибка синхронизации сайта/БД при активации промокода: {e}")
+        # Локально в БД всё равно пишем апдейт времени, даже если сайт прилег
+        add_or_update_user(user_id, username, None, None, new_expiry_seconds)
 
 
 
@@ -557,8 +826,10 @@ def main_kb():
         [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
     ])
+
 
 def back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -580,6 +851,31 @@ async def cmd_start(message: types.Message):
         parse_mode="HTML"
     )
 
+
+@dp.callback_query(F.data == "enter_promo")
+async def enter_promo_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    text = (
+        "🎟 <b>Активация промокода Sonata VPN</b>\n\n"
+        "Чтобы активировать промокод, отправьте его в чат с командой <code>/promo</code>.\n\n"
+        "<b>Пример ввода:</b>\n"
+        "<code>/promo ВАШ_ПРОМОКОД</code> (нажмите, чтобы скопировать)"
+    )
+    
+    # Кнопка возврата в главное меню
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+    ])
+    
+    if callback.message.caption:
+        await callback.message.edit_caption(caption=text, reply_markup=back_kb, parse_mode="HTML")
+    else:
+        await callback.message.edit_text(text=text, reply_markup=back_kb, parse_mode="HTML")
+
+
+
+from aiogram.exceptions import TelegramBadRequest
 
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
@@ -605,14 +901,13 @@ async def cabinet(callback: types.CallbackQuery):
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
 
-            # Полностью чистый текст БЕЗ каких-либо vless:// и веб-ссылок
             text = (
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
                 f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
-            # Оставляем только кнопку Назад
+            # В активном кабинете оставляем кнопку Назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
         else:
@@ -622,19 +917,24 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
-                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку."
+                f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
             )
-            # Добавляем кнопки покупки и возврата назад
+            # Добавляем кнопки покупки, промокода и возврата назад
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
+            kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
     else:
         text = "❌ Ошибка профиля. Нажмите /start для перезапуска бота."
         kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
     try:
-        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
         pass
+
 
 
 
@@ -645,11 +945,33 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
-    # Временное сообщение-заглушка на время генерации ключей
-    loading_text = "⏳ <b>Ваша ссылка на подписку формируется, пожалуйста, подождите...</b>"
+    # 1. Проверяем статус подписки перед генерацией
+    db_data = get_user_from_db(user_id)
+    current_time = time.time()
+    
+    # Если пользователя нет в БД или его подписка истекла/равна 0
+    if not db_data or len(db_data) <= 3 or db_data[3] <= current_time:
+        kb_no_access = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+            [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+        
+        text_no_access = (
+            "🔒 <b>Доступ ограничен</b>\n\n"
+            "У вас нет активной подписки Sonata VPN.\n"
+            "Чтобы получить ссылку для подключения, пожалуйста, продлите её в личном кабинете или активируйте промокод."
+        )
+        
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
+        return
 
+    # Если подписка активна — запускаем процесс формирования ссылки
+    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
     try:
-        # Изменяем текущую панель на текст ожидания (поддерживает как фото/видео, так и текст)
         if callback.message.caption:
             await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
         else:
@@ -658,49 +980,30 @@ async def connect(callback: types.CallbackQuery):
         logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
 
     try:
-        # 1. Получаем чистые VLESS ссылки из панелей (это занимает время)
+        # Получаем чистые VLESS ссылки из панелей 3X-UI
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        # 2. Генерируем токен подписки sub_id
+        # Генерируем токен подписки sub_id
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
 
-        # Добавлен железный слэш "/" перед sub_id
-        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
-        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
-
-        fi_key = vless_links[0] if len(vless_links) > 0 else "❌ Ошибка Финляндии"
-        pl_key = vless_links[1] if len(vless_links) > 1 else "❌ Ошибка Польши"
-
-        # Склеиваем чистые конфигурации через перенос строки
+        # Склеиваем и кодируем в Base64 для передачи сайту
         combined_configs = "\n".join(vless_links) if vless_links else ""
-        
-        # Кодируем в Base64 строго по вашему эталону для передачи на сайт
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else 1893456000
-        if expiry_time_ms > 0:
-            expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y %H:%M')
-            status_text = f"🟢 АКТИВНА — до <b>{expiry_date}</b>"
-        else:
-            status_text = "♾ Безлимитная / Срок не задан"
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(db_data[3])
+        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК", url=auto_connect_url)],
+            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=auto_connect_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
         text = (
-            f"👤 <b>Ваша подписка Sonata VPN Premium</b>\n"
-            f" STATUS: {status_text}\n\n"
-            f"<b>⚙️ ВЫДАННЫЕ КЛЮЧИ:</b>\n\n"
-            f"<b>🇫🇮 Финляндия:</b>\n<code>{fi_key}</code>\n\n"
-            f"<b>🇵🇱 Польша:</b>\n<code>{pl_key}</code>\n\n"
-            f"<b>📥 Способ 1. Автоматический:</b>\n"
-            f"• Нажмите на кнопку <b>«🌐 ПОДКЛЮЧИТЬ VPN В ОДИН КЛИК»</b> ниже.\n\n"
-            f"<b>💡 Способ 2. Вручную по ссылке подписки:</b>\n"
-            f"• Скопируйте ссылку подписки:\n"
-            f"<code>{sub_web_url}</code>\n"
-            f"• Вставьте её в Happ через Плюс (➕) ➔ <b>«Add by URL»</b>."
+            f"🚀 <b>Ваша подписка Sonata VPN</b>\n\n"
+            f"📅 Срок действия: до <b>{expiry_date}</b>\n"
+            f"🟢 Статус подключения: <b>Готово к работе</b>\n\n"
+            f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
         )
 
         # Пересылаем Base64 данные на внешний сайт в фоновом режиме
@@ -709,22 +1012,22 @@ async def connect(callback: types.CallbackQuery):
         # Сохраняем локально в БД Amvera
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
-        # Удаляем сообщение с текстом "Ваша ссылка формируется..."
+        # Удаляем сообщение с текстом ожидания
         try:
             await callback.message.delete()
         except Exception:
             pass
             
-        # Отправляем новое готовое сообщение с ключами и кнопкой импорта
+        # Отправляем чистое и красивое финальное сообщение
         await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
     except Exception as e:
         logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
-        # В случае ошибки убираем текст ожидания и пишем уведомление о сбое
         try:
             await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
         except Exception:
             pass
+
 
 
 
