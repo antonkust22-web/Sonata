@@ -1461,6 +1461,28 @@ async def main():
     asyncio.create_task(scheduler(bot))
     logging.info("Фоновый планировщик успешно запущен")
 
+
+
+# ПРИНУДИТЕЛЬНОЕ СОЗДАНИЕ ТАБЛИЦЫ ПРОМОКОДОВ ПРИ СТАРТЕ
+try:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS promocodes (
+            code TEXT PRIMARY KEY,
+            days INTEGER NOT NULL,
+            is_used INTEGER DEFAULT 0,
+            used_by_id INTEGER DEFAULT NULL,
+            used_at TEXT DEFAULT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    logging.info(" Проверка/создание таблицы promocodes успешно завершено.")
+except Exception as e:
+    logging.error(f" Не удалось создать таблицу промокодов: {e}")
+
+
     
 
     
