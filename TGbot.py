@@ -293,7 +293,7 @@ SERVERS = [
         "my_ip": "78.17.11.14",
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
         "sid": "d35e733e16c7a4d0", 
-        "sni": "://amd.com",                           
+        "sni": "www.amd.com",                           
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -307,7 +307,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "://sony.com",                                   
+        "sni": "www.sony.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     },
@@ -321,7 +321,7 @@ SERVERS = [
         "my_ip": "158.160.233.149",  # ПРЯМО СЮДА СТАВИМ БЕЛЫЙ IP ЯНДЕКСА!
         "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  
         "sid": "29a872b6",  
-        "sni": "://yandex.ru",  
+        "sni": "yandex.ru",  
         "country_flag": "🇷🇺",
         "country_name": "Обход №1"
     }
