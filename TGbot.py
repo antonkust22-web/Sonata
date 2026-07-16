@@ -312,23 +312,21 @@ SERVERS = [
         "country_name": "Польша"
     },
     {
-        # ВАШ НОВЫЙ СЕРВЕР-МОСТ ЧЕРЕЗ ЯНДЕКС КЛАУД
         "id": "ru_bridge_1",
         "panel_url": "http://217.171.146.33:2053",
-        "base_path": "0wlhvqnD4d2O1ggT8d",  
-        "panel_user": "Asad",
-        "panel_password": "542013",
-        "inbound_id": 1,
-        "my_ip": "217.171.146.33",
-        "connect_ip": "158.160.233.149",
-        "connect_port": 443,
-        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",
-        "sid": "dbb8",
-        "sni": "yandex.ru",
+        "base_path": "/0wlhvqnD4d2O1ggT8d", # Добавили слэш в начало пути, чтобы .ru/ работал идеально  
+        "panel_user": "Asad",  
+        "panel_password": "542013",  
+        "inbound_id": 1,  
+        "my_ip": "158.160.233.149",  # ПРЯМО СЮДА СТАВИМ БЕЛЫЙ IP ЯНДЕКСА!
+        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  
+        "sid": "dbb8",  
+        "sni": "://yandex.ru",  
         "country_flag": "🇷🇺",
         "country_name": "Обход №1"
     }
 ]
+
 
 async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
@@ -341,20 +339,15 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # ИСПРАВЛЕНИЕ: Автоматически добавляем слэш, если его забыли в base_path
-                b_path = srv['base_path']
-                if b_path and not b_path.startswith('/'):
-                    b_path = '/' + b_path
-                
                 # 1. Авторизация (Классический рабочий метод через data=)
-                login_url = f"{srv['panel_url']}{b_path}/login"
+                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
                 headers = {"Accept": "application/json"}
 
                 # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/get/{srv['inbound_id']}"
+                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
@@ -377,7 +370,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
                     
-                    add_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/addClient"
+                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
@@ -394,7 +387,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     if not sub_id:
                         sub_id = secrets.token_hex(8)
                         
-                    update_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/updateClient/{client_uuid}"
+                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
@@ -408,9 +401,11 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # По умолчанию берем родные данные из панели и словаря
-                my_ip = srv['my_ip']
-                my_port = res_json["obj"]["port"]
+                # МИКРО-ИСПРАВЛЕНИЕ: Если это сервер-мост Яндекса, ставим порт 443, иначе берем из панели
+                if srv["id"] == "ru_bridge_1":
+                    my_port = 443
+                else:
+                    my_port = res_json["obj"]["port"]
                 
                 # 4. Сборка ссылки строго по вашему рабочему эталону
                 if srv["id"] == "fi_1":
@@ -418,24 +413,19 @@ async def get_vpn_config_clean(user_id, username=""):
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "firefox"
                 elif srv["id"] == "ru_bridge_1":
-                    # ИСПРАВЛЕНО: Для нового сервера убираем quote, чтобы не было процентов (кракозябр)
                     remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = remark
-                    current_fp = "firefox"
-                    
-                    # ПОДМЕНА ДАННЫХ ДЛЯ ТРАНЗИТНОГО МОСТА ЯНДЕКСА
-                    my_ip = srv['connect_ip']
-                    my_port = srv['connect_port']
+                    safe_remark = urllib.parse.quote(remark)
+                    current_fp = "firefox" # Ставим firefox для обхода
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "chrome"
                 
-                # Полное соответствие вашей эталонной строке параметров + правильный слэш перед #
+                # Полное, посимвольное соответствие вашей изначальной эталонной строке параметров!
                 config_link = (
-                    f"vless://{client_uuid}@{my_ip}:{my_port}"
+                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
-                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/#{safe_remark}"
                 )
                     
                 vless_links.append(config_link)
@@ -445,6 +435,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -1161,7 +1152,7 @@ async def connect(callback: types.CallbackQuery):
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         
         # ЖЕЛЕЗОБЕТОННАЯ СКЛЕЙКА СЛЭША ДЛЯ САЙТА (Сохраняем / после .ru)
-        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
+        auto_connect_url = f"https://sonatavpn.ru"+"/"+{sub_id}+"?auto=1"
 
         # Склеиваем все 3 конфигурации через перенос строки строго для ячейки vpn_config
         combined_configs = "\n".join(vless_links) if vless_links else ""
