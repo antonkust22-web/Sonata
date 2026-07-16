@@ -1108,16 +1108,6 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import base64
-import hashlib
-import asyncio
-import logging
-import time
-from datetime import datetime
-from aiogram import types
-from aiogram import F # Убедитесь, что импортирован F для aiogram 3.x
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
     await callback.answer()
@@ -1125,12 +1115,33 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
+    # 1. Считываем данные из БД
+    db_data = get_user_from_db(user_id)
+    current_time = time.time()
+    
+    # СТРОГО ИНДЕКС [3] для времени из вашего SELECT (username[0], vpn[1], git[2], expiry[3])
+    expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
+    
     # =========================================================================
-    # ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТИРОВАНИЯ (Проверка подписки пропущена)
+    # ДЛЯ РАБОТЫ ПОДПИСКИ: Раскомментируйте этот блок, когда завершите тесты!
+    # Сейчас проверка временно пропущена, чтобы вы могли тестировать три сервера.
     # =========================================================================
-    # db_data = get_user_from_db(user_id)
-    # current_time = time.time()
-    # expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
+    # if expiry_in_db <= current_time:
+    #     kb_no_access = InlineKeyboardMarkup(inline_keyboard=[
+    #         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+    #         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
+    #         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+    #     ])
+    #     text_no_access = (
+    #         "🔒 <b>Доступ ограничен</b>\n\n"
+    #         "У вас нет active подписки Sonata VPN.\n"
+    #         "Чтобы получить ссылку для подключения, пожалуйста, продлите её."
+    #     )
+    #     if callback.message.caption:
+    #         await callback.message.edit_caption(caption=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
+    #     else:
+    #         await callback.message.edit_text(text=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
+    #     return
     # =========================================================================
 
     loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
@@ -1143,33 +1154,41 @@ async def connect(callback: types.CallbackQuery):
         logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
 
     try:
-        # Запускаем оригинальную генерацию
+        # Генерируем массив из ТРЕХ vless ссылок (Финляндия, Польша + Новый Обход РФ)
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
+        # Генерируем токен подписки для сайта
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         
-        # ЖЕЛЕЗОБЕТОННАЯ СКЛЕЙКА СЛЭША (Сохраняем / после .ru)
-        auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1"
+        # ЖЕЛЕЗОБЕТОННАЯ СКЛЕЙКА СЛЭША ДЛЯ САЙТА (Сохраняем / после .ru)
+        auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1"
 
-        # Склеиваем ссылки строго через перенос строки (\n) для базы данных
+        # Склеиваем все 3 конфигурации через перенос строки строго для ячейки vpn_config
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-        # ФОРМИРУЕМ ОТЛАДОЧНЫЙ ТЕКСТ (Смотрим, какие ссылки сгенерировались)
+        # Формируем отладочный блок, чтобы видеть успешные ноды в чате бота
         debug_servers_info = ""
         for link in vless_links:
-            # Извлекаем имя сервера из тега после знака #
-            if "#" in link:
+            if "/#" in link:
+                server_name = urllib.parse.unquote(link.split("/#")[-1]).strip()
+            elif "#" in link:
                 server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
             else:
-                server_name = "Неизвестный сервер"
+                server_name = "VPN Узел"
             debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
 
         if not vless_links:
-            debug_servers_info = "❌ <b>Ни один сервер не ответил!</b> Проверьте логи консоли.\n"
+            debug_servers_info = "❌ <b>Ни одна нода не ответила!</b> Проверьте API панелей.\n"
 
-        # Имитируем дату окончания подписки (так как проверка отключена, ставим +30 дней от текущей)
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(time.time() + 2592000)
+        # Расчет времени окончания (если панель не вернула время, берем текущее из БД или +30 дней для теста)
+        if expiry_time_ms > 0:
+            expiry_seconds = int(expiry_time_ms / 1000)
+        elif expiry_in_db > 0:
+            expiry_seconds = int(expiry_in_db)
+        else:
+            expiry_seconds = int(time.time() + 2592000)
+
         expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1177,7 +1196,6 @@ async def connect(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
-        # Выводим подробный отчет о серверах и сгенерированную ссылку прямо на экран
         text = (
             f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
             f"📅 Срок действия: до <b>{expiry_date}</b>\n"
@@ -1187,8 +1205,14 @@ async def connect(callback: types.CallbackQuery):
             f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
         )
 
+        # Отправляем данные на PHP-сайт в папку subs/
         asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+        
+        # ОФИЦИАЛЬНАЯ ЗАПИСЬ В SQLITE: Вносим combined_configs (3 ссылки) и sub_id токен
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+
+        # Вызываем встроенный логгер путей, который вы скинули
+        log_subscription_routing(user_id, username, sub_id, auto_connect_url)
 
         try:
             await callback.message.delete()
