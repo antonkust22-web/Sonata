@@ -339,20 +339,32 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация (Добавлен allow_redirects для совместимости с панелью 3.5.X)
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(
-                    login_url, 
-                    data={"username": srv['panel_user'], "password": srv['panel_password']}, 
-                    timeout=10,
-                    allow_redirects=True
-                ) as resp:
-                    await resp.text()
+                # Защита от кривого склеивания путей
+                b_path = srv['base_path']
+                if b_path and not b_path.startswith('/'):
+                    b_path = '/' + b_path
+                
+                # 1. Авторизация 
+                login_url = f"{srv['panel_url']}{b_path}/login"
+                
+                # Специальный хак для панели 3.5.X (пропускаем HTTP/0.0 баг через requests)
+                if srv["id"] == "ru_bridge_1":
+                    import requests
+                    # Принудительно стучимся через HTTPS, если панель требует SSL
+                    test_url = login_url.replace("http://", "https://")
+                    req_session = requests.Session()
+                    req_session.post(test_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5, verify=False)
+                    # Переносим сессионную куку из requests в aiohttp сессию бота
+                    for cookie in req_session.cookies:
+                        jar.update_cookies({cookie.name: cookie.value})
+                else:
+                    async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
+                        await resp.text()
 
                 headers = {"Accept": "application/json"}
 
                 # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                get_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
@@ -370,12 +382,12 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # 3. Добавление или обновление клиента
+                # 3. Добавление или更新 клиента
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
                     
-                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                    add_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
@@ -392,7 +404,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     if not sub_id:
                         sub_id = secrets.token_hex(8)
                         
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    update_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
@@ -406,19 +418,18 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПОРТА: Для ru_bridge_1 жестко ставим 443 порт моста Яндекса
+                # Хак для порта Яндекса
                 if srv["id"] == "ru_bridge_1":
                     my_port = 443
                 else:
                     my_port = res_json["obj"]["port"]
                 
-                # 4. Сборка ссылки строго по вашему рабочему эталону
+                # 4. Сборка ссылки
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "firefox"
                 elif srv["id"] == "ru_bridge_1":
-                    # Для нового сервера убираем quote, чтобы флаг отображался корректно, а не процентами
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = remark
                     current_fp = "firefox"
@@ -427,7 +438,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "chrome"
                 
-                # Полное, посимвольное соответствие вашей эталонной строке параметров + правильный слэш перед #
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
@@ -441,6 +451,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
