@@ -313,7 +313,7 @@ SERVERS = [
     },
     {
         "id": "ru_bridge_1",
-        "panel_url": "http://217.171.146.33:2053",
+        "panel_url": "https://217.171.146.33:2053",
         "base_path": "/0wlhvqnD4d2O1ggT8d", # Добавили слэш в начало пути, чтобы .ru/ работал идеально  
         "panel_user": "Asad",  
         "panel_password": "542013",  
