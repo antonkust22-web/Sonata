@@ -407,27 +407,29 @@ async def get_vpn_config_clean(user_id, username=""):
                 else:
                     my_port = res_json["obj"]["port"]
                 
-                # 4. Сборка ссылки строго по вашему рабочему эталону
+                # 4. Сборка ссылки строго по вашему рабочему эталону           
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = urllib.parse.quote(remark)
+                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
                     current_fp = "firefox"
                 elif srv["id"] == "ru_bridge_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = urllib.parse.quote(remark)
+                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
                     current_fp = "firefox"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
-                    safe_remark = urllib.parse.quote(remark)
+                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
                     current_fp = "chrome"
                 
+                # Полное посимвольное соответствие вашей структуре, но без лишнего слэша перед ремаркой
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
-                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}#{safe_remark}"
                 )
                     
                 vless_links.append(config_link)
+
 
             except Exception as e:
                 logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
