@@ -275,7 +275,13 @@ def delete_promocode_from_db(code: str) -> bool:
 
 
 
-# 1. ОБНОВЛЕННЫЙ СПИСОК СЕРВЕРОВ (Добавлен ваш сервер-мост)
+import json
+import uuid
+import secrets
+import aiohttp
+import logging
+import urllib.parse
+
 SERVERS = [
     {
         "id": "fi_1",
@@ -285,10 +291,9 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.11.14",
-        "connect_ip": "78.17.11.14",  # Для старых серверов совпадает с реальным
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
         "sid": "d35e733e16c7a4d0", 
-        "sni": "www.amd.com",                           
+        "sni": "://amd.com",                           
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
@@ -300,32 +305,30 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "connect_ip": "78.17.152.36",  # Для старых серверов совпадает с реальным
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "www.sony.com",                                   
+        "sni": "://sony.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     },
     {
         # ВАШ НОВЫЙ СЕРВЕР-МОСТ ЧЕРЕЗ ЯНДЕКС КЛАУД
         "id": "ru_bridge_1",
-        "panel_url": "http://217.171.146.33:2053",  # API панели на новом сервере
+        "panel_url": "http://217.171.146.33:2053",
         "base_path": "0wlhvqnD4d2O1ggT8d",  
-        "panel_user": "Asad",  # Логин, который вы ввели в терминале для 3x-ui
-        "panel_password": "542013",  # Пароль от вашей панели
-        "inbound_id": 1,  # ID созданного инбаунда в панели
-        "my_ip": "217.171.146.33",  # Реальный IP для запросов API бота
-        "connect_ip": "158.160.233.149",  # «Белый» IP Яндекса, который пойдет в ссылку клиенту
-        "connect_port": 443,  # Порт моста Яндекса
-        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  # Скопируйте PUBLIC KEY (ключ Reality) из инбаунда
-        "sid": "dbb8",  # Скопируйте Short ID из инбаунда панели
-        "sni": "yandex.ru",  # Сайт маскировки (тот, что указали в инбаунде)
+        "panel_user": "Asad",
+        "panel_password": "542013",
+        "inbound_id": 1,
+        "my_ip": "217.171.146.33",
+        "connect_ip": "158.160.233.149",
+        "connect_port": 443,
+        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",
+        "sid": "dbb8",
+        "sni": "yandex.ru",
         "country_flag": "🇷🇺",
         "country_name": "Обход №1"
     }
 ]
-
 
 async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
@@ -338,15 +341,20 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
+                # Исправление склеивания URL: проверяем наличие слэша в начале base_path
+                b_path = srv['base_path']
+                if b_path and not b_path.startswith('/'):
+                    b_path = '/' + b_path
+                
                 # 1. Авторизация (Классический рабочий метод через data=)
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+                login_url = f"{srv['panel_url']}{b_path}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
 
                 headers = {"Accept": "application/json"}
 
                 # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                get_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/get/{srv['inbound_id']}"
                 async with session.get(get_url, headers=headers, timeout=10) as resp:
                     res_json = await resp.json()
                     
@@ -369,7 +377,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
                     
-                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                    add_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [{
@@ -386,7 +394,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     if not sub_id:
                         sub_id = secrets.token_hex(8)
                         
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    update_url = f"{srv['panel_url']}{b_path}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [{
@@ -400,27 +408,28 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # По умолчанию берем порт из панели, но для моста заменим на порт Яндекса
+                # Для обычных серверов берем порт из панели, для нового моста подставим 443 (connect_port)
+                current_ip = srv.get("connect_ip", srv['my_ip'])
                 my_port = srv.get("connect_port", res_json["obj"]["port"])
                 
-                # 4. ОБНОВЛЕННАЯ СБОРКА ССЫЛКИ ПО ВАШЕМУ ЭТАЛОНУ
+                # 4. Сборка ссылки строго по вашему оригинальному эталону строения
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "firefox"
                 elif srv["id"] == "ru_bridge_1":
-                    # НАСТРОЙКА ДЛЯ ВАШЕГО НОВОГО СЕРВЕРА
+                    # Для нового сервера оставляем текст чистым, фиксируем uTLS на firefox
                     remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = urllib.parse.quote(remark)
-                    current_fp = "firefox"  # Установлено строго firefox, как вы просили!
+                    safe_remark = remark
+                    current_fp = "firefox"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "chrome"
                 
-                # Строка параметров использует srv['connect_ip'] (Яндекс) вместо srv['my_ip']
+                # Оригинальная структура параметров сохранена полностью
                 config_link = (
-                    f"vless://{client_uuid}@{srv['connect_ip']}:{my_port}"
+                    f"vless://{client_uuid}@{current_ip}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
