@@ -275,10 +275,7 @@ def delete_promocode_from_db(code: str) -> bool:
 
 
 
-
-
-
-
+# 1. ОБНОВЛЕННЫЙ СПИСОК СЕРВЕРОВ (Добавлен ваш сервер-мост)
 SERVERS = [
     {
         "id": "fi_1",
@@ -288,8 +285,9 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.11.14",
+        "connect_ip": "78.17.11.14",  # Для старых серверов совпадает с реальным
         "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
-        "sid": "d35e733e16c7a4d0", # Убедитесь, что SID полный
+        "sid": "d35e733e16c7a4d0", 
         "sni": "www.amd.com",                           
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
@@ -302,11 +300,29 @@ SERVERS = [
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
+        "connect_ip": "78.17.152.36",  # Для старых серверов совпадает с реальным
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
         "sni": "www.sony.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
+    },
+    {
+        # ВАШ НОВЫЙ СЕРВЕР-МОСТ ЧЕРЕЗ ЯНДЕКС КЛАУД
+        "id": "ru_bridge_1",
+        "panel_url": "http://217.171.146.33:2053",  # API панели на новом сервере
+        "base_path": "0wlhvqnD4d2O1ggT8d",  
+        "panel_user": "Asad",  # Логин, который вы ввели в терминале для 3x-ui
+        "panel_password": "542013",  # Пароль от вашей панели
+        "inbound_id": 1,  # ID созданного инбаунда в панели
+        "my_ip": "217.171.146.33",  # Реальный IP для запросов API бота
+        "connect_ip": "158.160.233.149",  # «Белый» IP Яндекса, который пойдет в ссылку клиенту
+        "connect_port": 443,  # Порт моста Яндекса
+        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  # Скопируйте PUBLIC KEY (ключ Reality) из инбаунда
+        "sid": "dbb8",  # Скопируйте Short ID из инбаунда панели
+        "sni": "yandex.ru",  # Сайт маскировки (тот, что указали в инбаунде)
+        "country_flag": "🇷🇺",
+        "country_name": "Обход №1"
     }
 ]
 
@@ -384,36 +400,39 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                my_port = res_json["obj"]["port"]
+                # По умолчанию берем порт из панели, но для моста заменим на порт Яндекса
+                my_port = srv.get("connect_port", res_json["obj"]["port"])
                 
-                # 4. Сборка ссылки строго по вашему рабочему эталону
+                # 4. ОБНОВЛЕННАЯ СБОРКА ССЫЛКИ ПО ВАШЕМУ ЭТАЛОНУ
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
-                    # ИСПРАВЛЕНО: Для Финляндии ставим firefox
                     current_fp = "firefox"
+                elif srv["id"] == "ru_bridge_1":
+                    # НАСТРОЙКА ДЛЯ ВАШЕГО НОВОГО СЕРВЕРА
+                    remark = f"{srv['country_flag']} {srv['country_name']}"
+                    safe_remark = urllib.parse.quote(remark)
+                    current_fp = "firefox"  # Установлено строго firefox, как вы просили!
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
-                    # ИСПРАВЛЕНО: Для Польши ставим chrome
                     current_fp = "chrome"
                 
-                # Полное соответствие вашей эталонной строке параметров + правильный слэш перед #
+                # Строка параметров использует srv['connect_ip'] (Яндекс) вместо srv['my_ip']
                 config_link = (
-                    f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
+                    f"vless://{client_uuid}@{srv['connect_ip']}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
-                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/#{safe_remark}"
+                    f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
                     
                 vless_links.append(config_link)
-
-
 
             except Exception as e:
                 logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
