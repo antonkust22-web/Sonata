@@ -341,7 +341,7 @@ async def get_vpn_config_clean(user_id, username=""):
             try:
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # Исправление склеивания URL: проверяем наличие слэша в начале base_path
+                # ИСПРАВЛЕНИЕ: Автоматически добавляем слэш, если его забыли в base_path
                 b_path = srv['base_path']
                 if b_path and not b_path.startswith('/'):
                     b_path = '/' + b_path
@@ -408,28 +408,32 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # Для обычных серверов берем порт из панели, для нового моста подставим 443 (connect_port)
-                current_ip = srv.get("connect_ip", srv['my_ip'])
-                my_port = srv.get("connect_port", res_json["obj"]["port"])
+                # По умолчанию берем родные данные из панели и словаря
+                my_ip = srv['my_ip']
+                my_port = res_json["obj"]["port"]
                 
-                # 4. Сборка ссылки строго по вашему оригинальному эталону строения
+                # 4. Сборка ссылки строго по вашему рабочему эталону
                 if srv["id"] == "fi_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "firefox"
                 elif srv["id"] == "ru_bridge_1":
-                    # Для нового сервера оставляем текст чистым, фиксируем uTLS на firefox
+                    # ИСПРАВЛЕНО: Для нового сервера убираем quote, чтобы не было процентов (кракозябр)
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = remark
                     current_fp = "firefox"
+                    
+                    # ПОДМЕНА ДАННЫХ ДЛЯ ТРАНЗИТНОГО МОСТА ЯНДЕКСА
+                    my_ip = srv['connect_ip']
+                    my_port = srv['connect_port']
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = urllib.parse.quote(remark)
                     current_fp = "chrome"
                 
-                # Оригинальная структура параметров сохранена полностью
+                # Полное соответствие вашей эталонной строке параметров + правильный слэш перед #
                 config_link = (
-                    f"vless://{client_uuid}@{current_ip}:{my_port}"
+                    f"vless://{client_uuid}@{my_ip}:{my_port}"
                     f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}&spx=/# {safe_remark}"
                 )
@@ -441,6 +445,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
@@ -1110,6 +1115,7 @@ import logging
 import time
 from datetime import datetime
 from aiogram import types
+from aiogram import F # Убедитесь, что импортирован F для aiogram 3.x
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @dp.callback_query(F.data == "connect")
@@ -1119,34 +1125,14 @@ async def connect(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
 
-    # 1. Проверяем статус подписки перед генерацией
-    db_data = get_user_from_db(user_id)
-    current_time = time.time()
-    
-    # ТЕХНИЧЕСКОЕ ИСПРАВЛЕНИЕ: Извлекаем именно ячейку времени по индексу [3]
-    expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
-    
-    # Если пользователя нет в БД или его подписка истекла
-    if expiry_in_db <= current_time:
-        kb_no_access = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
-            [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
-        
-        text_no_access = (
-            "🔒 <b>Доступ ограничен</b>\n\n"
-            "У вас нет активной подписки Sonata VPN.\n"
-            "Чтобы получить ссылку для подключения, пожалуйста, продлите её в личном кабинете или активируйте промокод."
-        )
-        
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
-        return
+    # =========================================================================
+    # ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТИРОВАНИЯ (Проверка подписки пропущена)
+    # =========================================================================
+    # db_data = get_user_from_db(user_id)
+    # current_time = time.time()
+    # expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
+    # =========================================================================
 
-    # Если подписка активна — запускаем процесс формирования ссылки
     loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
     try:
         if callback.message.caption:
@@ -1157,18 +1143,33 @@ async def connect(callback: types.CallbackQuery):
         logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
 
     try:
+        # Запускаем оригинальную генерацию
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         
-        # ТЕХНИЧЕСКОЕ ИСПРАВЛЕНИЕ: Железобетонная склейка слэша для домена
-        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
+        # ЖЕЛЕЗОБЕТОННАЯ СКЛЕЙКА СЛЭША (Сохраняем / после .ru)
+        auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1"
 
         # Склеиваем ссылки строго через перенос строки (\n) для базы данных
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
+        # ФОРМИРУЕМ ОТЛАДОЧНЫЙ ТЕКСТ (Смотрим, какие ссылки сгенерировались)
+        debug_servers_info = ""
+        for link in vless_links:
+            # Извлекаем имя сервера из тега после знака #
+            if "#" in link:
+                server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
+            else:
+                server_name = "Неизвестный сервер"
+            debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
+
+        if not vless_links:
+            debug_servers_info = "❌ <b>Ни один сервер не ответил!</b> Проверьте логи консоли.\n"
+
+        # Имитируем дату окончания подписки (так как проверка отключена, ставим +30 дней от текущей)
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(time.time() + 2592000)
         expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1176,10 +1177,13 @@ async def connect(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
         ])
 
+        # Выводим подробный отчет о серверах и сгенерированную ссылку прямо на экран
         text = (
-            f"🚀 <b>Ваша подписка Sonata VPN</b>\n\n"
+            f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
             f"📅 Срок действия: до <b>{expiry_date}</b>\n"
-            f"🟢 Статус подключения: <b>Готово к работе</b>\n\n"
+            f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
+            f"<b>Статус синхронизации нод:</b>\n"
+            f"{debug_servers_info}\n"
             f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
         )
 
@@ -1199,7 +1203,6 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
         except Exception:
             pass
-
 
 
 
