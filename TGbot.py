@@ -68,43 +68,6 @@ dp = Dispatcher()
 #-----------Работа с базой данных----------------
 
 
-# --- ИСПРАВЛЕННЫЙ ХАК ДЛЯ ЗАЩИТЫ БАЗЫ ДАННЫХ НА AMVERA ---
-# Задаем имя файла вашей базы данных
-DB_FILENAME = "users.db" 
-
-if os.path.exists("/data"):
-    PERSISTENT_DB_DIR = "/data"
-    NEW_DB_PATH = os.path.join(PERSISTENT_DB_DIR, DB_FILENAME)
-    
-    # Сценарий 1: Бот обновился, в корне лежит старая рабочая база, а в /data ее еще нет — бережно копируем
-    if os.path.exists(DB_FILENAME) and not os.path.exists(NEW_DB_PATH):
-        try:
-            shutil.copy2(DB_FILENAME, NEW_DB_PATH)
-            logging.info(f"🚚 База данных успешно мигрировала в постоянное хранилище: {NEW_DB_PATH}")
-        except Exception as e:
-            logging.error(f"Не удалось скопировать базу данных при миграции: {e}")
-            
-    # Сценарий 2: Абсолютно чистый деплой. Файла нет ни в корне, ни в /data. 
-    # Принудительно создаем пустой файл базы прямо в защищенной папке, чтобы функции не падали в ошибку
-    elif not os.path.exists(NEW_DB_PATH):
-        try:
-            temp_conn = sqlite3.connect(NEW_DB_PATH, timeout=10.0)
-            temp_conn.close()
-            logging.info(f"✨ Создан новый чистый файл базы данных в постоянном хранилище: {NEW_DB_PATH}")
-        except Exception as e:
-            logging.error(f"Не удалось автоматически инициализировать файл базы в /data: {e}")
-
-    # ПРИНУДИТЕЛЬНО ВЫСТАВЛЯЕМ ГЛОБАЛЬНЫЙ ПУТЬ В ЗАЩИЩЕННУЮ ПАПКУ ДЛЯ ВСЕХ ФУНКЦИЙ
-    DB_PATH = NEW_DB_PATH
-    logging.info(f"🔒 ЗАЩИТА AMVERA АКТИВИРОВАНА. Актуальный рабочий путь базы: {DB_PATH}")
-else:
-    # Локальный путь для тестов на вашем компьютере (если папки /data нет)
-    DB_PATH = DB_FILENAME
-    logging.info(f"💻 Запуск в локальном режиме. Путь базы: {DB_PATH}")
-# --------------------------------------------------------
-
-
-
 def log_system_routing():
     """Выводит в логи информацию о путях БД при старте бота"""
     absolute_db_path = os.path.abspath(DB_PATH)
@@ -120,19 +83,18 @@ def init_db():
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # 1. Таблица пользователей (Добавлено поле trial_used с дефолтным значением 0)
+    # 1. Ваша существующая таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             vpn_config TEXT,
             github_raw_url TEXT,
-            expiry_time INTEGER DEFAULT 0,
-            trial_used INTEGER DEFAULT 0
+            expiry_time INTEGER DEFAULT 0
         )
     ''')
 
-    # 2. Обновленная таблица промокодов (С поддержкой max_uses и current_uses)
+    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
@@ -142,18 +104,13 @@ def init_db():
         )
     ''')
     
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ СТАРЫХ ТАБЛИЦ: 
-    # Если таблицы уже существовали, эти запросы безопасно добавят новые колонки, не ломая данные
-    try:
-        cursor.execute('ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0;')
-    except sqlite3.OperationalError:
-        pass # Если колонка уже есть, просто пропускаем
-
+    # ТЕХНИЧЕСКИЙ ХАК: Если таблица promocodes уже была на Amvera, 
+    # эти запросы добавят новые колонки max_uses и current_uses, не сломав старые промокоды
     try:
         cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
         cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
     except sqlite3.OperationalError:
-        pass # Если колонки уже есть, просто пропускаем
+        pass # Если колонки уже есть, SQLite выдаст ошибку, мы её просто игнорируем
 
     # 3. Новая таблица для логирования активаций многоразовых промокодов
     cursor.execute('''
@@ -162,14 +119,13 @@ def init_db():
             code TEXT NOT NULL,
             user_id INTEGER NOT NULL,
             activated_at TEXT DEFAULT NULL,
-            UNIQUE(code, user_id) -- Жестко запрещает одному юзеру вводить один код дважды
+            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
         )
     ''')
     
     conn.commit()
     conn.close()
     log_system_routing()
-
 
 
 
@@ -315,6 +271,7 @@ def delete_promocode_from_db(code: str) -> bool:
     conn.commit()
     conn.close()
     return True
+
 
 
 
@@ -542,62 +499,6 @@ async def fetch_real_server_load(srv):
         except Exception as e:
             logging.error(f"❌ Критическая ошибка получения статуса для сервера {srv['id']}: {e}")
             return None
-
-
-
-
-
-#-----------пробный период----------
-
-def check_and_grant_trial(user_id: int, username: str) -> bool:
-    """
-    Проверяет, использовал ли пользователь пробный период.
-    Выдает 4 дня строго ОДИН РАЗ за всю историю аккаунта.
-    """
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
-    # Запрашиваем время окончания и статус использования триала
-    cursor.execute('SELECT expiry_time, trial_used FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    
-    # Сценарий А: Пользователя вообще нет в базе (абсолютно новый)
-    if not row:
-        trial_days = 4
-        expiry_timestamp = int((datetime.now() + timedelta(days=trial_days)).timestamp())
-        
-        # Записываем пользователя в БД и СТРОГО ставим trial_used = 1
-        cursor.execute(
-            'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, trial_used) VALUES (?, ?, ?, ?, ?, 1)',
-            (user_id, username, None, None, expiry_timestamp)
-        )
-        conn.commit()
-        conn.close()
-        logging.info(f"🎁 Абсолютно новому пользователю {user_id} выдано {trial_days} дня триала.")
-        return True
-
-    # Сценарий Б: Пользователь есть в базе, проверяем, брал ли он триал ранее
-    expiry_time, trial_used = row
-    
-    if trial_used == 1 or trial_used == "1":
-        # Он уже получал свои 4 дня! Бот блокирует повторную выдачу и ничего не суммирует
-        conn.close()
-        return False
-    else:
-        # Пользователь есть в базе (например, зашел до обновления кода), но триал еще никогда не брал
-        trial_days = 4
-        expiry_timestamp = int((datetime.now() + timedelta(days=trial_days)).timestamp())
-        
-        # Обновляем пользователя: выставляем время триала и фиксируем, что триал использован (trial_used = 1)
-        cursor.execute(
-            'UPDATE users SET expiry_time = ?, trial_used = 1 WHERE user_id = ?',
-            (expiry_timestamp, user_id)
-        )
-        conn.commit()
-        conn.close()
-        logging.info(f"🎁 Старому пользователю {user_id} без триала успешно начислено {trial_days} дня.")
-        return True
-
 
 
 
@@ -1153,8 +1054,7 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
-        [InlineKeyboardButton(text="🎁 Получить пробный период", callback_data="activate_trial")], 
+        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")], 
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
@@ -1184,40 +1084,6 @@ async def cmd_start(message: types.Message):
         parse_mode="HTML"
     )
 
-
-
-@dp.callback_query(F.data == "activate_trial")
-async def process_activate_trial(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    
-    # 1. Подключаемся к базе данных
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    cursor = conn.cursor()
-    
-    # Проверяем, брал ли пользователь триал ранее
-    cursor.execute('SELECT trial_used FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    
-    # 2. Если флаг trial_used равен 1, блокируем повторную выдачу
-    if row and (row[0] == 1 or row[0] == "1"):
-        await callback.answer("❌ Вы уже активировали пробный период ранее!", show_alert=True)
-        conn.close()
-        return
-        
-    # 3. Начисляем ровно 4 дня подписки (вычисляем Unix-timestamp)
-    trial_days = 4
-    expiry_seconds = int((datetime.now() + timedelta(days=trial_days)).timestamp())
-    
-    # Обновляем время подписки и жестко выставляем trial_used = 1
-    cursor.execute(
-        'UPDATE users SET expiry_time = ?, trial_used = 1 WHERE user_id = ?',
-        (expiry_seconds, user_id)
-    )
-    conn.commit()
-    conn.close()
-    
-    # 4. Выводим простое уведомление без лишнего текста
-    await callback.answer(f"🎉 Пробный период успешно активирован! Вам начислено {trial_days} дня подписки.", show_alert=True)
 
 
 @dp.callback_query(F.data == "enter_promo")
