@@ -1109,10 +1109,32 @@ async def enter_promo_callback(callback: types.CallbackQuery):
 
 
 
+
+
 @dp.callback_query(F.data == "cabinet")
 async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+
+    # Генерируем официальную партнерскую ссылку через инфраструктуру Telegram
+    try:
+        invite_link = await callback.bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name=f"ref_{user_id}",
+            creates_join_request=False
+        )
+        ref_url = invite_link.invite_link
+    except Exception as e:
+        logging.error(f"Ошибка генерации партнерской ссылки Telegram: {e}")
+        ref_url = "⚠️ Включите Партнерскую программу в BotFather"
+
+    # Формируем красивый блок реферальной программы для текста
+    ref_text_block = (
+        f"🤝 <b>Партнерская программа:</b>\n"
+        f"Приглашайте друзей по ссылке и получайте процент в Telegram Stars с их оплат!\n"
+        f"🔗 Ссылка: <code>{ref_url}</code>\n\n"
+    )
 
     # Читаем данные из локальной SQLite3
     db_data = get_user_from_db(user_id)
@@ -1120,7 +1142,6 @@ async def cabinet(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if db_data and len(db_data) > 3:  
-        # ИСПРАВЛЕНО: Добавлен индекс [3] для извлечения числа из кортежа базы данных
         expiry_timestamp = db_data[3] if db_data[3] is not None else 0
         current_time = time.time()
 
@@ -1132,6 +1153,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
+                f"{ref_text_block}"  # Интегрировали партнерскую ссылку
                 f"✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             )
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
@@ -1142,6 +1164,7 @@ async def cabinet(callback: types.CallbackQuery):
                 f"<b>👤 Личный кабинет</b>\n\n"
                 f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
                 f"<b>Статус подписки:</b> {status_text}\n\n"
+                f"{ref_text_block}"  # Интегрировали партнерскую ссылку
                 f"⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
             )
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
