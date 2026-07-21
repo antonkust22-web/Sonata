@@ -492,38 +492,57 @@ async def get_vpn_config_clean(user_id, username=""):
 async def fetch_real_server_load(srv):
     """
     Делает запрос к API 3X-UI и возвращает реальный процент загрузки CPU.
+    Автоматически перебирает пути, если сервер выдает 404.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         try:
-            # 1. Логин в панель (Тут строго POST, как и было)
+            # 1. Авторизация на сервере (строго POST)
             login_url = f"{srv['panel_url']}{srv['base_path']}/login"
             async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5) as resp:
                 await resp.text()
                 
-            # 2. Запрос системного статуса (ИСПРАВЛЕНО: строго метод GET для /server/status)
-            status_url = f"{srv['panel_url']}{srv['base_path']}/server/status"
             headers = {"Accept": "application/json"}
             
-            async with session.get(status_url, headers=headers, timeout=5) as resp:
-                # Если сервер вернул ошибку, логгируем её статус
-                if resp.status != 200:
-                    logging.error(f"Сервер {srv['id']} вернул HTTP статус {resp.status} на запрос статуса")
-                    return None
-                    
-                res_json = await resp.json()
+            # Список эндпоинтов для проверки (сначала новый API-путь, затем старый прямой)
+            endpoints = [
+                f"{srv['panel_url']}{srv['base_path']}/panel/api/server/status",
+                f"{srv['panel_url']}{srv['base_path']}/server/status"
+            ]
+            
+            res_json = None
+            
+            # Перебираем пути, пока не найдем рабочий
+            for status_url in endpoints:
+                async with session.get(status_url, headers=headers, timeout=5) as resp:
+                    if resp.status == 200:
+                        try:
+                            res_json = await resp.json()
+                            if res_json.get("success") and "obj" in res_json:
+                                # Если данные успешно получены, прерываем цикл перебора путей
+                                break
+                        except Exception:
+                            # Если не удалось распарсить JSON, идем к следующему эндпоинту
+                            continue
+                    elif resp.status == 404:
+                        # Если 404, просто пробуем следующий путь в цикле
+                        continue
+            
+            # Если ни один путь не вернул успех
+            if not res_json or not res_json.get("success") or "obj" not in res_json:
+                logging.error(f"❌ Сервер {srv['id']} не отдал статус ни по одному из известных эндпоинтов.")
+                return None
                 
-            if res_json.get("success") and "obj" in res_json:
-                # Вытаскиваем загрузку процессора
-                cpu_load = res_json["obj"].get("cpu", 0)
-                return int(cpu_load)
+            # Извлекаем чистый процент загрузки процессора
+            cpu_load = res_json["obj"].get("cpu", 0)
+            return int(cpu_load)
                 
-            return None
         except Exception as e:
-            logging.error(f"Не удалось получить статус для сервера {srv['id']}: {e}")
+            logging.error(f"❌ Критическая ошибка получения статуса для сервера {srv['id']}: {e}")
             return None
+
 
 
 
