@@ -110,18 +110,19 @@ def init_db():
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # 1. Ваша существующая таблица пользователей
+    # 1. Таблица пользователей (Добавлено поле trial_used с дефолтным значением 0)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             vpn_config TEXT,
             github_raw_url TEXT,
-            expiry_time INTEGER DEFAULT 0
+            expiry_time INTEGER DEFAULT 0,
+            trial_used INTEGER DEFAULT 0
         )
     ''')
 
-    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
+    # 2. Обновленная таблица промокодов (С поддержкой max_uses и current_uses)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
@@ -131,13 +132,18 @@ def init_db():
         )
     ''')
     
-    # ТЕХНИЧЕСКИЙ ХАК: Если таблица promocodes уже была на Amvera, 
-    # эти запросы добавят новые колонки max_uses и current_uses, не сломав старые промокоды
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ СТАРЫХ ТАБЛИЦ: 
+    # Если таблицы уже существовали, эти запросы безопасно добавят новые колонки, не ломая данные
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0;')
+    except sqlite3.OperationalError:
+        pass # Если колонка уже есть, просто пропускаем
+
     try:
         cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
         cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
     except sqlite3.OperationalError:
-        pass # Если колонки уже есть, SQLite выдаст ошибку, мы её просто игнорируем
+        pass # Если колонки уже есть, просто пропускаем
 
     # 3. Новая таблица для логирования активаций многоразовых промокодов
     cursor.execute('''
@@ -146,13 +152,14 @@ def init_db():
             code TEXT NOT NULL,
             user_id INTEGER NOT NULL,
             activated_at TEXT DEFAULT NULL,
-            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
+            UNIQUE(code, user_id) -- Жестко запрещает одному юзеру вводить один код дважды
         )
     ''')
     
     conn.commit()
     conn.close()
     log_system_routing()
+
 
 
 
@@ -471,30 +478,35 @@ async def get_vpn_config_clean(user_id, username=""):
 
 #-------------нагрузки на сервера, функция---------
 
+
 async def fetch_real_server_load(srv):
     """
     Делает запрос к API 3X-UI и возвращает реальный процент загрузки CPU.
-    В случае сбоя возвращает None.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         try:
-            # 1. Логин в панель для получения сессионных кук
+            # 1. Логин в панель (Тут строго POST, как и было)
             login_url = f"{srv['panel_url']}{srv['base_path']}/login"
             async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5) as resp:
                 await resp.text()
                 
-            # 2. Запрос системного статуса (CPU, RAM, DB)
+            # 2. Запрос системного статуса (ИСПРАВЛЕНО: строго метод GET для /server/status)
             status_url = f"{srv['panel_url']}{srv['base_path']}/server/status"
             headers = {"Accept": "application/json"}
             
-            async with session.post(status_url, headers=headers, timeout=5) as resp:
+            async with session.get(status_url, headers=headers, timeout=5) as resp:
+                # Если сервер вернул ошибку, логгируем её статус
+                if resp.status != 200:
+                    logging.error(f"Сервер {srv['id']} вернул HTTP статус {resp.status} на запрос статуса")
+                    return None
+                    
                 res_json = await resp.json()
                 
             if res_json.get("success") and "obj" in res_json:
-                # Из ответа API вытаскиваем загрузку процессора (значение идет от 0.0 до 100.0)
+                # Вытаскиваем загрузку процессора
                 cpu_load = res_json["obj"].get("cpu", 0)
                 return int(cpu_load)
                 
@@ -510,33 +522,53 @@ async def fetch_real_server_load(srv):
 
 def check_and_grant_trial(user_id: int, username: str) -> bool:
     """
-    Проверяет, является ли пользователь новым.
-    Если да, выдает ему 4 дня бесплатного триала в БД.
-    Возвращает True, если триал выдан, и False, если пользователь уже был в базе.
+    Проверяет, использовал ли пользователь пробный период.
+    Выдает 4 дня строго ОДИН РАЗ за всю историю аккаунта.
     """
-    # 1. Проверяем, существует ли уже пользователь в нашей локальной БД
-    user_data = get_user_from_db(user_id)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
     
-    if user_data is None:
-        # 2. Рассчитываем время окончания подписки: текущее время + 4 дня
-        # Вычисляем в Unix-timestamp (в секундах)
+    # Запрашиваем время окончания и статус использования триала
+    cursor.execute('SELECT expiry_time, trial_used FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    
+    # Сценарий А: Пользователя вообще нет в базе (абсолютно новый)
+    if not row:
         trial_days = 4
         expiry_timestamp = int((datetime.now() + timedelta(days=trial_days)).timestamp())
         
-        # 3. Добавляем нового пользователя в базу данных с 4 днями подписки
-        # Поля конфигурации и ссылок оставляем None, ваш основной код заполнит их при генерации
-        add_or_update_user(
-            user_id=user_id,
-            username=username,
-            vpn_config=None,
-            github_raw_url=None,
-            expiry_time=expiry_timestamp
+        # Записываем пользователя в БД и СТРОГО ставим trial_used = 1
+        cursor.execute(
+            'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, trial_used) VALUES (?, ?, ?, ?, ?, 1)',
+            (user_id, username, None, None, expiry_timestamp)
         )
-        
-        logging.info(f"🎁 Новому пользователю @{username} (ID: {user_id}) выдано {trial_days} дня триала.")
+        conn.commit()
+        conn.close()
+        logging.info(f"🎁 Абсолютно новому пользователю {user_id} выдано {trial_days} дня триала.")
         return True
+
+    # Сценарий Б: Пользователь есть в базе, проверяем, брал ли он триал ранее
+    expiry_time, trial_used = row
+    
+    if trial_used == 1 or trial_used == "1":
+        # Он уже получал свои 4 дня! Бот блокирует повторную выдачу и ничего не суммирует
+        conn.close()
+        return False
+    else:
+        # Пользователь есть в базе (например, зашел до обновления кода), но триал еще никогда не брал
+        trial_days = 4
+        expiry_timestamp = int((datetime.now() + timedelta(days=trial_days)).timestamp())
         
-    return False
+        # Обновляем пользователя: выставляем время триала и фиксируем, что триал использован (trial_used = 1)
+        cursor.execute(
+            'UPDATE users SET expiry_time = ?, trial_used = 1 WHERE user_id = ?',
+            (expiry_timestamp, user_id)
+        )
+        conn.commit()
+        conn.close()
+        logging.info(f"🎁 Старому пользователю {user_id} без триала успешно начислено {trial_days} дня.")
+        return True
+
 
 
 
@@ -1383,21 +1415,17 @@ async def info(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "server_status")
 async def server_status(callback: types.CallbackQuery):
-    # Отправляем "Бот думает", чтобы Telegram не подсвечивал кнопку ошибкой, пока идут запросы к API
     await callback.answer("Получаю данные от серверов...")
     
-    # Запускаем параллельный опрос всех трех ваших панелей для экономии времени
-    # Берем структуру серверов из вашего списка SERVERS
-    load_fi = await fetch_real_server_load(SERVERS[0])  # Финляндия
-    load_pl = await fetch_real_server_load(SERVERS[1])  # Польша
-    load_ru = await fetch_real_server_load(SERVERS[2])  # Обход Яндекс (ru_bridge_1)
+    # ИСПРАВЛЕНО: Передаем конкретные объекты серверов из вашего глобального списка SERVERS
+    load_fi = await fetch_real_server_load(SERVERS[0])  # Финляндия (fi_1)
+    load_pl = await fetch_real_server_load(SERVERS[1])  # Польша (de_1)
+    load_ru = await fetch_real_server_load(SERVERS[2])  # Обход №1 (ru_bridge_1)
     
-    # Функция для автоматической оценки нагрузки смайликами по вашему ТЗ
     def get_status_text(load):
         if load is None:
             return "⚪️ Недоступен"
         
-        # Градации оценки
         if load < 40:
             return f"{load}% — 🟢 Стабильно"
         elif load < 75:
@@ -1410,18 +1438,18 @@ async def server_status(callback: types.CallbackQuery):
         f"🇫🇮 <b>Финляндия:</b> {get_status_text(load_fi)}\n"
         f"🇵🇱 <b>Польша:</b> {get_status_text(load_pl)}\n"
         f"🇷🇺 <b>Обход №1:</b> {get_status_text(load_ru)}\n\n"
-        "<i>Данные обновляются в реальном времени. Если сервер загружен, рекомендуем переключиться на другой.</i>"
+        "<i>Данные запрашиваются напрямую из системных панелей 3X-UI в реальном времени.</i>"
     )
     
-    # Кнопка возврата обратно в меню Инфо
     back_to_info_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад в Инфо", callback_data="info")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="info")]
     ])
     
     try:
         await callback.message.edit_caption(caption=status_text, reply_markup=back_to_info_kb, parse_mode="HTML")
     except Exception:
         pass
+
 
 
 
@@ -1765,53 +1793,107 @@ async def successful_payment_handler(message: types.Message):
 
 
 
+import asyncio
+import sqlite3
+import time
+import logging
+from datetime import datetime, timedelta
 
 async def check_and_notify_expiring_subscriptions(bot):
-    """Фоновая задача: проверяет пользователей, у которых подписка 
-    заканчивается ровно через 4 дня, и отправляет им уведомление."""
-    logging.info("Запуск проверки истекающих подписок...")
-    
-    FOUR_DAYS_SECONDS = 4 * 24 * 60 * 60
-    ONE_HOUR = 60 * 60 
+    """
+    Фоновая задача: запускается раз в день.
+    1. Уведомляет платных подписчиков за 3 дня до окончания (игнорируя триал).
+    2. Уведомляет пользователей с закончившимся пробным периодом и предлагает оплату.
+    """
+    logging.info("⏳ Запуск проверки статусов и истекающих подписок...")
     
     current_time = int(time.time())
-    target_time_min = current_time + FOUR_DAYS_SECONDS - ONE_HOUR
-    target_time_max = current_time + FOUR_DAYS_SECONDS + ONE_HOUR
-
+    
+    # Расчет временных меток для проверки "Заканчивается через 3 дня" (интервал в целые сутки)
+    three_days_later_start = int((datetime.now() + timedelta(days=3)).replace(hour=0, minute=0, second=0).timestamp())
+    three_days_later_end = int((datetime.now() + timedelta(days=3)).replace(hour=23, minute=59, second=59).timestamp())
+    
+    # Расчет временных меток для проверки "Закончилась сегодня" (последние 24 часа)
+    expired_today_start = current_time - (24 * 60 * 60)
+    
     try:
-        # Подключение к вашей базе данных на хостинге Amvera
+        # Используем ваш путь к базе данных на Amvera
         conn = sqlite3.connect("/app/users.db") 
         cursor = conn.cursor()
         
-        # Исправлено: вместо tg_id теперь запрашивается user_id
+        # 1. Вытаскиваем пользователей, у кого подписка кончается ровно через 3 дня
         cursor.execute(
-            "SELECT user_id FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
-            (target_time_min, target_time_max)
+            "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
+            (three_days_later_start, three_days_later_end)
         )
-        users_to_notify = cursor.fetchall()
+        expiring_users = cursor.fetchall()
+        
+        # 2. Вытаскиваем пользователей, у кого подписка закончилась в течение последних 24 часов
+        cursor.execute(
+            "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?",
+            (expired_today_start, current_time)
+        )
+        expired_users = cursor.fetchall()
+        
         conn.close()
     except Exception as e:
-        logging.error(f"Ошибка при чтении БД для уведомлений: {e}")
+        logging.error(f"❌ Ошибка при чтении БД для уведомлений: {e}")
         return
 
-    # Рассылка уведомлений найденным пользователям
-    for row in users_to_notify:
-        user_id = row[0]  # Безопасно извлекаем ID пользователя из кортежа SQLite
+    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ (ТОЛЬКО ДЛЯ ПЛАТНЫХ) ---
+    for row in expiring_users:
+        user_id, expiry_time = row[0], row[1]
         try:
-            text = (
-                "⚠️ **Внимание!**\n\n"
-                "Ваша VPN-подписка заканчивается через **4 дня**.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
-            )
-            # Отправка сообщения пользователю в Telegram
-            await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
-            logging.info(f"Уведомление об окончании успешно отправлено пользователю {user_id}")
+            # ТЕХНИЧЕСКИЙ ХАК: Как бот поймет, что это ТРИАЛ?
+            # Если сейчас до конца осталось 3 дня, а всего было выдано 4 дня, 
+            # значит подписка началась примерно 1 день назад. 
+            # Проверяем: если подписка была оформлена (expiry_time - 4 дня) в прошлом, и этот момент очень близок к созданию триала — пропускаем.
+            total_duration_days = (expiry_time - current_time) / 86400 + 1 # округление общего срока
             
-            # Защитная пауза 0.05 сек (до 20 сообщений в секунду), чтобы Telegram не заблокировал бота за спам
+            if total_duration_days <= 4.5:
+                # Это пробный период (выдан на 4 дня, осталось 3). Пропускаем, на него не реагируем!
+                continue
+                
+            text = (
+                "⚠️ <b>Внимание!</b>\n\n"
+                "Ваша VPN-подписка заканчивается через <b>3 дня</b>.\n"
+                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к безопасной сети."
+            )
+            await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
+            logging.info(f"🔔 Дорелизное уведомление (3 дня) отправлено пользователю {user_id}")
             await asyncio.sleep(0.05) 
             
-        except Exception as send_error:
-            logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {send_error}")
+        except Exception as err:
+            logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
+
+    # --- БЛОК 2: ОКОНЧАНИЕ ПРОБНОГО ПЕРИОДА (ПРЕДЛОЖЕНИЕ ОПЛАТЫ) ---
+    for row in expired_users:
+        user_id, expiry_time = row[0], row[1]
+        try:
+            # Проверяем по логам или флагам, отправляли ли уже. 
+            # Чтобы не спамить, можно ориентироваться на точное совпадение окончания триала
+            # Текст с предложением оплатить подписку и вызовом клавиатуры меню
+            text_expired = (
+                "🛑 <b>Пробный период окончен!</b>\n\n"
+                "Срок действия вашего бесплатного тестового доступа (4 дня) успешно завершился.\n"
+                "Вам понравилась скорость работы Sonata VPN? Продлите подписку прямо сейчас, чтобы вернуть доступ к серверам!\n\n"
+                "💰 Для продления нажмите кнопку ниже или введите команду /pay"
+            )
+            
+            # Подключаем вашу функцию главного меню или кнопку оплаты, если она есть
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+                [InlineKeyboardButton(text="📱 Главное меню", callback_data="back")]
+            ])
+            
+            await bot.send_message(chat_id=user_id, text=text_expired, reply_markup=pay_kb, parse_mode="HTML")
+            logging.info(f"🎁 Уведомление об окончании ТРИАЛА успешно отправлено пользователю {user_id}")
+            await asyncio.sleep(0.05)
+            
+        except Exception as err:
+            logging.error(f"Не удалось отправить уведомление об окончании триала пользователю {user_id}: {err}")
+
 
 
 
