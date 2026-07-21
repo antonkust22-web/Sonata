@@ -1154,7 +1154,7 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
-        [InlineKeyboardButton(text="🎁 Получить тест на 4 дня", callback_data="activate_trial")], 
+        [InlineKeyboardButton(text="🎁 Получить пробный период", callback_data="activate_trial")], 
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
@@ -1490,7 +1490,7 @@ async def server_status(callback: types.CallbackQuery):
         f"🇫🇮 <b>Финляндия:</b> {get_status_text(load_fi)}\n"
         f"🇵🇱 <b>Польша:</b> {get_status_text(load_pl)}\n"
         f"🇷🇺 <b>Обход №1:</b> {get_status_text(load_ru)}\n\n"
-        "<i>Данные запрашиваются напрямую из системных панелей 3X-UI в реальном времени.</i>"
+        "<i>Данные обновляются в реальном времени. Если сервер загружен, рекомендуем переключиться на другой.</i>"
     )
     
     back_to_info_kb = InlineKeyboardMarkup(inline_keyboard=[
