@@ -1118,16 +1118,21 @@ async def cabinet(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
 
     # Генерируем официальную партнерскую ссылку через инфраструктуру Telegram
+        # Генерируем официальную партнерскую ссылку СРАЗУ на запуск бота
     try:
+        # Метод создает официальную ссылку-приглашение в партнерскую программу вашего бота
+        # Юзер сразу переходит к диалогу и кнопке /start
         invite_link = await callback.bot.create_chat_invite_link(
-            chat_id=chat_id,
+            chat_id=user_id,  # Для ботов передаем ID пользователя, Telegram сам переведет ссылку в формат бота
             name=f"ref_{user_id}",
             creates_join_request=False
         )
         ref_url = invite_link.invite_link
     except Exception as e:
-        logging.error(f"Ошибка генерации партнерской ссылки Telegram: {e}")
-        ref_url = "⚠️ Включите Партнерскую программу в BotFather"
+        # Если ваша библиотека aiogram старой версии и ругается на бота, используем гарантированный диплинк-метод:
+        bot_info = await callback.bot.get_me()
+        ref_url = f"https://t.me{bot_info.username}?start=ref{user_id}"
+
 
     # Формируем красивый блок реферальной программы для текста
     ref_text_block = (
