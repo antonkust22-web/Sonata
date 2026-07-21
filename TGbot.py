@@ -1131,7 +1131,7 @@ async def cabinet(callback: types.CallbackQuery):
     except Exception as e:
         # Если ваша библиотека aiogram старой версии и ругается на бота, используем гарантированный диплинк-метод:
         bot_info = await callback.bot.get_me()
-        ref_url = f"https://t.me{bot_info.username}?start=ref{user_id}"
+        ref_url = f"https://t.me/{bot_info.username}?start=ref{user_id}"
 
 
     # Формируем красивый блок реферальной программы для текста
