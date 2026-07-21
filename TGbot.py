@@ -1144,11 +1144,11 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
 
-    # 1. Проверяем, новый ли пользователь, и выдаем 4 дня триала
+    # 1. Проверяем и начисляет 4 дня триала, если пользователя нет в БД
     is_new_user = check_and_grant_trial(user_id, username)
     
     if is_new_user:
-        # Если пользователь новый — выводим сообщение про подарок
+        # Если триал выдался впервые — просим нажать /start ещё раз
         await message.answer(
             f"👋 Добро пожаловать в Sonata VPN\n\n"
             f"🎁 Вам начислено <b>4 дня пробного периода</b>.\n"
@@ -1156,9 +1156,40 @@ async def cmd_start(message: types.Message):
             parse_mode="HTML"
         )
     else:
-        # Если пользователь нажал /start повторно — обновляем его имя в БД и открываем основное меню
-        add_or_update_user(user_id, username)
-        
+        # 2. ПОВТОРНЫЙ ЗАПУСК: Генерируем реальные ссылки из панели 3X-UI
+        try:
+            vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+            
+            # Собираем ссылки в одну строку, разделённую переносом строки
+            vpn_config_str = "\n".join(vless_links) if vless_links else None
+            
+            # Если в панели у пользователя уже есть платные дни (больше 0), берём их, 
+            # иначе оставляем то время, которое уже лежит в нашей локальной БД
+            if expiry_time_ms > 0:
+                expiry_seconds = int(expiry_time_ms / 1000)
+            else:
+                user_in_db = get_user_from_db(user_id)
+                expiry_seconds = user_in_db[3] if user_in_db else 0
+
+            # Формируем веб-ссылку на подписку для вашего сайта index.php (как в старом коде)
+            # В качестве subId используем MD5 хэш от Telegram ID, чтобы он был фиксированным
+            sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+            subscription_web_url = f"https://sonatavpn.ru/{sub_id}"
+
+            # 3. Принудительно записываем сгенерированные ссылки и правильное время в БД
+            # Теперь поля vpn_config и github_raw_url (туда пишем ссылку подписки) НЕ будут NULL!
+            add_or_update_user(
+                user_id=user_id,
+                username=username,
+                vpn_config=vpn_config_str,
+                github_raw_url=subscription_web_url,
+                expiry_time=expiry_seconds
+            )
+            
+        except Exception as e:
+            logging.error(f"Ошибка генерации конфигов при повторном /start для {user_id}: {e}", exc_info=True)
+
+        # 4. Выводим ваше основное меню с видео
         await message.answer_video(
             video=VIDEO_MAIN,  
             caption=text1,
