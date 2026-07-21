@@ -67,32 +67,42 @@ dp = Dispatcher()
 
 #-----------Работа с базой данных----------------
 
-# --- ХАК ДЛЯ ЗАЩИТЫ БАЗЫ ДАННЫХ НА AMVERA ---
-# Проверяем, запущено ли приложение на Amvera (там всегда есть папка /data)
+
+# --- ИСПРАВЛЕННЫЙ ХАК ДЛЯ ЗАЩИТЫ БАЗЫ ДАННЫХ НА AMVERA ---
+# Задаем имя файла вашей базы данных
+DB_FILENAME = "users.db" 
+
 if os.path.exists("/data"):
     PERSISTENT_DB_DIR = "/data"
-    # Имя файла вашей базы данных (замените "vpn_bot.db" на ваше реальное имя файла, если оно другое)
-    DB_FILENAME = "users.db" 
-    
     NEW_DB_PATH = os.path.join(PERSISTENT_DB_DIR, DB_FILENAME)
     
-    # Если бот обновился, но в корне остался старый файл базы, а в /data его еще нет — бережно копируем его туда
+    # Сценарий 1: Бот обновился, в корне лежит старая рабочая база, а в /data ее еще нет — бережно копируем
     if os.path.exists(DB_FILENAME) and not os.path.exists(NEW_DB_PATH):
         try:
             shutil.copy2(DB_FILENAME, NEW_DB_PATH)
             logging.info(f"🚚 База данных успешно мигрировала в постоянное хранилище: {NEW_DB_PATH}")
         except Exception as e:
-            logging.error(f"Не удалось скопировать базу данных: {e}")
+            logging.error(f"Не удалось скопировать базу данных при миграции: {e}")
+            
+    # Сценарий 2: Абсолютно чистый деплой. Файла нет ни в корне, ни в /data. 
+    # Принудительно создаем пустой файл базы прямо в защищенной папке, чтобы функции не падали в ошибку
+    elif not os.path.exists(NEW_DB_PATH):
+        try:
+            temp_conn = sqlite3.connect(NEW_DB_PATH, timeout=10.0)
+            temp_conn.close()
+            logging.info(f"✨ Создан новый чистый файл базы данных в постоянном хранилище: {NEW_DB_PATH}")
+        except Exception as e:
+            logging.error(f"Не удалось автоматически инициализировать файл базы в /data: {e}")
 
-    # ПРИНУДИТЕЛЬНО ПЕРЕНАПРАВЛЯЕМ ПУТЬ В ЗАЩИЩЕННУЮ ПАПКУ
+    # ПРИНУДИТЕЛЬНО ВЫСТАВЛЯЕМ ГЛОБАЛЬНЫЙ ПУТЬ В ЗАЩИЩЕННУЮ ПАПКУ ДЛЯ ВСЕХ ФУНКЦИЙ
     DB_PATH = NEW_DB_PATH
-    logging.info(f"🔒 Защита Amvera активирована. Актуальный путь базы: {DB_PATH}")
+    logging.info(f"🔒 ЗАЩИТА AMVERA АКТИВИРОВАНА. Актуальный рабочий путь базы: {DB_PATH}")
 else:
-    # Локальный путь для тестов на компьютере (оставляем как было у вас)
-    # Если у вас переменная называлась иначе, убедитесь, что она инициализирует ваш стандартный путь
-    if 'DB_PATH' not in locals() and 'DB_PATH' not in globals():
-        DB_PATH = "users.db" 
-# --------------------------------------------
+    # Локальный путь для тестов на вашем компьютере (если папки /data нет)
+    DB_PATH = DB_FILENAME
+    logging.info(f"💻 Запуск в локальном режиме. Путь базы: {DB_PATH}")
+# --------------------------------------------------------
+
 
 
 def log_system_routing():
@@ -1144,58 +1154,51 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
 
-    # 1. Проверяем и начисляет 4 дня триала, если пользователя нет в БД
+    # 1. Проверяем и начисляем 4 дня триала в защищенную БД (DB_PATH), если пользователя там нет
     is_new_user = check_and_grant_trial(user_id, username)
     
+    # 2. Сразу же генерируем актуальные конфиги из панели 3X-UI, чтобы поля не оставались NULL
+    try:
+        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+        vpn_config_str = "\n".join(vless_links) if vless_links else None
+        
+        # Синхронизация времени: если в панели у юзера есть платные дни — берем их.
+        # Если в панели 0 (бесконечно), подтягиваем сохраненное время триала из нашей защищенной БД
+        if expiry_time_ms > 0:
+            expiry_seconds = int(expiry_time_ms / 1000)
+        else:
+            user_in_db = get_user_from_db(user_id)
+            # Извлекаем четвертый элемент (индекс 3) кортежа: (username, vpn_config, github_raw_url, expiry_time)
+            expiry_seconds = user_in_db[3] if user_in_db and len(user_in_db) > 3 else 0
+
+        # Веб-ссылка на подписку для вашего скрипта index.php
+        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        subscription_web_url = f"https://sonatavpn.ru{sub_id}"
+
+        # 3. Сохраняем сгенерированные ссылки и правильное время в БД (теперь поля НЕ будут NULL)
+        add_or_update_user(
+            user_id=user_id,
+            username=username,
+            vpn_config=vpn_config_str,
+            github_raw_url=subscription_web_url,
+            expiry_time=expiry_seconds
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка автоматической генерации конфигов при /start для {user_id}: {e}", exc_info=True)
+
+    # 4. Отправляем ответ пользователю в один заход
     if is_new_user:
-        # Если триал выдался впервые — просим нажать /start ещё раз
-        await message.answer(
-            f"👋 Добро пожаловать в Sonata VPN\n\n"
-            f"🎁 Вам начислено <b>4 дня пробного периода</b>.\n"
-            f"Нажмите еще раз /start, чтобы получить ваши настройки подключения!",
-            parse_mode="HTML"
-        )
-    else:
-        # 2. ПОВТОРНЫЙ ЗАПУСК: Генерируем реальные ссылки из панели 3X-UI
-        try:
-            vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
-            
-            # Собираем ссылки в одну строку, разделённую переносом строки
-            vpn_config_str = "\n".join(vless_links) if vless_links else None
-            
-            # Если в панели у пользователя уже есть платные дни (больше 0), берём их, 
-            # иначе оставляем то время, которое уже лежит в нашей локальной БД
-            if expiry_time_ms > 0:
-                expiry_seconds = int(expiry_time_ms / 1000)
-            else:
-                user_in_db = get_user_from_db(user_id)
-                expiry_seconds = user_in_db[3] if user_in_db else 0
+        # Показываем плашку о подарке только один раз при самом первом входе
+        await message.answer("🎁 Вам начислено <b>4 дня пробного периода</b> к вашей подписке!", parse_mode="HTML")
 
-            # Формируем веб-ссылку на подписку для вашего сайта index.php (как в старом коде)
-            # В качестве subId используем MD5 хэш от Telegram ID, чтобы он был фиксированным
-            sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-            subscription_web_url = f"https://sonatavpn.ru/{sub_id}"
-
-            # 3. Принудительно записываем сгенерированные ссылки и правильное время в БД
-            # Теперь поля vpn_config и github_raw_url (туда пишем ссылку подписки) НЕ будут NULL!
-            add_or_update_user(
-                user_id=user_id,
-                username=username,
-                vpn_config=vpn_config_str,
-                github_raw_url=subscription_web_url,
-                expiry_time=expiry_seconds
-            )
-            
-        except Exception as e:
-            logging.error(f"Ошибка генерации конфигов при повторном /start для {user_id}: {e}", exc_info=True)
-
-        # 4. Выводим ваше основное меню с видео
-        await message.answer_video(
-            video=VIDEO_MAIN,  
-            caption=text1,
-            reply_markup=main_kb(),
-            parse_mode="HTML"
-        )
+    # Выводим ваше основное меню с видео-анимацией и клавиатурой main_kb()
+    await message.answer_video(
+        video=VIDEO_MAIN,  
+        caption=text1,
+        reply_markup=main_kb(),
+        parse_mode="HTML"
+    )
 
 
 
@@ -1824,12 +1827,6 @@ async def successful_payment_handler(message: types.Message):
 
 
 
-import asyncio
-import sqlite3
-import time
-import logging
-from datetime import datetime, timedelta
-
 async def check_and_notify_expiring_subscriptions(bot):
     """
     Фоновая задача: запускается раз в день.
@@ -1848,8 +1845,8 @@ async def check_and_notify_expiring_subscriptions(bot):
     expired_today_start = current_time - (24 * 60 * 60)
     
     try:
-        # Используем ваш путь к базе данных на Amvera
-        conn = sqlite3.connect("/app/users.db") 
+        # ИСПРАВЛЕНО: Подключение строго по глобальной защищенной переменной DB_PATH
+        conn = sqlite3.connect(DB_PATH, timeout=30.0) 
         cursor = conn.cursor()
         
         # 1. Вытаскиваем пользователей, у кого подписка кончается ровно через 3 дня
@@ -1873,16 +1870,14 @@ async def check_and_notify_expiring_subscriptions(bot):
 
     # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ (ТОЛЬКО ДЛЯ ПЛАТНЫХ) ---
     for row in expiring_users:
-        user_id, expiry_time = row[0], row[1]
+        user_id = row[0]
+        expiry_time = row[1]
         try:
-            # ТЕХНИЧЕСКИЙ ХАК: Как бот поймет, что это ТРИАЛ?
-            # Если сейчас до конца осталось 3 дня, а всего было выдано 4 дня, 
-            # значит подписка началась примерно 1 день назад. 
-            # Проверяем: если подписка была оформлена (expiry_time - 4 дня) в прошлом, и этот момент очень близок к созданию триала — пропускаем.
-            total_duration_days = (expiry_time - current_time) / 86400 + 1 # округление общего срока
+            # Защита: Считаем общую длительность подписки от текущего момента
+            total_duration_days = (expiry_time - current_time) / 86400 + 1
             
             if total_duration_days <= 4.5:
-                # Это пробный период (выдан на 4 дня, осталось 3). Пропускаем, на него не реагируем!
+                # Это только что выданный пробный период (осталось 3 дня из 4). На него НЕ реагируем.
                 continue
                 
             text = (
@@ -1891,7 +1886,7 @@ async def check_and_notify_expiring_subscriptions(bot):
                 "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к безопасной сети."
             )
             await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
-            logging.info(f"🔔 Дорелизное уведомление (3 дня) отправлено пользователю {user_id}")
+            logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
             await asyncio.sleep(0.05) 
             
         except Exception as err:
@@ -1899,11 +1894,8 @@ async def check_and_notify_expiring_subscriptions(bot):
 
     # --- БЛОК 2: ОКОНЧАНИЕ ПРОБНОГО ПЕРИОДА (ПРЕДЛОЖЕНИЕ ОПЛАТЫ) ---
     for row in expired_users:
-        user_id, expiry_time = row[0], row[1]
+        user_id = row[0]
         try:
-            # Проверяем по логам или флагам, отправляли ли уже. 
-            # Чтобы не спамить, можно ориентироваться на точное совпадение окончания триала
-            # Текст с предложением оплатить подписку и вызовом клавиатуры меню
             text_expired = (
                 "🛑 <b>Пробный период окончен!</b>\n\n"
                 "Срок действия вашего бесплатного тестового доступа (4 дня) успешно завершился.\n"
@@ -1911,7 +1903,7 @@ async def check_and_notify_expiring_subscriptions(bot):
                 "💰 Для продления нажмите кнопку ниже или введите команду /pay"
             )
             
-            # Подключаем вашу функцию главного меню или кнопку оплаты, если она есть
+            # Клавиатура перевода на оплату
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             pay_kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
@@ -1925,6 +1917,7 @@ async def check_and_notify_expiring_subscriptions(bot):
         except Exception as err:
             logging.error(f"Не удалось отправить уведомление об окончании триала пользователю {user_id}: {err}")
 
+  
 
 
 
