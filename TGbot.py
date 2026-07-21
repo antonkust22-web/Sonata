@@ -1149,21 +1149,22 @@ def back_kb():
     ])
 
 # --- Хендлеры ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     
-    # Регистрируем пользователя, если его нет
+    # Регистрируем/обновляем пользователя в БД
     add_or_update_user(user_id, username)
     
+    # ИСПРАВЛЕНО: Убрали user_id из скобок функции main_kb()
     await message.answer_video(
         video=VIDEO_MAIN,  
         caption=text1,
-        reply_markup=main_kb(user_id), # Передаем ID
+        reply_markup=main_kb(), # Было main_kb(user_id) -> СТАЛО ЧИСТО main_kb()
         parse_mode="HTML"
     )
+
 
 
 @dp.callback_query(F.data == "activate_trial")
