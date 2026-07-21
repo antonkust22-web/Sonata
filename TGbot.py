@@ -1135,6 +1135,7 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")],
+        [InlineKeyboardButton(text="🎁 Получить тест на 4 дня", callback_data="activate_trial")], 
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
@@ -1153,53 +1154,50 @@ def back_kb():
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
-
-    # 1. Проверяем и начисляем 4 дня триала в защищенную БД (DB_PATH), если пользователя там нет
-    is_new_user = check_and_grant_trial(user_id, username)
     
-    # 2. Сразу же генерируем актуальные конфиги из панели 3X-UI, чтобы поля не оставались NULL
-    try:
-        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
-        vpn_config_str = "\n".join(vless_links) if vless_links else None
-        
-        # Синхронизация времени: если в панели у юзера есть платные дни — берем их.
-        # Если в панели 0 (бесконечно), подтягиваем сохраненное время триала из нашей защищенной БД
-        if expiry_time_ms > 0:
-            expiry_seconds = int(expiry_time_ms / 1000)
-        else:
-            user_in_db = get_user_from_db(user_id)
-            # Извлекаем четвертый элемент (индекс 3) кортежа: (username, vpn_config, github_raw_url, expiry_time)
-            expiry_seconds = user_in_db[3] if user_in_db and len(user_in_db) > 3 else 0
-
-        # Веб-ссылка на подписку для вашего скрипта index.php
-        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        subscription_web_url = f"https://sonatavpn.ru{sub_id}"
-
-        # 3. Сохраняем сгенерированные ссылки и правильное время в БД (теперь поля НЕ будут NULL)
-        add_or_update_user(
-            user_id=user_id,
-            username=username,
-            vpn_config=vpn_config_str,
-            github_raw_url=subscription_web_url,
-            expiry_time=expiry_seconds
-        )
-        
-    except Exception as e:
-        logging.error(f"Ошибка автоматической генерации конфигов при /start для {user_id}: {e}", exc_info=True)
-
-    # 4. Отправляем ответ пользователю в один заход
-    if is_new_user:
-        # Показываем плашку о подарке только один раз при самом первом входе
-        await message.answer("🎁 Вам начислено <b>4 дня пробного периода</b> к вашей подписке!", parse_mode="HTML")
-
-    # Выводим ваше основное меню с видео-анимацией и клавиатурой main_kb()
+    # Регистрируем пользователя, если его нет
+    add_or_update_user(user_id, username)
+    
     await message.answer_video(
         video=VIDEO_MAIN,  
         caption=text1,
-        reply_markup=main_kb(),
+        reply_markup=main_kb(user_id), # Передаем ID
         parse_mode="HTML"
     )
 
+
+@dp.callback_query(F.data == "activate_trial")
+async def process_activate_trial(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    # 1. Подключаемся к базе данных
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    cursor = conn.cursor()
+    
+    # Проверяем, брал ли пользователь триал ранее
+    cursor.execute('SELECT trial_used FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    
+    # 2. Если флаг trial_used равен 1, блокируем повторную выдачу
+    if row and (row[0] == 1 or row[0] == "1"):
+        await callback.answer("❌ Вы уже активировали пробный период ранее!", show_alert=True)
+        conn.close()
+        return
+        
+    # 3. Начисляем ровно 4 дня подписки (вычисляем Unix-timestamp)
+    trial_days = 4
+    expiry_seconds = int((datetime.now() + timedelta(days=trial_days)).timestamp())
+    
+    # Обновляем время подписки и жестко выставляем trial_used = 1
+    cursor.execute(
+        'UPDATE users SET expiry_time = ?, trial_used = 1 WHERE user_id = ?',
+        (expiry_seconds, user_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    # 4. Выводим простое уведомление без лишнего текста
+    await callback.answer(f"🎉 Пробный период успешно активирован! Вам начислено {trial_days} дня подписки.", show_alert=True)
 
 
 @dp.callback_query(F.data == "enter_promo")
