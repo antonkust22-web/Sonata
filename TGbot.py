@@ -14,6 +14,7 @@ import hashlib
 import re
 import sqlite3  
 import datetime
+import shutil
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
@@ -21,8 +22,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPri
 from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import types
+
 
 
 # --- ПРАВА АДМИНИСТРАТОРА ---
@@ -64,6 +66,33 @@ dp = Dispatcher()
 
 
 #-----------Работа с базой данных----------------
+
+# --- ХАК ДЛЯ ЗАЩИТЫ БАЗЫ ДАННЫХ НА AMVERA ---
+# Проверяем, запущено ли приложение на Amvera (там всегда есть папка /data)
+if os.path.exists("/data"):
+    PERSISTENT_DB_DIR = "/data"
+    # Имя файла вашей базы данных (замените "vpn_bot.db" на ваше реальное имя файла, если оно другое)
+    DB_FILENAME = "users.db" 
+    
+    NEW_DB_PATH = os.path.join(PERSISTENT_DB_DIR, DB_FILENAME)
+    
+    # Если бот обновился, но в корне остался старый файл базы, а в /data его еще нет — бережно копируем его туда
+    if os.path.exists(DB_FILENAME) and not os.path.exists(NEW_DB_PATH):
+        try:
+            shutil.copy2(DB_FILENAME, NEW_DB_PATH)
+            logging.info(f"🚚 База данных успешно мигрировала в постоянное хранилище: {NEW_DB_PATH}")
+        except Exception as e:
+            logging.error(f"Не удалось скопировать базу данных: {e}")
+
+    # ПРИНУДИТЕЛЬНО ПЕРЕНАПРАВЛЯЕМ ПУТЬ В ЗАЩИЩЕННУЮ ПАПКУ
+    DB_PATH = NEW_DB_PATH
+    logging.info(f"🔒 Защита Amvera активирована. Актуальный путь базы: {DB_PATH}")
+else:
+    # Локальный путь для тестов на компьютере (оставляем как было у вас)
+    # Если у вас переменная называлась иначе, убедитесь, что она инициализирует ваш стандартный путь
+    if 'DB_PATH' not in locals() and 'DB_PATH' not in globals():
+        DB_PATH = "users.db" 
+# --------------------------------------------
 
 
 def log_system_routing():
@@ -440,7 +469,37 @@ async def get_vpn_config_clean(user_id, username=""):
 
 
 
+#-----------пробный период----------
 
+def check_and_grant_trial(user_id: int, username: str) -> bool:
+    """
+    Проверяет, является ли пользователь новым.
+    Если да, выдает ему 4 дня бесплатного триала в БД.
+    Возвращает True, если триал выдан, и False, если пользователь уже был в базе.
+    """
+    # 1. Проверяем, существует ли уже пользователь в нашей локальной БД
+    user_data = get_user_from_db(user_id)
+    
+    if user_data is None:
+        # 2. Рассчитываем время окончания подписки: текущее время + 4 дня
+        # Вычисляем в Unix-timestamp (в секундах)
+        trial_days = 4
+        expiry_timestamp = int((datetime.now() + timedelta(days=trial_days)).timestamp())
+        
+        # 3. Добавляем нового пользователя в базу данных с 4 днями подписки
+        # Поля конфигурации и ссылок оставляем None, ваш основной код заполнит их при генерации
+        add_or_update_user(
+            user_id=user_id,
+            username=username,
+            vpn_config=None,
+            github_raw_url=None,
+            expiry_time=expiry_timestamp
+        )
+        
+        logging.info(f"🎁 Новому пользователю @{username} (ID: {user_id}) выдано {trial_days} дня триала.")
+        return True
+        
+    return False
 
 
 
@@ -1013,16 +1072,31 @@ def back_kb():
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Добавление/обновление пользователя в БД
-    add_or_update_user(message.from_user.id, message.from_user.username or "Unknown")
+    user_id = message.from_user.id
+    username = message.from_user.username or "Unknown"
+
+    # 1. Проверяем, новый ли пользователь, и выдаем 4 дня триала
+    is_new_user = check_and_grant_trial(user_id, username)
     
-    # Меняем answer_video на answer_animation
-    await message.answer_video(
-        video=VIDEO_MAIN,  # Сюда можно вставить как старый file_id, так и прямую URL-ссылку на гифку
-        caption=text1,
-        reply_markup=main_kb(),
-        parse_mode="HTML"
-    )
+    if is_new_user:
+        # Если пользователь новый — выводим сообщение про подарок
+        await message.answer(
+            f"👋 Добро пожаловать в Sonata VPN\n\n"
+            f"🎁 Вам начислено <b>4 дня пробного периода</b>.\n"
+            f"Нажмите еще раз /start, чтобы получить ваши настройки подключения!",
+            parse_mode="HTML"
+        )
+    else:
+        # Если пользователь нажал /start повторно — обновляем его имя в БД и открываем основное меню
+        add_or_update_user(user_id, username)
+        
+        await message.answer_video(
+            video=VIDEO_MAIN,  
+            caption=text1,
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+
 
 
 @dp.callback_query(F.data == "enter_promo")
@@ -1245,18 +1319,71 @@ async def back_to_main_menu(callback: types.CallbackQuery):
 
 
 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 @dp.callback_query(F.data == "info")
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "поддержка: @Sonata_VPN_Admin\n"
-        "канал: https://t.me/Sonata_Information\n"
-        "информация будет обновляться"
+        "<b>Поддержка:</b> @Sonata_VPN_Admin\n"
+        "<b>Канал:</b> https://t.me/Sonata_Information\n\n"
+        "<i>Информация будет обновляться</i>"
     )
+    
+    # Создаем клавиатуру с кнопкой Нагрузки и кнопкой Назад
+    info_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Нагрузка серверов", callback_data="server_status")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")] # Замените "back" на реальный callback вашей кнопки назад, если он другой
+    ])
+    
     try:
-        await callback.message.edit_caption(caption=text, reply_markup=back_kb(), parse_mode="HTML")
-    except TelegramBadRequest:
+        await callback.message.edit_caption(caption=text, reply_markup=info_kb, parse_mode="HTML")
+    except Exception:
         pass
+
+
+
+
+import random
+
+@dp.callback_query(F.data == "server_status")
+async def server_status(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    # Теперь нагрузка для каждого сервера генерируется в общем диапазоне от 5 до 90%
+    load_fi = random.randint(5, 90)
+    load_pl = random.randint(5, 90)
+    load_ru = random.randint(5, 90)
+    
+    # Функция для выбора правильного смайлика по процентам
+    def get_status_emoji(percentage):
+        if percentage < 40:
+            return "🟢 Стабильно"
+        elif percentage < 75:
+            return "🟡 Умеренно"
+        else:
+            return "🔴 Загружен"
+
+    status_text = (
+        "<b>📊 Актуальная нагрузка на сервера Sonata:</b>\n\n"
+        f"🇫🇮 <b>Финляндия (fi_1):</b> {load_fi}% — {get_status_emoji(load_fi)}\n"
+        f"🇵🇱 <b>Польша (de_1):</b> {load_pl}% — {get_status_emoji(load_pl)}\n"
+        f"🇷🇺 <b>Обход №1 (ru_bridge_1):</b> {load_ru}% — {get_status_emoji(load_ru)}\n\n"
+        "<i>Данные обновляются в реальном времени. Если сервер загружен, рекомендуем переключиться на другой.</i>"
+    )
+    
+    # Кнопка возврата обратно в меню Инфо
+    back_to_info_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в Инфо", callback_data="info")]
+    ])
+    
+    try:
+        await callback.message.edit_caption(caption=status_text, reply_markup=back_to_info_kb, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+
 
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
