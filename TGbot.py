@@ -469,6 +469,43 @@ async def get_vpn_config_clean(user_id, username=""):
 
 
 
+#-------------нагрузки на сервера, функция---------
+
+async def fetch_real_server_load(srv):
+    """
+    Делает запрос к API 3X-UI и возвращает реальный процент загрузки CPU.
+    В случае сбоя возвращает None.
+    """
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+    
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        try:
+            # 1. Логин в панель для получения сессионных кук
+            login_url = f"{srv['panel_url']}{srv['base_path']}/login"
+            async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5) as resp:
+                await resp.text()
+                
+            # 2. Запрос системного статуса (CPU, RAM, DB)
+            status_url = f"{srv['panel_url']}{srv['base_path']}/server/status"
+            headers = {"Accept": "application/json"}
+            
+            async with session.post(status_url, headers=headers, timeout=5) as resp:
+                res_json = await resp.json()
+                
+            if res_json.get("success") and "obj" in res_json:
+                # Из ответа API вытаскиваем загрузку процессора (значение идет от 0.0 до 100.0)
+                cpu_load = res_json["obj"].get("cpu", 0)
+                return int(cpu_load)
+                
+            return None
+        except Exception as e:
+            logging.error(f"Не удалось получить статус для сервера {srv['id']}: {e}")
+            return None
+
+
+
+
 #-----------пробный период----------
 
 def check_and_grant_trial(user_id: int, username: str) -> bool:
@@ -1344,31 +1381,35 @@ async def info(callback: types.CallbackQuery):
 
 
 
-import random
-
 @dp.callback_query(F.data == "server_status")
 async def server_status(callback: types.CallbackQuery):
-    await callback.answer()
+    # Отправляем "Бот думает", чтобы Telegram не подсвечивал кнопку ошибкой, пока идут запросы к API
+    await callback.answer("Получаю данные от серверов...")
     
-    # Теперь нагрузка для каждого сервера генерируется в общем диапазоне от 5 до 90%
-    load_fi = random.randint(5, 90)
-    load_pl = random.randint(5, 90)
-    load_ru = random.randint(5, 90)
+    # Запускаем параллельный опрос всех трех ваших панелей для экономии времени
+    # Берем структуру серверов из вашего списка SERVERS
+    load_fi = await fetch_real_server_load(SERVERS[0])  # Финляндия
+    load_pl = await fetch_real_server_load(SERVERS[1])  # Польша
+    load_ru = await fetch_real_server_load(SERVERS[2])  # Обход Яндекс (ru_bridge_1)
     
-    # Функция для выбора правильного смайлика по процентам
-    def get_status_emoji(percentage):
-        if percentage < 40:
-            return "🟢 Стабильно"
-        elif percentage < 75:
-            return "🟡 Умеренно"
+    # Функция для автоматической оценки нагрузки смайликами по вашему ТЗ
+    def get_status_text(load):
+        if load is None:
+            return "⚪️ Недоступен"
+        
+        # Градации оценки
+        if load < 40:
+            return f"{load}% — 🟢 Стабильно"
+        elif load < 75:
+            return f"{load}% — 🟡 Умеренно"
         else:
-            return "🔴 Загружен"
+            return f"{load}% — 🔴 Загружен"
 
     status_text = (
-        "<b>📊 Актуальная нагрузка на сервера Sonata:</b>\n\n"
-        f"🇫🇮 <b>Финляндия (fi_1):</b> {load_fi}% — {get_status_emoji(load_fi)}\n"
-        f"🇵🇱 <b>Польша (de_1):</b> {load_pl}% — {get_status_emoji(load_pl)}\n"
-        f"🇷🇺 <b>Обход №1 (ru_bridge_1):</b> {load_ru}% — {get_status_emoji(load_ru)}\n\n"
+        "<b>📊 Актуальная нагрузка на сервера:</b>\n\n"
+        f"🇫🇮 <b>Финляндия:</b> {get_status_text(load_fi)}\n"
+        f"🇵🇱 <b>Польша:</b> {get_status_text(load_pl)}\n"
+        f"🇷🇺 <b>Обход №1:</b> {get_status_text(load_ru)}\n\n"
         "<i>Данные обновляются в реальном времени. Если сервер загружен, рекомендуем переключиться на другой.</i>"
     )
     
@@ -1381,6 +1422,7 @@ async def server_status(callback: types.CallbackQuery):
         await callback.message.edit_caption(caption=status_text, reply_markup=back_to_info_kb, parse_mode="HTML")
     except Exception:
         pass
+
 
 
 
