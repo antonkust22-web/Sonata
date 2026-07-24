@@ -73,7 +73,7 @@ import sqlite3
 import logging
 from datetime import datetime
 
-# Переменная пути (должна быть объявлена у вас в коде)
+# Путь к вашей базе данных (определен в вашем проекте)
 # DB_PATH = "users.db"
 
 def log_system_routing():
@@ -91,7 +91,7 @@ def init_db():
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # 1. Таблица пользователей с полем role
+    # 1. Ваша существующая таблица пользователей (Порядок полей строго сохранен, role в конце)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -99,28 +99,28 @@ def init_db():
             vpn_config TEXT,
             github_raw_url TEXT,
             expiry_time INTEGER DEFAULT 0,
-            role TEXT DEFAULT 'user'
+            role TEXT DEFAULT 'user'  -- Новое поле добавлено в конец таблицы
         )
     ''')
 
-    # 2. Обновленная таблица промокодов
+    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
             days INTEGER NOT NULL,
-            max_uses INTEGER DEFAULT 1,     
-            current_uses INTEGER DEFAULT 0  
+            max_uses INTEGER DEFAULT 1,     -- 1 = одноразовый, 0 = без ограничений
+            current_uses INTEGER DEFAULT 0  -- Сколько раз уже активировали всего
         )
     ''')
     
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ (для Amvera)
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ: Если таблица уже была на Amvera, добавляем новые колонки
     try:
         cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
         cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
     except sqlite3.OperationalError:
         pass 
 
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role, если её нет
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role в существующую структуру на сервере
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
     except sqlite3.OperationalError:
@@ -133,7 +133,7 @@ def init_db():
             code TEXT NOT NULL,
             user_id INTEGER NOT NULL,
             activated_at TEXT DEFAULT NULL,
-            UNIQUE(code, user_id) 
+            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
         )
     ''')
     
@@ -144,15 +144,16 @@ def init_db():
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    # Включаем Row-фабрику, чтобы читать старые данные по именам колонок, а не по индексам!
-    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
+    # ВНИМАНИЕ: user_id строго на первом месте!
+    # Индексы полученного кортежа row:
+    # 0 = user_id, 1 = username, 2 = vpn_config, 3 = github_raw_url, 4 = expiry_time, 5 = role
     cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if not row:
-        # Если юзера нет, создаем новую запись
+        # Если пользователя нет, создаем новую запись
         cursor.execute(
             'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role) VALUES (?, ?, ?, ?, ?, ?)',
             (
@@ -165,12 +166,11 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
             )
         )
     else:
-        # ОШИБКА ИСПРАВЛЕНА: Теперь данные берутся строго по ключам row['имя_колонки']. 
-        # Никакие сдвиги индексов больше не затрут vpn_config и github_raw_url!
-        new_config = vpn_config if vpn_config is not None else row['vpn_config']
-        new_github = github_raw_url if github_raw_url is not None else row['github_raw_url']
-        new_expiry = expiry_time if expiry_time is not None else row['expiry_time']
-        new_role = role if role is not None else row['role']
+        # Использование точных индексов (с учетом того, что user_id идет под индексом 0)
+        new_config = vpn_config if vpn_config is not None else row[2]
+        new_github = github_raw_url if github_raw_url is not None else row[3]
+        new_expiry = expiry_time if expiry_time is not None else row[4]
+        new_role = role if role is not None else row[5]
 
         cursor.execute(
             'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ?, role = ? WHERE user_id = ?',
@@ -182,20 +182,24 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
 
 def get_user_from_db(user_id):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row  # Работаем через имена колонок
     cursor = conn.cursor()
     
+    # ВНИМАНИЕ: user_id строго на первом месте (индекс 0)!
+    # Порядок и индексы возвращаемого обычного кортежа (tuple):
+    # [0] = user_id
+    # [1] = username
+    # [2] = vpn_config
+    # [3] = github_raw_url
+    # [4] = expiry_time -> Теперь строка 1565 в хэндлере connect должна использовать именно этот индекс!
+    # [5] = role
     cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
-    
-    if row:
-        return dict(row) # Возвращает словарь: {'user_id': ..., 'vpn_config': ..., 'role': ...}
-    return None
+    return row  # Возвращает чистый обычный кортеж (tuple)
 
 
 def set_user_role(user_id, new_role):
-    """Меняет только роль пользователя, не затрагивая его VPN-конфиги"""
+    """Вспомогательная функция смены роли в БД, не задевающая остальные данные"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET role = ? WHERE user_id = ?', (new_role, user_id))
@@ -214,6 +218,7 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     logging.info(f"[{timestamp}] [ТОКЕН] Сайт index.php заберет данные по токену: {sub_id}")
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
     logging.info("-" * 80)
+
 
 
 
