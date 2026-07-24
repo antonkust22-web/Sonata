@@ -559,8 +559,9 @@ async def fetch_real_server_load(srv):
 
  
 
+
 async def send_sub_to_website(token, b64_content, expiry):
-    """Отправляет сгенерированный Base64 подписки или текстовые SOCKS5 заглушки на PHP-сайт"""
+    """Отправляет рабочий Base64 или специальный JSON-блок блокировки на PHP-сайт"""
     url = "https://sonatavpn.ru" + "/" + "index.php?update_sub=1"
     
     current_time = int(time.time())
@@ -570,25 +571,25 @@ async def send_sub_to_website(token, b64_content, expiry):
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    # Проверяем, истекла ли подписка пользователя
+    # Если подписка истекла, отдаем чистый sing-box JSON с вашим текстом
     if expiry_int <= current_time:
-        # Ваш кастомный текст для отображения в списке серверов
-        server_text1 = "😭 Подписка истекла."
-        server_text2 = "Продлите подписку в боте."
-        
-        # Кодируем названия для корректной передачи в URI
-        encoded_text1 = urllib.parse.quote(server_text1)
-        encoded_text2 = urllib.parse.quote(server_text2)
-        
-        # Формируем SOCKS5-заглушки. Мы вешаем их на публичный IP 8.8.8.8 и любой порт. 
-        # Happ сможет пропинговать этот IP (уйдет n/a), а вместо Reality отобразится лаконичный "None"!
-        content_to_send = (
-            f"socks5://user:pass@8.8.8.8:1080#{encoded_text1}\n"
-            f"socks5://user:pass@8.8.8.8:1080#{encoded_text2}"
-        )
-        logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Подписка {token} истекла. Сформированы SOCKS5 заглушки для Happ.")
+        sing_box_json = {
+            "outbounds": [
+                {
+                    "type": "dns",
+                    "tag": "😭 Подписка истекла. Продлите доступ в боте."
+                },
+                {
+                    "type": "direct",
+                    "tag": "🤖 Наш Telegram: @SonataVPN_bot"
+                }
+            ]
+        }
+        # Переводим в строку, кодировать в Base64 НЕ нужно
+        content_to_send = json.dumps(sing_box_json, ensure_ascii=False)
+        logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Сформирован сервисный JSON блокировки для токена {token}")
     else:
-        # Если подписка в порядке, отдаем исходный рабочий Base64-код конфигураций
+        # Если подписка активна, отправляем оригинальный Base64-конфиг
         content_to_send = b64_content
 
     data = {
@@ -601,9 +602,9 @@ async def send_sub_to_website(token, b64_content, expiry):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Синхронизация токена {token} с сайтом: {res_text}")
+                logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Синхронизация токена {token}: {res_text}")
     except Exception as ex:
-        logging.error(f"[ОШИБКА ИИ] Не удалось передать подписку на сайт: {ex}")
+        logging.error(f"[ОШИБКА ИИ] Не удалось передать подписку: {ex}")
 
 
 
