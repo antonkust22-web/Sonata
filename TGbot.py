@@ -557,36 +557,38 @@ async def fetch_real_server_load(srv):
 
 
 
+ 
+
 async def send_sub_to_website(token, b64_content, expiry):
-    """Отправляет сгенерированный Base64 подписки или заглушку блокировки на PHP-сайт"""
+    """Отправляет сгенерированный Base64 подписки или текстовые SOCKS5 заглушки на PHP-сайт"""
     url = "https://sonatavpn.ru" + "/" + "index.php?update_sub=1"
     
     current_time = int(time.time())
     
-    # Защищаем код от строк в expiry, принудительно переводя в int
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
-        expiry_int = 1893456000  # Дефолтное значение
+        expiry_int = 1893456000
 
-    # Проверяем, истекла ли подписка
+    # Проверяем, истекла ли подписка пользователя
     if expiry_int <= current_time:
-        # Текст, который железно отобразится в приложении Happ вместо серверов без ошибки n/a
+        # Ваш кастомный текст для отображения в списке серверов
         server_text1 = "😭 Подписка истекла."
         server_text2 = "Продлите подписку в боте."
         
-        # Кодируем текст, чтобы эмодзи и пробелы не ломали структуру ссылки
+        # Кодируем названия для корректной передачи в URI
         encoded_text1 = urllib.parse.quote(server_text1)
         encoded_text2 = urllib.parse.quote(server_text2)
         
-        # Формируем контент из Shadowsocks-заглушек (каждая с новой строки)
+        # Формируем SOCKS5-заглушки. Мы вешаем их на публичный IP 8.8.8.8 и любой порт. 
+        # Happ сможет пропинговать этот IP (уйдет n/a), а вместо Reality отобразится лаконичный "None"!
         content_to_send = (
-            f"ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTowMDAwMDAwMA==@8.8.8.8:443#{encoded_text1}\n"
-            f"ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTowMDAwMDAwMA==@8.8.8.8:443#{encoded_text2}"
+            f"socks5://user:pass@8.8.8.8:1080#{encoded_text1}\n"
+            f"socks5://user:pass@8.8.8.8:1080#{encoded_text2}"
         )
-        logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Подписка {token} истекла. Формируем текстовые заглушки для Happ.")
+        logging.info(f"[МАРШРУТИЗАЦИЯ ИИ] Подписка {token} истекла. Сформированы SOCKS5 заглушки для Happ.")
     else:
-        # Если подписка активна, отправляем оригинальный рабочий Base64-конфиг
+        # Если подписка в порядке, отдаем исходный рабочий Base64-код конфигураций
         content_to_send = b64_content
 
     data = {
