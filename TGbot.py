@@ -1119,11 +1119,15 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
     # ---- 1. Расчет времени ----
     user_data = get_user_from_db(user_id)
     
-    # ИСПРАВЛЕНО: берем именно индекс [3] (expiry_time), если строка в БД найдена
-    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
+    # ИСПРАВЛЕНО: приводим значение из БД к int, чтобы избежать ошибки '<=' between 'str' and 'int'
+    try:
+        current_expiry_seconds = int(user_data[3]) if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
+    except (ValueError, TypeError):
+        current_expiry_seconds = 0
     
     current_time_seconds = int(time.time())
     seconds_to_add = days_to_add * 24 * 60 * 60
+
     
     # Если подписка истекла или равна 0 -> считаем от сейчас
     if current_expiry_seconds <= current_time_seconds:
