@@ -584,13 +584,12 @@ async def send_sub_to_website(token, b64_content, expiry):
 
 
 
-import time
-from aiogram import types, F
-from aiogram.filters import BaseFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest
+
 
 # ==================== СТРОГИЕ ФИЛЬТРЫ БЕЗОПАСНОСТИ ====================
+
+from aiogram.filters import BaseFilter
+from aiogram import types
 
 class IsCreator(BaseFilter):
     """Фильтр строго для Создателя (Владельца ADMIN_ID)"""
@@ -598,22 +597,22 @@ class IsCreator(BaseFilter):
         return message.from_user.id == ADMIN_ID
 
 class IsAdmin(BaseFilter):
-    """Фильтр для Администраторов и Создателя (Управление подписками)"""
+    """Фильтр для Администраторов (Управление подписками)"""
     async def __call__(self, message: types.Message) -> bool:
         if message.from_user.id == ADMIN_ID:
             return True
         user = get_user_from_db(message.from_user.id)
-        # Проверяем роль строго по ключу из словаря
-        return user is not None and user.get('role') == 'admin'
+        # ИСПРАВЛЕНО: Проверяем длину кортежа и смотрим строго на индекс 5 (поле role)
+        return user is not None and len(user) > 5 and user[5] == 'admin'
 
 class IsAmbassador(BaseFilter):
-    """Фильтр для Амбассадоров и Создателя (Управление промокодами)"""
+    """Фильтр для Амбассадоров (Управление промокодами)"""
     async def __call__(self, message: types.Message) -> bool:
         if message.from_user.id == ADMIN_ID:
             return True
         user = get_user_from_db(message.from_user.id)
-        # ИСПРАВЛЕНО: Теперь амбассадоры гарантированно получают доступ к /gen и /delpromo
-        return user is not None and user.get('role') == 'ambassador'
+        # ИСПРАВЛЕНО: Проверяем длину кортежа и смотрим строго на индекс 5 (поле role)
+        return user is not None and len(user) > 5 and user[5] == 'ambassador'
 
 
 
@@ -923,15 +922,11 @@ async def grant_infinity_access_for_staff(user_id: int) -> bool:
     """
     Автоматически выдает безлимитную подписку (до 2099 года) 
     для Администраторов, Амбассадоров и Создателя на всех серверах 3X-UI и в локальной БД.
-    Оригинальная логика и структура SERVERS не меняются.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
     
-    # Устанавливаем вечную дату (например, 01.01.2099) в миллисекундах для 3X-UI
-    # 4070908800 — это timestamp в секундах, умножаем на 1000 для формата панели
     infinity_expiry_ms = 4070908800 * 1000 
-    # Для вашей локальной SQLite (где секунды, судя по коду) оставляем в секундах
     infinity_expiry_seconds = 4070908800
 
     any_server_updated = False
@@ -940,17 +935,14 @@ async def grant_infinity_access_for_staff(user_id: int) -> bool:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             for srv in SERVERS:
                 try:
-                    # Точно такое же формирование email, как в вашем коде revoke
                     email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                     
-                    # 1. Авторизация на панели сервера
                     login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                     async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                         await resp.text()
 
                     headers = {"Accept": "application/json"}
 
-                    # 2. Получаем данные инбаунда
                     get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         res_json = await resp.json()
@@ -961,30 +953,27 @@ async def grant_infinity_access_for_staff(user_id: int) -> bool:
                     settings = json.loads(res_json["obj"]["settings"])
                     clients = settings.get("clients", [])
 
-                    # Ищем клиента точно по вашему алгоритму
                     current_client = next((c for c in clients if c.get("tgId") == user_id), None)
                     if not current_client:
                         old_email = f"user_{user_id}"
                         current_client = next((c for c in clients if c.get("email") == old_email), None)
 
                     if not current_client:
-                        logging.warning(f"Персонал {user_id} не найден на сервере {srv['id']}. Пропускаем вечный доступ.")
                         continue
 
                     client_uuid = current_client['id']
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     
-                    # Переводим в АКТИВНОЕ состояние и ставим ВЕЧНЫЙ срок действия
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({
                             "clients": [{
                                 "id": client_uuid,
                                 "email": email_for_panel,
-                                "limitIp": current_client.get("limitIp", 5), # Для стаффа можно расширить лимит IP
-                                "totalGB": 0, # 0 в 3X-UI означает полный безлимит по ГБ
-                                "expiryTime": infinity_expiry_ms, # Наш 2099 год
-                                "enable": True,  # Принудительно включаем
+                                "limitIp": current_client.get("limitIp", 5),
+                                "totalGB": 0,
+                                "expiryTime": infinity_expiry_ms,
+                                "enable": True,
                                 "tgId": user_id,
                                 "subId": current_client.get("subId", "")
                             }]
@@ -995,22 +984,19 @@ async def grant_infinity_access_for_staff(user_id: int) -> bool:
                         update_resp = await resp.json()
 
                     if update_resp.get("success", False):
-                        logging.info(f"Для стаффа {user_id} включен безлимит на сервере {srv['id']}.")
                         any_server_updated = True
 
                 except Exception as srv_err:
                     logging.error(f"Ошибка безлимита на сервере {srv['id']}: {srv_err}")
                     continue
 
-        # Синхронизируем вечный доступ с вашей локальной БД SQLite на Amvera
         if any_server_updated:
             user_data = get_user_from_db(user_id)
-            # Извлекаем username из словаря (так как get_user_from_db возвращает dict)
-            current_username = user_data.get('username') if user_data else ""
+            # ИСПРАВЛЕНО: Извлекаем username из кортежа по индексу 1
+            current_username = user_data[1] if (user_data and len(user_data) > 1) else ""
             
             # Записываем в БД вечный timestamp
             add_or_update_user(user_id, current_username, expiry_time=infinity_expiry_seconds)
-            logging.info(f"Локальная подписка стаффа {user_id} переведена в режим Безлимит.")
             return True
             
         return False
@@ -1018,6 +1004,7 @@ async def grant_infinity_access_for_staff(user_id: int) -> bool:
     except Exception as e:
         logging.error(f"Ошибка в grant_infinity_access_for_staff: {e}")
         return False
+
 
 
 
@@ -1465,9 +1452,9 @@ async def cabinet(callback: types.CallbackQuery):
     # Генерация реферальной ссылки
     try:
         bot_info = await callback.bot.get_me()
-        ref_url = f"https://t.me{bot_info.username}?start=ref{user_id}"
+        ref_url = f"https://t.me/{bot_info.username}?start=ref{user_id}"
     except Exception:
-        ref_url = f"https://t.mebot?start=ref{user_id}"
+        ref_url = f"https://t.me/bot?start=ref{user_id}"
 
     ref_text_block = (
         f"🤝 <b>Партнерская программа:</b>\n"
