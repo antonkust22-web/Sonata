@@ -144,10 +144,10 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS referral_connections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            inviter_id INTEGER NOT NULL,  # Кто пригласил (реферер)
-            referral_id INTEGER NOT NULL, # Кого пригласили (новый юзер)
-            created_at TEXT DEFAULT (datetime('now', 'localtime')), # Дата и время
-            UNIQUE(referral_id) # Один реферал может быть приглашен только один раз
+            inviter_id INTEGER NOT NULL,  -- Кто пригласил (реферер)
+            referral_id INTEGER NOT NULL, -- Кого пригласили (новый юзер)
+            created_at TEXT DEFAULT (datetime('now', 'localtime')), -- Дата и время
+            UNIQUE(referral_id) -- Один реферал может быть приглашен только один раз
         )
     ''')
 
@@ -393,7 +393,7 @@ def get_user_invite_count(user_id: int) -> int:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM referral_connections WHERE inviter_id = ?', (user_id,))
-    count = cursor.fetchone()[0] # Забираем число из кортежа
+    count = cursor.fetchone()[0] 
     conn.close()
     return count
 
