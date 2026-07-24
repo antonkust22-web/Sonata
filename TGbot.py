@@ -149,14 +149,14 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # ВНИМАНИЕ: user_id строго на первом месте!
-    # Индексы полученного кортежа row:
     # 0 = user_id, 1 = username, 2 = vpn_config, 3 = github_raw_url, 4 = expiry_time, 5 = role
     cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
+    # Защита: гарантируем, что expiry_time — это int перед записью
+    clean_expiry = int(expiry_time) if expiry_time is not None else None
+
     if not row:
-        # Если пользователя нет, создаем новую запись
         cursor.execute(
             'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role) VALUES (?, ?, ?, ?, ?, ?)',
             (
@@ -164,16 +164,21 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
                 username, 
                 vpn_config, 
                 github_raw_url, 
-                expiry_time if expiry_time is not None else 0, 
+                clean_expiry if clean_expiry is not None else 0, 
                 role if role is not None else 'user'
             )
         )
     else:
-        # Использование точных индексов (с учетом того, что user_id идет под индексом 0)
         new_config = vpn_config if vpn_config is not None else row[2]
         new_github = github_raw_url if github_raw_url is not None else row[3]
-        new_expiry = expiry_time if expiry_time is not None else row[4]
+        new_expiry = clean_expiry if clean_expiry is not None else row[4]
         new_role = role if role is not None else row[5]
+
+        # Принудительно проверяем, что старое значение из базы тоже приведется к int при перезаписи
+        try:
+            new_expiry = int(new_expiry)
+        except (ValueError, TypeError):
+            new_expiry = 0
 
         cursor.execute(
             'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ?, role = ? WHERE user_id = ?',
@@ -181,6 +186,7 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
         )
     conn.commit()
     conn.close()
+
 
 
 def get_user_from_db(user_id):
@@ -953,8 +959,16 @@ async def handle_promo_activation(message: types.Message): # Используе�
         
         # Получаем обновленную дату для красивого вывода пользователю
         user_data = get_user_from_db(user_id)
-        updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
+        
+        # ИСПРАВЛЕНО: Используем правильный индекс [4] и приводим к числу int
+        try:
+            updated_expiry = int(user_data[4]) if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
+        except (ValueError, TypeError):
+            updated_expiry = 0
+            
         expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
+
+
         
         await status_msg.edit_text(
             f"✅ <b>Промокод успешно активирован!</b>\n\n"
@@ -1119,15 +1133,14 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
     # ---- 1. Расчет времени ----
     user_data = get_user_from_db(user_id)
     
-    # ИСПРАВЛЕНО: приводим значение из БД к int, чтобы избежать ошибки '<=' between 'str' and 'int'
+    # ИСПРАВЛЕНО: берем индекс [4] (expiry_time) вместо [3] и принудительно переводим в int
     try:
-        current_expiry_seconds = int(user_data[3]) if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
+        current_expiry_seconds = int(user_data[4]) if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
     except (ValueError, TypeError):
         current_expiry_seconds = 0
     
     current_time_seconds = int(time.time())
     seconds_to_add = days_to_add * 24 * 60 * 60
-
     
     # Если подписка истекла или равна 0 -> считаем от сейчас
     if current_expiry_seconds <= current_time_seconds:
@@ -1137,6 +1150,7 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
         new_expiry_seconds = current_expiry_seconds + seconds_to_add
         
     new_expiry_ms = new_expiry_seconds * 1000 # Для панелей переводим в мс
+
 
     # ---- 2. Обновление внешних панелей 3X-UI ----
     jar = aiohttp.CookieJar(unsafe=True)
