@@ -1479,9 +1479,12 @@ async def cabinet(callback: types.CallbackQuery):
     db_data = get_user_from_db(user_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    if db_data:
-        db_role = db_data.get('role') or "user"
+    # Проверяем, что запись найдена и в ней достаточно полей (минимум до expiry_time)
+    if db_data and len(db_data) > 4:
+        # Извлекаем роль из индекса 5 (если поле NULL или отсутствует, ставим 'user')
+        db_role = db_data[5] if len(db_data) > 5 and db_data[5] is not None else "user"
         
+
         # Задаем статус создателя
         if user_id == ADMIN_ID:
             role = "creator"
@@ -1502,8 +1505,8 @@ async def cabinet(callback: types.CallbackQuery):
             role_badge = "<b>🔵 Статус:</b><blockquote> Пользователь</blockquote>"
             is_premium_role = False
 
-        # Вычисляем оставшиеся дни подписки
-        expiry_timestamp = db_data.get('expiry_time') or 0
+        # 3. Извлекаем время подписки по правильному индексу 4
+        expiry_timestamp = db_data[4] if db_data[4] is not None else 0
         current_time = time.time()
         
         days_left = 0
