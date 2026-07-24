@@ -1480,6 +1480,49 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
 
 
 
+
+
+
+
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+import logging
+
+# Замените на ID вашего канала (обязательно с @ для публичных или -100... для приватных)
+CHANNEL_ID = "@Sonata_Information" 
+
+async def check_user_subscription(bot: Bot, user_id: int) -> bool:
+    """
+    Проверяет, подписан ли пользователь на обязательный канал.
+    Возвращает True, если подписан, и False, если нет.
+    """
+    # Создатель, Администраторы и Амбассадоры проходят без проверок
+    if user_id == ADMIN_ID:
+        return True
+        
+    user_data = get_user_from_db(user_id)
+    if user_data and len(user_data) > 5 and user_data[5] in ["admin", "ambassador"]:
+        return True
+
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        # Разрешенные статусы: участник, администратор, создатель канала
+        if member.status in ["member", "administrator", "creator"]:
+            return True
+        return False
+    except TelegramBadRequest as e:
+        # Если бот не добавлен в канал как администратор, он не сможет проверить подписку
+        logging.error(f"Ошибка проверки подписки: бот не является админом в канале {CHANNEL_ID}. Ошибка: {e}")
+        return True  # Пропускаем пользователя, чтобы бот не завис из-за ошибки админа
+    except Exception as ex:
+        logging.error(f"Критическая ошибка при проверке подписки: {ex}")
+        return True
+
+
+
+
+
+
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1719,7 +1762,40 @@ async def connect(callback: types.CallbackQuery):
     await callback.answer()
     
     user_id = callback.from_user.id
-    username = callback.from_user.username or ""
+    username = callback.from_user.username or ""    
+    # 1. Запускаем нашу проверку подписки
+    is_subscribed = await check_user_subscription(callback.bot, user_id)
+    
+    if not is_subscribed:
+        # Если пользователь не подписан, прерываем логику и выдаем блокирующее окно
+        await callback.answer("⚠️ Требуется подписка!")
+        
+        # Получаем прямую ссылку на канал для кнопки
+        channel_username = CHANNEL_ID.replace("@", "")
+        channel_url = f"https://t.me/{channel_username}"
+        
+        # Кнопка проверки и кнопка перехода в канал
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
+            # Важно: callback_data должна вести на этот же хэндлер ("connect"), 
+            # чтобы при повторном нажатии после подписки пользователя сразу пропустило дальше!
+            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
+        ])
+        
+        text = (
+            "🔒 <b>Доступ ограничен</b>\n\n"
+            "<blockquote>Для использования высокоскоростных серверов Sonata VPN, пожалуйста, подпишитесь на наш официальный канал.\n\n"
+            "Там мы публикуем важные обновления, информацию о зеркалах сайтов и статусе работы серверов.</blockquote>"
+        )
+        
+        try:
+            if callback.message.caption:
+                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+            else:
+                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+        return  # Завершаем выполнение, не давая скачать VPN-конфиг
 
     # 1. Проверяем статус подписки перед генерацией
     db_data = get_user_from_db(user_id)
