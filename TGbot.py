@@ -764,7 +764,7 @@ async def handle_demote_user(message: types.Message):
 
 
 
-@dp.message(F.text.startswith("/gen"), IsAmbassador())
+@dp.message(Command("gen"), IsAmbassador())
 async def handle_generate_promo(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return 
@@ -876,7 +876,7 @@ async def handle_promo_activation(message: types.Message): # Используе�
 
 
 
-@dp.message(F.text.startswith("/delpromo"), IsAmbassador())
+@dp.message(Command("delpromo"), IsAmbassador())
 async def handle_delete_promo(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return # Игнорируем обычных пользователей
