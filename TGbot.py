@@ -71,11 +71,10 @@ dp = Dispatcher()
 import os
 import sqlite3
 import logging
-import time
 from datetime import datetime
 
-# Предполагается, что переменная DB_PATH у вас определена выше в коде
-# DB_PATH = "users.db" 
+# Переменная пути (должна быть объявлена у вас в коде)
+# DB_PATH = "users.db"
 
 def log_system_routing():
     """Выводит в логи информацию о путях БД при старте бота"""
@@ -92,7 +91,7 @@ def init_db():
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # 1. Ваша существующая таблица пользователей (Добавлено поле role)
+    # 1. Таблица пользователей с полем role
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -100,33 +99,32 @@ def init_db():
             vpn_config TEXT,
             github_raw_url TEXT,
             expiry_time INTEGER DEFAULT 0,
-            role TEXT DEFAULT 'user'  -- Новое поле для ролей
+            role TEXT DEFAULT 'user'
         )
     ''')
 
-    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
+    # 2. Обновленная таблица промокодов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
             days INTEGER NOT NULL,
-            max_uses INTEGER DEFAULT 1,     -- 1 = одноразовый, 0 = без ограничений
-            current_uses INTEGER DEFAULT 0  -- Сколько раз уже активировали всего
+            max_uses INTEGER DEFAULT 1,     
+            current_uses INTEGER DEFAULT 0  
         )
     ''')
     
-    # ТЕХНИЧЕСКИЙ ХАК: Если таблица promocodes уже была на Amvera, 
-    # эти запросы добавят новые колонки max_uses и current_uses, не сломав старые промокоды
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ (для Amvera)
     try:
         cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
         cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
     except sqlite3.OperationalError:
-        pass # Если колонки уже есть, SQLite выдаст ошибку, мы её просто игнорируем
+        pass 
 
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role, если её еще нет в БД на сервере
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role, если её нет
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
     except sqlite3.OperationalError:
-        pass # Если колонка уже есть, просто игнорируем ошибку
+        pass 
 
     # 3. Новая таблица для логирования активаций многоразовых промокодов
     cursor.execute('''
@@ -135,7 +133,7 @@ def init_db():
             code TEXT NOT NULL,
             user_id INTEGER NOT NULL,
             activated_at TEXT DEFAULT NULL,
-            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
+            UNIQUE(code, user_id) 
         )
     ''')
     
@@ -146,22 +144,33 @@ def init_db():
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    # Включаем Row-фабрику, чтобы читать старые данные по именам колонок, а не по индексам!
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    # Запрашиваем все данные, включая role
+    
     cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if not row:
+        # Если юзера нет, создаем новую запись
         cursor.execute(
             'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role) VALUES (?, ?, ?, ?, ?, ?)',
-            (user_id, username, vpn_config, github_raw_url, expiry_time if expiry_time is not None else 0, role if role is not None else 'user')
+            (
+                user_id, 
+                username, 
+                vpn_config, 
+                github_raw_url, 
+                expiry_time if expiry_time is not None else 0, 
+                role if role is not None else 'user'
+            )
         )
     else:
-        # row[0]=user_id, row[1]=username, row[2]=vpn_config, row[3]=github_raw_url, row[4]=expiry_time, row[5]=role
-        new_config = vpn_config if vpn_config is not None else row[2]
-        new_github = github_raw_url if github_raw_url is not None else row[3]
-        new_expiry = expiry_time if expiry_time is not None else row[4]
-        new_role = role if role is not None else row[5]
+        # ОШИБКА ИСПРАВЛЕНА: Теперь данные берутся строго по ключам row['имя_колонки']. 
+        # Никакие сдвиги индексов больше не затрут vpn_config и github_raw_url!
+        new_config = vpn_config if vpn_config is not None else row['vpn_config']
+        new_github = github_raw_url if github_raw_url is not None else row['github_raw_url']
+        new_expiry = expiry_time if expiry_time is not None else row['expiry_time']
+        new_role = role if role is not None else row['role']
 
         cursor.execute(
             'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ?, role = ? WHERE user_id = ?',
@@ -173,25 +182,20 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
 
 def get_user_from_db(user_id):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    # Включаем фабрику строк, чтобы возвращать данные в виде словаря по именам колонок
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row  # Работаем через имена колонок
     cursor = conn.cursor()
     
-    # Полный исправленный запрос: user_id на первом месте, роль в конце
-    cursor.execute(
-        'SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', 
-        (user_id,)
-    )
+    cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     
     if row:
-        return dict(row) # Возвращает удобный dict: {'user_id': 123, 'username': '...', 'role': '...'}
+        return dict(row) # Возвращает словарь: {'user_id': ..., 'vpn_config': ..., 'role': ...}
     return None
 
 
 def set_user_role(user_id, new_role):
-    """Вспомогательная функция для ручной или автоматической смены роли пользователя"""
+    """Меняет только роль пользователя, не затрагивая его VPN-конфиги"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET role = ? WHERE user_id = ?', (new_role, user_id))
@@ -210,6 +214,7 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
     logging.info(f"[{timestamp}] [ТОКЕН] Сайт index.php заберет данные по токену: {sub_id}")
     logging.info(f"[{timestamp}] [ГОТОВАЯ ССЫЛКА] Ссылка для клиента -> {sub_url}")
     logging.info("-" * 80)
+
 
 
 
@@ -574,35 +579,35 @@ async def send_sub_to_website(token, b64_content, expiry):
 
 
 
-
-
+import time
+from aiogram import types, F
 from aiogram.filters import BaseFilter
-from aiogram import types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 
-# Ваша глобальная переменная создателя (должна быть объявлена выше в коде)
-# ADMIN_ID = 123456789  
+# ==================== СТРОГИЕ ФИЛЬТРЫ БЕЗОПАСНОСТИ ====================
 
 class IsCreator(BaseFilter):
-    """Фильтр только для Создателя (Владельца бота)"""
+    """Фильтр строго для Создателя (Владельца ADMIN_ID)"""
     async def __call__(self, message: types.Message) -> bool:
         return message.from_user.id == ADMIN_ID
 
 class IsAdmin(BaseFilter):
-    """Фильтр для Администраторов (и Создателя) — управление ПОДПИСКАМИ"""
+    """Фильтр для Администраторов и Создателя (Управление подписками)"""
     async def __call__(self, message: types.Message) -> bool:
         if message.from_user.id == ADMIN_ID:
             return True
         user = get_user_from_db(message.from_user.id)
-        # Пропускаем только если роль строго 'admin'
+        # Проверяем роль строго по ключу из словаря
         return user is not None and user.get('role') == 'admin'
 
 class IsAmbassador(BaseFilter):
-    """Фильтр для Амбассадоров (и Создателя) — управление ПРОМОКОДАМИ"""
+    """Фильтр для Амбассадоров и Создателя (Управление промокодами)"""
     async def __call__(self, message: types.Message) -> bool:
         if message.from_user.id == ADMIN_ID:
             return True
         user = get_user_from_db(message.from_user.id)
-        # Пропускаем только если роль строго 'ambassador'
+        # ИСПРАВЛЕНО: Теперь амбассадоры гарантированно получают доступ к /gen и /delpromo
         return user is not None and user.get('role') == 'ambassador'
 
 
@@ -1452,12 +1457,12 @@ async def cabinet(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Генерируем реферальную ссылку
+    # Генерация реферальной ссылки
     try:
         bot_info = await callback.bot.get_me()
-        ref_url = f"https://t.me/{bot_info.username}?start=ref{user_id}"
+        ref_url = f"https://t.me{bot_info.username}?start=ref{user_id}"
     except Exception:
-        ref_url = f"https://t.me/bot?start=ref{user_id}"
+        ref_url = f"https://t.mebot?start=ref{user_id}"
 
     ref_text_block = (
         f"🤝 <b>Партнерская программа:</b>\n"
@@ -1465,53 +1470,53 @@ async def cabinet(callback: types.CallbackQuery):
         f"🔗 Ссылка: <code>{ref_url}</code>\n\n"
     )
 
-    # Читаем данные из БД (словарь)
+    # Запрашиваем словарь из исправленной БД
     db_data = get_user_from_db(user_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if db_data:
         db_role = db_data.get('role') or "user"
         
-        # Жестко определяем вас (Создателя) по вашему ADMIN_ID
+        # Задаем статус создателя
         if user_id == ADMIN_ID:
             role = "creator"
         else:
             role = db_role
 
-        # Цветовая кастомизация профилей по вашему запросу
+        # Настройка текстовых плашек с нужными вам цветами
         if role == "creator":
-            # ЗЕЛЕНЫЙ статус для вас
-            role_badge = "<blockquote>🟢 ПРОФИЛЬ: СОЗДАТЕЛЬ (Владелец)</blockquote>"
+            role_badge = "<b>🟢Статус:</b><blockquote> БОРЗ (Владелец)</blockquote>"
             is_premium_role = True
         elif role == "admin":
-            # КРАСНЫЙ статус для Администратора
-            role_badge = "<blockquote>🔴 ПРОФИЛЬ: АДМИНИСТРАТОР (Staff)</blockquote>"
+            role_badge = "<b>🔴 Статус:</b><blockquote> Администратор (Staff)</blockquote>"
             is_premium_role = True
         elif role == "ambassador":
-            # ОРАНЖЕВЫЙ статус для Амбассадора
-            role_badge = "<blockquote>🟠 ПРОФИЛЬ: АМБАССАДОР (Partner)</blockquote>"
+            role_badge = "<b>🟠 Статус:</b> <blockquote>Амбассадор (Partner)</blockquote>"
             is_premium_role = True
         else:
-            # ГОЛУБОЙ статус для Пользователя
-            role_badge = "<blockquote>🔵 ПРОФИЛЬ: ПОЛЬЗОВАТЕЛЬ</blockquote>"
+            role_badge = "<b>🔵 Статус:</b><blockquote> Пользователь</blockquote>"
             is_premium_role = False
 
-        # Проверяем подписку
+        # Вычисляем оставшиеся дни подписки
         expiry_timestamp = db_data.get('expiry_time') or 0
         current_time = time.time()
-
-        if is_premium_role:
-            status_text = "🟢 ∞ Безлимитная подписка"
-            has_access = True
-        elif expiry_timestamp > current_time:
+        
+        days_left = 0
+        if expiry_timestamp > current_time:
             days_left = int((expiry_timestamp - current_time) / (24 * 3600))
+
+        # ИСПРАВЛЕНО: Если у человека больше 3000 дней или он является стаффом — пишем БЕЗЛИМИТ
+        if days_left > 3000 or is_premium_role:
+            status_text = "<b>🟢 ∞ Безлимитная подписка</b>"
+            has_access = True
+        elif days_left > 0:
             status_text = f"🟢 Активна (осталось {days_left} дн.)"
             has_access = True
         else:
             status_text = "🔴 Не активна (требуется оплата)"
             has_access = False
 
-        # Сборка текста
+        # Сборка итогового сообщения
         text = (
             f"<b>👤 Личный кабинет</b>\n\n"
             f"{role_badge}\n"
@@ -1521,10 +1526,10 @@ async def cabinet(callback: types.CallbackQuery):
         )
 
         if has_access:
-            text += "✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
+            text += "✨ Ваша подписка active! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
         else:
-            text += "⚠️ Для получения доступа к подписке VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
+            text += "⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
             kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
