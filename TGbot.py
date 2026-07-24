@@ -138,6 +138,19 @@ def init_db():
             UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
         )
     ''')
+
+
+        # 4. Новая таблица для учета реферальных связей и построения ТОП-ов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS referral_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inviter_id INTEGER NOT NULL,  # Кто пригласил (реферер)
+            referral_id INTEGER NOT NULL, # Кого пригласили (новый юзер)
+            created_at TEXT DEFAULT (datetime('now', 'localtime')), # Дата и время
+            UNIQUE(referral_id) # Один реферал может быть приглашен только один раз
+        )
+    ''')
+
     
     conn.commit()
     conn.close()
@@ -335,14 +348,60 @@ def delete_promocode_from_db(code: str) -> bool:
 
 
 
+def add_referral_connection(inviter_id: int, referral_id: int):
+    """Фиксирует приглашение в базе данных"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            'INSERT INTO referral_connections (inviter_id, referral_id) VALUES (?, ?)',
+            (inviter_id, referral_id)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass # Защита от дублей, если связь уже записана
+    finally:
+        conn.close()
+
+def get_monthly_top_inviters(limit: int = 10):
+    """Возвращает ТОП пользователей по приглашениям за последние 30 дней"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Считаем приглашения за последние 30 дней, склеиваем с таблицей users для получения красивого username
+    cursor.execute('''
+        SELECT 
+            r.inviter_id, 
+            u.username, 
+            COUNT(r.referral_id) as invite_count
+        FROM referral_connections r
+        LEFT JOIN users u ON r.inviter_id = u.user_id
+        WHERE r.created_at >= datetime('now', '-30 days', 'localtime')
+        GROUP BY r.inviter_id
+        ORDER BY invite_count DESC
+        LIMIT ?
+    ''', (limit,))
+    
+    top_list = cursor.fetchall()
+    conn.close()
+    return top_list # Возвращает список кортежей: [(inviter_id, username, count), ...]
 
 
-import json
-import uuid
-import secrets
-import aiohttp
-import logging
-import urllib.parse
+
+def get_user_invite_count(user_id: int) -> int:
+    """Возвращает общее количество приглашенных пользователем людей за все время"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM referral_connections WHERE inviter_id = ?', (user_id,))
+    count = cursor.fetchone()[0] # Забираем число из кортежа
+    conn.close()
+    return count
+
+
+
+
+
+
 
 SERVERS = [
     {
@@ -863,6 +922,43 @@ async def handle_demote_user(message: types.Message):
 
 
 #-----с пользователями и создание---
+
+
+
+@dp.message(Command("top"))
+async def cmd_top_inviters(message: types.Message):
+    # Получаем данные из БД за последние 30 дней
+    top_data = get_monthly_top_inviters(limit=10)
+    
+    if not top_data:
+        await message.answer("📊 <b>Топ приглашающих за месяц:</b>\n\nПока никто никого не пригласил. Будьте первыми!")
+        return
+
+    text = "🏆 <b>ТОП-10 лидеров по приглашениям за 30 дней</b>\n\n"
+    
+    # Иконки для первых трех мест
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    
+    for index, row in enumerate(top_data, start=1):
+        inviter_id, username, count = row
+        
+        # Красиво форматируем имя пользователя
+        user_mention = f"@{username}" if username and username != "Unknown" else f"Пользователь [{inviter_id}]"
+        
+        # Определяем эмодзи места (медаль или просто цифра)
+        place_emoji = medals.get(index, f"<code>{index}.</code>")
+        
+        # Склоняем слово "приглашение" в зависимости от количества
+        if count % 10 == 1 and count % 100 != 11:
+            word = "человек"
+        else:
+            word = "человек(а)"
+            
+        text += f"{place_emoji} {user_mention} — <b>{count}</b> {word}\n"
+        
+    text += "\n\n<i> Зовите друзей по своей реферальной ссылке и поднимайтесь в рейтинге!</i>"
+    
+    await message.answer(text, parse_mode="HTML")
 
 
 
@@ -1562,45 +1658,35 @@ import time
 from aiogram import types
 from aiogram.filters import Command, CommandObject
 
-# Секунды в 3 днях (3 дня * 24 часа * 3600 секунд)
+# Секунды в 3 днях
 THREE_DAYS_SECONDS = 3 * 24 * 3600
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
     user_id = message.from_user.id
-    username = message.from_user.username or "Unknown"
+    username = message.from_user.username or f"user_{user_id}"
     
-    # 1. Сначала проверяем, есть ли пользователь в базе данных ДО обновления
+    # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
     
-    # Текст-уведомление для нового пользователя, если он пришел по рефералке
     ref_bonus_text = ""
     
-    # 2. Обработка реферальной системы (сработает только для новых пользователей)
+    # 2. Реферальная система (строго для новых пользователей)
     if command and command.args and command.args.startswith("ref") and is_new_user:
         try:
-            # Извлекаем Telegram ID того, кто пригласил
             inviter_id = int(command.args.replace("ref", ""))
             
-            # Проверяем, что пользователь не приглашает сам себя
+            # Защита: нельзя пригласить самого себя
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
                 
                 if inviter_data:
-                    current_time = time.time()
-                    
                     # НАЧИСЛЯЕМ 3 ДНЯ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ)
-                    # В нашей структуре БД по Варианту 1: индекс 4 — это expiry_time
-                    inviter_expiry = inviter_data[4] if inviter_data[4] is not None else 0
-                    new_inviter_expiry = max(inviter_expiry, current_time) + THREE_DAYS_SECONDS
-                    
-                    # Обновляем пригласившего в локальной SQLite (сохраняем его username из индекса 1)
-                    add_or_update_user(inviter_id, inviter_data[1], expiry_time=int(new_inviter_expiry))
-                    # Синхронизируем с панелями X-UI через гибкое продление
+                    # Вызываем ТОЛЬКО гибкое продление. Оно само обновит и БД, и X-UI панели!
                     await renew_vpn_subscription_flexible(inviter_id, 3)
                     
-                    # Отправляем красивое фиолетовое уведомление пригласившему
+                    # Уведомление пригласившему
                     try:
                         await message.bot.send_message(
                             chat_id=inviter_id,
@@ -1612,30 +1698,35 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     except Exception:
                         pass
 
-                    # НАЧИСЛЯЕМ 3 ДНЯ СВЕЖЕМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
-                    new_user_expiry = current_time + THREE_DAYS_SECONDS
-                    # Записываем в БД сразу с бонусным временем
-                    add_or_update_user(user_id, username, expiry_time=int(new_user_expiry))
-                    # Создаем/продлеваем доступ в панелях X-UI
+                    # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
+                    # Сначала просто регистрируем его в БД с нулевым временем подписки
+                    add_or_update_user(user_id, username, expiry_time=0)
+                    
+                    # Затем гибко продлеваем его на 3 дня (создадутся конфиги на панелях)
                     await renew_vpn_subscription_flexible(user_id, 3)
                     
-                    # Добавляем плашку к основному тексту, чтобы юзер видел подарок
+                    # Текст бонуса
                     ref_bonus_text = (
                         f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
                         f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
                     )
-        except ValueError:
-            pass  # Защита от мусора в аргументах ссылки
+        except (ValueError, TypeError):
+            pass
 
-    # 3. Если пользователь обычный (или уже был в БД), просто регистрируем/обновляем его стандартно
-    if not ref_bonus_text and is_new_user:
-        add_or_update_user(user_id, username)
+    # 3. Обработка регистрации и обновлений (если не было реферального бонуса)
+    if is_new_user and not ref_bonus_text:
+        # Новый пользователь без реферальной ссылки
+        add_or_update_user(user_id, username, expiry_time=0)
     elif not is_new_user:
-        # Если юзер уже старый, просто обновляем его username на всякий случай
-        add_or_update_user(user_id, username, expiry_time=existing_user[4], role=existing_user[5])
+        # Старый пользователь: защищаем код от возможных строковых значений в БД
+        try:
+            old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
+        except (ValueError, TypeError):
+            old_expiry = 0
+            
+        add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
 
-    # 4. Ваша родная отправка медиа (Абсолютно нетронутая, видео и клавиатура на месте!)
-    # Если был реферальный бонус, он прикрепится красивой плашкой сверху над вашим текстом text1
+    # 4. Отправка сообщения (каноничная часть вашего бота)
     final_caption = f"{ref_bonus_text}{text1}"
     
     await message.answer_video(
@@ -1685,10 +1776,16 @@ async def cabinet(callback: types.CallbackQuery):
     except Exception:
         ref_url = f"https://t.me/bot?start=ref{user_id}"
 
+    # НОВОЕ: Получаем количество приглашенных пользователей за всё время
+    # Обязательно добавьте функцию get_user_invite_count в ваш файл с БД
+    invite_count = get_user_invite_count(user_id)
+
+    # ИСПРАВЛЕНО: Добавлен счетчик рефералов прямо под ссылкой
     ref_text_block = (
         f"🤝 <b>Партнерская программа:</b>\n"
         f"Приглашайте друзей по ссылке и получайте бонусы!\n"
-        f"🔗 Ссылка: <code>{ref_url}</code>\n\n"
+        f"🔗 Ссылка: <code>{ref_url}</code>\n"
+        f"👥 Приглашено друзей: <b>{invite_count}</b> чел.\n\n"
     )
 
     # Запрашиваем словарь из исправленной БД
@@ -1768,6 +1865,7 @@ async def cabinet(callback: types.CallbackQuery):
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
         pass
+
 
 
 
