@@ -68,11 +68,6 @@ dp = Dispatcher()
 #-----------Работа с базой данных----------------
 
 
-import os
-import sqlite3
-import logging
-from datetime import datetime
-
 # Путь к вашей базе данных (определен в вашем проекте)
 # DB_PATH = "users.db"
 
@@ -120,11 +115,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass 
 
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role в существующую структуру на сервере
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role и новые счетчики действий в существующую структуру на сервере
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
     except sqlite3.OperationalError:
         pass 
+
+    try:
+        # ВСТАВЛЕНО: Безопасное добавление колонок для подсчета админ-действий
+        cursor.execute("ALTER TABLE users ADD COLUMN actions_gift INTEGER DEFAULT 0;")
+        cursor.execute("ALTER TABLE users ADD COLUMN actions_gen INTEGER DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass # Если колонки уже есть, SQLite их просто пропустит
 
     # 3. Новая таблица для логирования активаций многоразовых промокодов
     cursor.execute('''
@@ -140,6 +142,7 @@ def init_db():
     conn.commit()
     conn.close()
     log_system_routing()
+
 
 
 def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None):
@@ -623,6 +626,72 @@ class IsAmbassador(BaseFilter):
 
 
 
+@dp.message(F.text.startswith("/team"), IsCreator())
+async def handle_show_team(message: types.Message):
+    """Выводит полный список Администраторов и Амбассадоров с их статистикой действий"""
+    
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    # Выгружаем персонал (ID, имя, роль, и наши новые счетчики действий)
+    cursor.execute("SELECT user_id, username, role, actions_gift, actions_gen FROM users WHERE role IN ('admin', 'ambassador')")
+    team_members = cursor.fetchall()
+    conn.close()
+
+    if not team_members:
+        await message.answer(
+            "👥 <b>Команда Sonata VPN</b>\n\n"
+            "<blockquote>❌ В вашей команде пока нет ни одного администратора или амбассадора.</blockquote>\n"
+            "Вы можете назначить их с помощью команды:\n<code>/setrole [ID] [admin/ambassador]</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Разделяем сотрудников по спискам
+    admins_list = []
+    ambassadors_list = []
+
+    for member in team_members:
+        tg_id = member[0]
+        username = f"@{member[1]}" if member[1] and member[1] != "Unknown" else "<i>Нет юзернейма</i>"
+        role = member[2]
+        gifts_count = member[3] if member[3] is not None else 0
+        gens_count = member[4] if member[4] is not None else 0
+
+        if role == "admin":
+            admins_list.append(f"• 👤 ID: <code>{tg_id}</code> | {username}\n  └ 📊 Выдано подписок (/gift): <b>{gifts_count} шт.</b>")
+        elif role == "ambassador":
+            ambassadors_list.append(f"• 👤 ID: <code>{tg_id}</code> | {username}\n  └ 📊 Создано промокодов (/gen): <b>{gens_count} шт.</b>")
+
+    # Сборка финального сообщения
+    report_text = "👑 <b>Управление командой Sonata VPN</b>\n\n"
+
+    # Секция Администраторов (Красная плашка)
+    report_text += "🔴 <b>АДМИНИСТРАТОРЫ (Управление подписками):</b>\n"
+    if admins_list:
+        # Упаковываем весь список админов в один фиолетовый блок цитаты
+        report_text += "<blockquote>" + "\n\n".join(admins_list) + "</blockquote>\n\n"
+    else:
+        report_text += "<blockquote><i>Администраторы не назначены</i></blockquote>\n\n"
+
+    # Секция Амбассадоров (Оранжевая плашка)
+    report_text += "🟠 <b>АМБАССАДОРЫ (Управление промокодами):</b>\n"
+    if ambassadors_list:
+        # Упаковываем весь список амбассадоров в один фиолетовый блок цитаты
+        report_text += "<blockquote>" + "\n\n".join(ambassadors_list) + "</blockquote>\n\n"
+    else:
+        report_text += "<blockquote><i>Амбассадоры не назначены</i></blockquote>\n\n"
+
+    report_text += (
+        "💡 <i>Чтобы снять права и аннулировать безлимитный VPN сотрудника, используйте команду:</i>\n"
+        "<code>/demote [ID]</code>"
+    )
+
+    await message.answer(report_text, parse_mode="HTML")
+
+
+
+
+
 
 from aiogram import types, F
 from aiogram.filters import Command
@@ -803,6 +872,7 @@ async def handle_generate_promo(message: types.Message):
         
         # Вызываем обновленную генерацию
         result_code = generate_new_promocode(days, custom_code, max_uses)
+        conn = sqlite3.connect(DB_PATH); conn.cursor().execute("UPDATE users SET actions_gen = actions_gen + 1 WHERE user_id = ?", (message.from_user.id,)); conn.commit(); conn.close()
         
         if result_code == "EXISTS":
             await message.answer("❌ Такой кастомный промокод уже существует в базе данных!")
@@ -2024,6 +2094,7 @@ async def admin_gift_sub(message: types.Message):
     sub_id = await renew_vpn_subscription_flexible(target_user_id, days_to_add)
     
     if sub_id:
+        conn = sqlite3.connect(DB_PATH); conn.cursor().execute("UPDATE users SET actions_gift = actions_gift + 1 WHERE user_id = ?", (message.from_user.id,)); conn.commit(); conn.close()
         await get_vpn_config_clean(target_user_id)
         
         # Выводим только подтверждение без лишних ссылок
