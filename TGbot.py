@@ -1276,7 +1276,7 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int, username: str
     # ---- 1. Расчет времени (Секунды для БД, Миллисекунды для панелей) ----
     user_data = get_user_from_db(user_id)
     # Извлекаем именно ячейку времени по индексу [3]
-    current_expiry_seconds = user_data[3] if (user_data and len(user_data) > 3 and user_data[3] is not None) else 0
+    current_expiry_seconds = user_data[4] if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
     
     current_time_seconds = int(time.time())
     seconds_to_add = days * 24 * 60 * 60
