@@ -793,7 +793,7 @@ async def creator_panel_help(message: types.Message):
         "<code>/setrole [ID] ambassador</code> — назначить амбассадора\n\n"
         "• <b>Разжаловать до юзера:</b>\n"
         "<code>/demote [ID]</code> — вернуть статус обычного пользователя\n\n"
-        "Рассылка: <code>/send</code>"
+        "Рассылка: <code>/send</code>\n"
         "• Одноразовый: <code>/gen [дни] [код]</code>\n"
         "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
         "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>" 
@@ -931,7 +931,7 @@ async def cmd_top_inviters(message: types.Message):
     top_data = get_monthly_top_inviters(limit=10)
     
     if not top_data:
-        await message.answer("📊 <b>Топ приглашающих за месяц:</b>\n\nПока никто никого не пригласил. Будьте первыми!")
+        await message.answer("📊 Топ приглашающих за месяц:\n\nПока никто никого не пригласил. Будьте первыми!")
         return
 
     text = "🏆 <b>ТОП-10 лидеров по приглашениям за 30 дней</b>\n\n"
@@ -1704,12 +1704,21 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     
                     # Затем гибко продлеваем его на 3 дня (создадутся конфиги на панелях)
                     await renew_vpn_subscription_flexible(user_id, 3)
+
+                    # ======= ВОТ ЭТОТ КУСОК НУЖНО ДОБАВИТЬ =======
+                    # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
+                    try:
+                        add_referral_connection(inviter_id, user_id)
+                    except Exception:
+                        pass # Защита от непредвиденных ошибок при записи в БД
+                    # ============================================
                     
                     # Текст бонуса
                     ref_bonus_text = (
                         f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
                         f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
                     )
+
         except (ValueError, TypeError):
             pass
 
@@ -1806,16 +1815,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Настройка текстовых плашек с нужными вам цветами
         if role == "creator":
-            role_badge = "<b>🟢Статус:</b><blockquote> БОРЗ (Владелец)</blockquote>"
+            role_badge = "<blockquote><b>Статус:</b> 🟢БОРЗ (Владелец)</blockquote>"
             is_premium_role = True
         elif role == "admin":
-            role_badge = "<b>🔴 Статус:</b><blockquote> Администратор (Staff)</blockquote>"
+            role_badge = "<blockquote><b>Статус:</b> 🔴Администратор (Staff)</blockquote>"
             is_premium_role = True
         elif role == "ambassador":
-            role_badge = "<b>🟠 Статус:</b> <blockquote>Амбассадор (Partner)</blockquote>"
+            role_badge = "<blockquote><b>Статус:</b> 🟠Амбассадор (Partner)</blockquote>"
             is_premium_role = True
         else:
-            role_badge = "<b>🔵 Статус:</b><blockquote> Пользователь</blockquote>"
+            role_badge = "<blockquote><b>Статус:</b> 🔵Пользователь</blockquote>"
             is_premium_role = False
 
         # 3. Извлекаем время подписки по правильному индексу 4
@@ -1899,9 +1908,9 @@ async def connect(callback: types.CallbackQuery):
         ])
         
         text = (
-            "🔒 <b>Доступ ограничен</b>\n\n"
-            "<blockquote>Для использования высокоскоростных серверов Sonata VPN, пожалуйста, подпишитесь на наш официальный канал.\n\n"
-            "Там мы публикуем важные обновления, информацию о зеркалах сайтов и статусе работы серверов.</blockquote>"
+            "🔒 <b>Требуется подписка на канал</b>\n\n"
+            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
+            "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
         )
         
         try:
