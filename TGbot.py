@@ -2000,8 +2000,17 @@ async def connect(callback: types.CallbackQuery):
             f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
         )
 
-        asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+        # Проверяем реальный статус для сайта, не отключая режим отладки в ТГ
+        if expiry_in_db <= time.time():
+            # Если просрочен: в ТГ отдаем красивый текст отладки, но на сайт шлем ПУСТОТУ
+            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+            logging.info(f"[ОТЛАДКА] Пользователь {user_id} просрочен. В ТГ выдан интерфейс, на сайт ушла пустота.")
+        else:
+            # Если активен: шлем нормальный рабочий конфиг
+            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+            
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+
 
         try:
             await callback.message.delete()
