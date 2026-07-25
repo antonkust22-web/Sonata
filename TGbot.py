@@ -623,20 +623,23 @@ async def fetch_real_server_load(srv):
 
 
 
-
-async def send_sub_to_website(token, b64_content, expiry):
-    """Отправляет рабочий Base64 или пустую строку при блокировке на PHP-сайт"""
+async def send_sub_to_website(token, b64_content, expiry, is_blocked=False):
+    """
+    Отправляет рабочий Base64 или пустую строку при блокировке на PHP-сайт.
+    Добавлен аргумент is_blocked для принудительного затирания серверов.
+    """
     url = "https://sonatavpn.ru" + "/" + "index.php?update_sub=1"
-    
+    import time
+
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    import time
-    # Если подписка истекла, отправляем пустоту, чтобы очистить список серверов
-    if expiry_int <= int(time.time()):
+    # ЖЕЛЕЗНАЯ ПРОВЕРКА: Если передан флаг блокировки ИЛИ время реально вышло
+    if is_blocked or expiry_int <= int(time.time()):
         content_to_send = ""
+        logging.info(f"[МАРШРУТИЗАЦИЯ] Пользователь {token} заблокирован/истек. Отправляем пустоту.")
     else:
         content_to_send = b64_content
 
@@ -653,6 +656,9 @@ async def send_sub_to_website(token, b64_content, expiry):
                 logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token}: {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА] Не удалось передать подписку: {ex}")
+
+    
+
 
 
 
