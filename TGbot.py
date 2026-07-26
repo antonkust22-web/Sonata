@@ -1932,7 +1932,10 @@ async def connect(callback: types.CallbackQuery):
     db_data = get_user_from_db(user_id)
     current_time = time.time()
     
-    expiry_in_db = db_data[3] if (db_data and len(db_data) > 3 and db_data[3] is not None) else 0
+    try:
+        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
+    except (ValueError, TypeError):
+        expiry_in_db = 0
     
     # ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТИРОВАНИЯ
     # if expiry_in_db <= current_time:
