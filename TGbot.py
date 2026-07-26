@@ -2004,13 +2004,14 @@ async def connect(callback: types.CallbackQuery):
         )
 
         # Проверяем реальный статус для сайта, не отключая режим отладки в ТГ
-        if expiry_in_db <= time.time():
-            # Если просрочен: в ТГ отдаем красивый текст отладки, но на сайт шлем ПУСТОТУ
+        if expiry_seconds <= int(time.time()):
+            # Если подписка РЕАЛЬНО просрочена прямо сейчас (новое время вышло)
             asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
-            logging.info(f"[ОТЛАДКА] Пользователь {user_id} просрочен. В ТГ выдан интерфейс, на сайт ушла пустота.")
+            logging.info(f"[ОТЛАДКА] Пользователь {user_id} действительно просрочен. На сайт ушла пустота.")
         else:
-            # Если активен: шлем нормальный рабочий конфиг
+            # Если подписка активна (новое время больше текущего)
             asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+            logging.info(f"[ОТЛАДКА] Пользователь {user_id} активен до {expiry_date}. Конфиги отправлены.")
             
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
