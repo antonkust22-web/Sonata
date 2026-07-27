@@ -931,13 +931,20 @@ async def handle_demote_user(message: types.Message):
 
 
 
+import asyncio
+from aiogram import types
+from aiogram.filters import Command
+
 @dp.message(Command("top"))
 async def cmd_top_inviters(message: types.Message):
+    # Отправляем предварительное сообщение, так как запросы имен из TG API могут занять пару секунд
+    loading_msg = await message.answer("📊 <b>Загрузка рейтинга лидеров...</b>", parse_mode="HTML")
+    
     # Получаем данные из БД за последние 30 дней
     top_data = get_monthly_top_inviters(limit=10)
     
     if not top_data:
-        await message.answer("📊 Топ приглашающих за месяц:\n\nПока никто никого не пригласил. Будьте первыми!")
+        await loading_msg.edit_text("📊 Топ приглашающих за месяц:\n\nПока никто никого не пригласил. Будьте первыми!")
         return
 
     text = "🏆 <b>ТОП-10 лидеров по приглашениям за 30 дней</b>\n\n"
@@ -948,23 +955,42 @@ async def cmd_top_inviters(message: types.Message):
     for index, row in enumerate(top_data, start=1):
         inviter_id, username, count = row
         
-        # Красиво форматируем имя пользователя
-        user_mention = f"@{username}" if username and username != "Unknown" else f"Пользователь [{inviter_id}]"
+        # --- ПОЛУЧЕНИЕ НАСТОЯЩЕГО ИМЕНИ ИЗ TELEGRAM ---
+        try:
+            # Запрашиваем информацию о чате пользователя напрямую у Telegram
+            chat_info = await message.bot.get_chat(inviter_id)
+            # Берем имя (First Name). Если у человека есть фамилия, можно сделать f"{chat_info.first_name} {chat_info.last_name or ''}"
+            display_name = chat_info.first_name
+        except Exception:
+            # Если бот не смог достучаться до API (юзер удален/заблокировал бота), используем старый username или заглушку
+            display_name = f"@{username}" if username and username != "Unknown" else "Пользователь"
+
+        # Создаем красивое текстовое упоминание (работает для всех, даже если нет @username)
+        # При клике на имя откроется профиль человека
+        user_mention = f'<a href="tg://user?id={inviter_id}">{display_name}</a>'
         
         # Определяем эмодзи места (медаль или просто цифра)
         place_emoji = medals.get(index, f"<code>{index}.</code>")
         
-        # Склоняем слово "приглашение" в зависимости от количества
+        # Склоняем слово "человек" в зависимости от количества
         if count % 10 == 1 and count % 100 != 11:
             word = "человек"
         else:
             word = "человек(а)"
             
         text += f"{place_emoji} {user_mention} — <b>{count}</b> {word}\n"
+        # Небольшая микропауза, чтобы Telegram API не выдал ошибку Flood Wait при частых запросах get_chat
+        await asyncio.sleep(0.1)
         
-    text += "\n\n<i> Зовите друзей по своей реферальной ссылке и поднимайтесь в рейтинге!</i>"
+    text += "\n\n<i>Зовите друзей по своей реферальной ссылке и поднимайтесь в рейтинге!</i>"
     
-    await message.answer(text, parse_mode="HTML")
+    # Редактируем сообщение о загрузке на финальный красивый топ
+    try:
+        await loading_msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:
+        # Если вдруг редактирование не сработало, просто отправляем новым сообщением
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
 
 
 
@@ -1661,6 +1687,7 @@ def back_kb():
 
 # --- Хендлеры ---
 import time
+import asyncio
 from aiogram import types
 from aiogram.filters import Command, CommandObject
 
@@ -1669,6 +1696,10 @@ THREE_DAYS_SECONDS = 3 * 24 * 3600
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
+    # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
+    # Отправляем сообщение о загрузке, чтобы пользователь видел, что бот работает
+    loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
+
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     
@@ -1688,9 +1719,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                 inviter_data = get_user_from_db(inviter_id)
                 
                 if inviter_data:
-                    # === ИСПРАВЛЕНИЕ ДЛЯ ПРИГЛАСИВШЕГО (РЕФЕРЕРА) ===
-                    # Извлекаем текущее время окончания подписки пригласившего из БД
-                    # (Используем индекс, как в вашем коде ниже)
+                    # === НАЧИСЛЕНИЕ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ) ===
+                    # Извлекаем текущее время окончания подписки пригласившего (индекс 4 из вашей БД)
                     try:
                         inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
                     except (ValueError, TypeError):
@@ -1698,24 +1728,13 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
                     current_time = int(time.time())
 
-                    # ПРОВЕРКА: Если подписка еще активна, прибавляем к ней. 
-                    # Если сгорела или её не было — прибавляем к текущему времени.
+                    # Если подписка еще активна, прибавляем к ней, иначе — к текущему времени
                     if inviter_old_expiry > current_time:
-                        # Внимание: если ваша функция `renew_vpn_subscription_flexible` принимает 
-                        # количество дней (например, 3), но внутри себя заменяет дату на новую,
-                        # то логику нужно исправить здесь или внутри неё.
-                        # Если она принимает дни, но затирает старые, мы можем временно 
-                        # «докинуть» разницу. Но правильнее передавать суммарные дни или поправить её.
-                        
-                        # Вариант А: Если функция внутри затирает дату, передаем ей дней больше, 
-                        # чтобы покрыть остаток + 3 дня:
                         days_left = (inviter_old_expiry - current_time) / (24 * 3600)
                         days_to_add = int(days_left) + 3
                         await renew_vpn_subscription_flexible(inviter_id, days_to_add)
                     else:
-                        # Если подписка уже истекла, просто даем 3 дня с нуля
                         await renew_vpn_subscription_flexible(inviter_id, 3)
-                    # ===============================================
 
                     # Уведомление пригласившему
                     try:
@@ -1758,7 +1777,14 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
             
         add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
 
-    # 4. Отправка сообщения
+    # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
+    # Все тяжелые запросы в X-UI панель и БД завершены. Удаляем «Загрузка...»
+    try:
+        await loading_msg.delete()
+    except Exception:
+        pass
+
+    # 5. Отправка главного сообщения (видео)
     final_caption = f"{ref_bonus_text}{text1}"
     
     await message.answer_video(
@@ -1767,6 +1793,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         reply_markup=main_kb(), 
         parse_mode="HTML"
     )
+
 
 
 
