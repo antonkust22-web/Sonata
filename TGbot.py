@@ -2577,7 +2577,20 @@ async def check_and_notify_expiring_subscriptions(bot):
             logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
 
 
-
+async def scheduler(bot):
+    """Цикл, который запускает проверку раз в сутки под именем scheduler."""
+    # Даем боту 10 секунд на полную инициализацию после старта скрипта
+    await asyncio.sleep(10)
+    
+    while True:
+        try:
+            # Вызываем нашу обновленную функцию проверки подписок
+            await check_and_notify_expiring_subscriptions(bot)
+        except Exception as e:
+            logging.error(f"Критическая ошибка в планировщике подписок: {e}")
+        
+        # Засыпаем ровно на 24 часа до следующей проверки
+        await asyncio.sleep(24 * 60 * 60)
 
 
 
