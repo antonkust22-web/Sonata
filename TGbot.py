@@ -1688,10 +1688,35 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                 inviter_data = get_user_from_db(inviter_id)
                 
                 if inviter_data:
-                    # НАЧИСЛЯЕМ 3 ДНЯ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ)
-                    # Вызываем ТОЛЬКО гибкое продление. Оно само обновит и БД, и X-UI панели!
-                    await renew_vpn_subscription_flexible(inviter_id, 3)
-                    
+                    # === ИСПРАВЛЕНИЕ ДЛЯ ПРИГЛАСИВШЕГО (РЕФЕРЕРА) ===
+                    # Извлекаем текущее время окончания подписки пригласившего из БД
+                    # (Используем индекс, как в вашем коде ниже)
+                    try:
+                        inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
+                    except (ValueError, TypeError):
+                        inviter_old_expiry = 0
+
+                    current_time = int(time.time())
+
+                    # ПРОВЕРКА: Если подписка еще активна, прибавляем к ней. 
+                    # Если сгорела или её не было — прибавляем к текущему времени.
+                    if inviter_old_expiry > current_time:
+                        # Внимание: если ваша функция `renew_vpn_subscription_flexible` принимает 
+                        # количество дней (например, 3), но внутри себя заменяет дату на новую,
+                        # то логику нужно исправить здесь или внутри неё.
+                        # Если она принимает дни, но затирает старые, мы можем временно 
+                        # «докинуть» разницу. Но правильнее передавать суммарные дни или поправить её.
+                        
+                        # Вариант А: Если функция внутри затирает дату, передаем ей дней больше, 
+                        # чтобы покрыть остаток + 3 дня:
+                        days_left = (inviter_old_expiry - current_time) / (24 * 3600)
+                        days_to_add = int(days_left) + 3
+                        await renew_vpn_subscription_flexible(inviter_id, days_to_add)
+                    else:
+                        # Если подписка уже истекла, просто даем 3 дня с нуля
+                        await renew_vpn_subscription_flexible(inviter_id, 3)
+                    # ===============================================
+
                     # Уведомление пригласившему
                     try:
                         await message.bot.send_message(
@@ -1705,21 +1730,15 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                         pass
 
                     # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
-                    # Сначала просто регистрируем его в БД с нулевым временем подписки
                     add_or_update_user(user_id, username, expiry_time=0)
-                    
-                    # Затем гибко продлеваем его на 3 дня (создадутся конфиги на панелях)
                     await renew_vpn_subscription_flexible(user_id, 3)
 
-                    # ======= ВОТ ЭТОТ КУСОК НУЖНО ДОБАВИТЬ =======
                     # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
                     try:
                         add_referral_connection(inviter_id, user_id)
                     except Exception:
-                        pass # Защита от непредвиденных ошибок при записи в БД
-                    # ============================================
+                        pass 
                     
-                    # Текст бонуса
                     ref_bonus_text = (
                         f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
                         f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
@@ -1730,10 +1749,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
     # 3. Обработка регистрации и обновлений (если не было реферального бонуса)
     if is_new_user and not ref_bonus_text:
-        # Новый пользователь без реферальной ссылки
         add_or_update_user(user_id, username, expiry_time=0)
     elif not is_new_user:
-        # Старый пользователь: защищаем код от возможных строковых значений в БД
         try:
             old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
         except (ValueError, TypeError):
@@ -1741,7 +1758,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
             
         add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
 
-    # 4. Отправка сообщения (каноничная часть вашего бота)
+    # 4. Отправка сообщения
     final_caption = f"{ref_bonus_text}{text1}"
     
     await message.answer_video(
@@ -1750,6 +1767,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         reply_markup=main_kb(), 
         parse_mode="HTML"
     )
+
 
 
 
@@ -2481,170 +2499,87 @@ async def successful_payment_handler(message: types.Message):
 
 
 
+import time
+import asyncio
+import sqlite3
+import logging
+
 async def check_and_notify_expiring_subscriptions(bot):
     """
     Фоновая задача: запускается раз в день.
-    1. Уведомляет платных подписчиков за 3 дня до окончания (игнорируя триал).
-    2. Уведомляет пользователей с закончившимся пробным периодом и предлагает оплату.
+    Проверяет пользователей строго по индексам вашей БД: row[0] - user_id, row[1] - expiry_time
     """
     logging.info("⏳ Запуск проверки статусов и истекающих подписок...")
     
     current_time = int(time.time())
     
-    # Расчет временных меток для проверки "Заканчивается через 3 дня" (интервал в целые сутки)
-    three_days_later_start = int((datetime.now() + timedelta(days=3)).replace(hour=0, minute=0, second=0).timestamp())
-    three_days_later_end = int((datetime.now() + timedelta(days=3)).replace(hour=23, minute=59, second=59).timestamp())
+    # Интервал для уведомления за 3 дня (от 48 до 72 часов до конца подписки)
+    three_days_min = current_time + (2 * 24 * 3600)
+    three_days_max = current_time + (3 * 24 * 3600)
     
-    # Расчет временных меток для проверки "Закончилась сегодня" (последние 24 часа)
-    expired_today_start = current_time - (24 * 60 * 60)
+    # Интервал для уведомления об окончании (истекла за последние 24 часа)
+    expired_min = current_time - (24 * 3600)
+    expired_max = current_time
     
     try:
-        # ИСПРАВЛЕНО: Подключение строго по глобальной защищенной переменной DB_PATH
         conn = sqlite3.connect(DB_PATH, timeout=30.0) 
         cursor = conn.cursor()
         
-        # 1. Вытаскиваем пользователей, у кого подписка кончается ровно через 3 дня
+        # Выбираем ID и время окончания для проверки за 3 дня
         cursor.execute(
             "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
-            (three_days_later_start, three_days_later_end)
+            (three_days_min, three_days_max)
         )
-        expiring_users = cursor.fetchall()
+        expiring_rows = cursor.fetchall()  # Получаем список строк вида [(8679920181, 1787652280), ...]
         
-        # 2. Вытаскиваем пользователей, у кого подписка закончилась в течение последних 24 часов
+        # Выбираем ID и время окончания для тех, у кого закончилась
         cursor.execute(
             "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?",
-            (expired_today_start, current_time)
+            (expired_min, expired_max)
         )
-        expired_users = cursor.fetchall()
+        expired_rows = cursor.fetchall()
         
         conn.close()
     except Exception as e:
         logging.error(f"❌ Ошибка при чтении БД для уведомлений: {e}")
         return
 
-    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ (ТОЛЬКО ДЛЯ ПЛАТНЫХ) ---
-    for row in expiring_users:
-        user_id = row[0]
-        expiry_time = row[1]
+    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
+    for row in expiring_rows:
+        user_id = row[0]  # Первый столбец из выборки
         try:
-            # Защита: Считаем общую длительность подписки от текущего момента
-            total_duration_days = (expiry_time - current_time) / 86400 + 1
-            
-            if total_duration_days <= 4.5:
-                # Это только что выданный пробный период (осталось 3 дня из 4). На него НЕ реагируем.
-                continue
-                
             text = (
                 "⚠️ <b>Внимание!</b>\n\n"
                 "Ваша VPN-подписка заканчивается через <b>3 дня</b>.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к безопасной сети."
+                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
             )
             await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
             logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05) 
+            await asyncio.sleep(0.05)  # Защита от лимитов Telegram API
             
         except Exception as err:
             logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
 
-    # --- БЛОК 2: ОКОНЧАНИЕ ПРОБНОГО ПЕРИОДА (ПРЕДЛОЖЕНИЕ ОПЛАТЫ) ---
-    for row in expired_users:
-        user_id = row[0]
+    # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
+    for row in expired_rows:
+        user_id = row[0]  # Первый столбец из выборки
         try:
-            text_expired = (
-                "🛑 <b>Пробный период окончен!</b>\n\n"
-                "Срок действия вашего бесплатного тестового доступа (4 дня) успешно завершился.\n"
-                "Вам понравилась скорость работы Sonata VPN? Продлите подписку прямо сейчас, чтобы вернуть доступ к серверам!\n\n"
-                "💰 Для продления нажмите кнопку ниже или введите команду /pay"
+            text = (
+                "🛑 <b>Срок действия подписки истек!</b>\n\n"
+                "Ваш VPN-доступ временно отключен.\n"
+                "Чтобы восстановить безопасное подключение, перейдите в главное меню и оплатите продление."
             )
-            
-            # Клавиатура перевода на оплату
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
-                [InlineKeyboardButton(text="📱 Главное меню", callback_data="back")]
-            ])
-            
-            await bot.send_message(chat_id=user_id, text=text_expired, reply_markup=pay_kb, parse_mode="HTML")
-            logging.info(f"🎁 Уведомление об окончании ТРИАЛА успешно отправлено пользователю {user_id}")
+            await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
+            logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
             await asyncio.sleep(0.05)
             
         except Exception as err:
-            logging.error(f"Не удалось отправить уведомление об окончании триала пользователю {user_id}: {err}")
-
-  
+            logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
 
 
 
 
-async def scheduler(bot):
-    """Цикл, который запускает проверку раз в сутки под именем scheduler."""
-    # Даем боту 10 секунд на запуск
-    await asyncio.sleep(10)
-    
-    while True:
-        try:
-            await check_and_notify_expiring_subscriptions(bot)
-        except Exception as e:
-            logging.error(f"Критическая ошибка в планировщике подписок: {e}")
-        
-        # Спим 24 часа до следующей проверки
-        await asyncio.sleep(24 * 60 * 60)
 
-
-
-import uuid
-import json
-import zlib
-import base64
-import urllib.parse
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
-
-# Если объект app уже объявлен выше в файле, эту строку удалите:
-app = FastAPI()
-
-@app.get("/import/{user_id}")
-async def import_to_happ(user_id: int):
-    """
-    Эндпоинт на лету собирает crypt3 пакет для Happ под вашим брендом
-    и делает автоматический редирект, открывающий приложение.
-    """
-    # Постоянный UUID, жестко привязанный к Telegram ID
-    client_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
-
-    # Сборка оригинальных конфигураций Reality со всеми вашими данными из SERVERS
-    remark_fi = urllib.parse.quote("🇫🇮 Финляндия | Premium")
-    vless_fi = (
-        f"vless://{client_uuid}@78.17.1.43:43527"
-        f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
-        f"&pbk=aZDw05rr-XfdquuaFADqMzM1aAdeFhhpx_Du69Io3Sc&sid=f2cfb510fbaa&spx=%2F"
-        f"#{remark_fi}"
-    )
-
-    remark_pl = urllib.parse.quote("🇵🇱 Польша | Premium")
-    vless_pl = (
-        f"vless://{client_uuid}@78.17.152.36:16303"
-        f"?type=tcp&security=reality&sni=sony.com&fp=chrome"
-        f"&pbk=XAAgoWsZcO3CWrMnx1r-hFNYVn8u5rfuZxCD-r5jKEY&sid=aa72b4f659&spx=%2F"
-        f"#{remark_pl}"
-    )
-
-    # Структура папки подписки для отображения вашего бренда в Happ
-    subscription_data = {
-        "name": "🚀 Sonata VPN",
-        "urls": [vless_fi, vless_pl]
-    }
-    
-    # Профессиональное сжатие и кодирование crypt3
-    json_str = json.dumps(subscription_data)
-    compressed_data = zlib.compress(json_str.encode('utf-8'))
-    b64_encoded = base64.b64encode(compressed_data).decode('utf-8')
-    safe_crypto_str = b64_encoded.replace('+', '%2B').replace('/', '%2F').replace('=', '%3D')
-    
-    happ_url = f"happ://crypt3/{safe_crypto_str}"
-    
-    # Моментальный редирект: браузер закроется, и сразу запустится Happ
-    return RedirectResponse(url=happ_url)
 
 
 
