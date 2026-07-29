@@ -2246,6 +2246,61 @@ async def connect(callback: types.CallbackQuery):
 
 
 
+@dp.callback_query(F.data.startswith("set_os_"))
+async def process_os_choice(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    try:
+        data_parts = callback.data.split("_")
+        
+        # Защита разбора строки callback_data
+        if len(data_parts) >= 4:
+            selected_os = data_parts[2] # ios, and, win, mac
+            sub_id = data_parts[3]      # уникальный хэш
+        else:
+            selected_os = data_parts[2] if len(data_parts) > 2 else "ios"
+            sub_id = "e" + hashlib.md5(str(callback.from_user.id).encode()).hexdigest()[:15]
+        
+        # Конфигурируем список доступных приложений под каждую конкретную ОС
+        apps_by_os = {
+            "ios": [("Happ", "happ"), ("Streisand", "streisand"), ("Karing", "karing")],
+            "and": [("v2rayNG", "v2rayng"), ("Karing", "karing"), ("INCY", "incy")],
+            "win": [("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing")],
+            "mac": [("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs")]
+        }
+        
+        available_apps = apps_by_os.get(selected_os, [("Happ", "happ")])
+        
+        # Строим клавиатуру. В callback_data зашиваем: save_ОС_ПРИЛОЖЕНИЕ_SUBID
+        inline_keyboard = []
+        row = []
+        for app_name, app_code in available_apps:
+            row.append(InlineKeyboardButton(text=app_name, callback_data=f"save_{selected_os}_{app_code}_{sub_id}"))
+            if len(row) == 2:
+                inline_keyboard.append(row)
+                row = []
+        if row:
+            inline_keyboard.append(row)
+            
+        inline_keyboard.append([InlineKeyboardButton(text="⬅️ Изменить ОС", callback_data="connect")])
+        
+        kb_apps = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+        
+        text_apps = (
+            f"📥 <b>Вы выбрали систему: {selected_os.upper()}</b>\n\n"
+            "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве:"
+        )
+        
+        try:
+            await callback.message.edit_text(text=text_apps, reply_markup=kb_apps, parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(text=text_apps, reply_markup=kb_apps, parse_mode="HTML")
+            
+    except Exception as e:
+        logging.error(f"Критическая ошибка в process_os_choice: {e}", exc_info=True)
+
+
+
 
 
 @dp.callback_query(F.data.startswith("save_"))
@@ -2312,7 +2367,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
     # ИСПРАВЛЕНО: Добавлен обязательный слэш (/) между доменом и sub_id
-    auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
     # КНОПКА «Новое устройство» ведет на хэндлер очистки reset_device
     kb = InlineKeyboardMarkup(inline_keyboard=[
