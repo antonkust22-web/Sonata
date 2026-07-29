@@ -30,16 +30,20 @@ from aiogram import types
 # --- ПРАВА АДМИНИСТРАТОРА ---
 ADMIN_ID = 8759913724  # ОБЯЗАТЕЛЬНО: Замените эти цифры на ваш настоящий Telegram ID
 
-
-
-
 # --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
-# Настройка пути к БД под хостинг Amvera
-if os.path.exists("/data"):
+if os.path.exists("/data") or os.environ.get("AMVERA_APP_NAME"):
+    # Железная защита Amvera: гарантируем создание папки на постоянном диске
+    try:
+        os.makedirs("/data", exist_ok=True)
+    except Exception as e:
+        logging.warning(f"Не удалось принудительно создать /data: {e}")
+        
     DB_PATH = "/data/users.db"
 else:
+    # Локальная папка для разработки на компьютере
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DB_PATH = os.path.join(BASE_DIR, "users.db")
+
 
 # Конфигурация логирования
 logging.basicConfig(
@@ -448,6 +452,169 @@ def clear_user_device_prefs(user_id):
     cursor.execute('UPDATE users SET saved_os = NULL, saved_app = NULL WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
+
+
+
+#-------миграция бд ------------------
+  
+
+# Глобальная переменная для удержания бэкапа в оперативной памяти
+DB_MEMORY_BACKUP = None
+
+@dp.message(Command("migrate_db"))
+async def cmd_migrate_db(message: types.Message):
+    global DB_MEMORY_BACKUP
+    
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    status_msg = await message.answer("🔍 <b>Анализ состояния 5 таблиц базы данных...</b>", parse_mode="HTML")
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        cursor = conn.cursor()
+
+        # Проверяем, есть ли данные в таблице users прямо сейчас
+        try:
+            cursor.execute("SELECT COUNT(*) FROM users")
+            users_count = cursor.fetchone()[0]
+        except sqlite3.OperationalError:
+            users_count = 0
+
+        # ====================================================================
+        # РЕЖИМ 1: СБОР ДАННЫХ И АРХИВАЦИЯ (Вызывать ПЕРЕД обновлением кода)
+        # ====================================================================
+        if users_count > 0:
+            await status_msg.edit_text("📥 <b>Режим: Архивация. Выгружаю 5 таблиц в память...</b>", parse_mode="HTML")
+            
+            # 1. Выгружаем таблицу users строго по порядку колонок
+            cursor.execute('''
+                SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
+                       role, actions_gift, actions_gen, saved_os, saved_app 
+                FROM users
+            ''')
+            backup_users = cursor.fetchall()
+
+            # 2. Выгружаем таблицу промокодов promocodes
+            cursor.execute('SELECT code, days, max_uses, current_uses FROM promocodes')
+            backup_promocodes = cursor.fetchall()
+
+            # 3. Выгружаем логи активаций promocode_activations
+            cursor.execute('SELECT id, code, user_id, activated_at FROM promocode_activations')
+            backup_activations = cursor.fetchall()
+
+            # 4. Выгружаем реферальные связи referral_connections
+            cursor.execute('SELECT id, inviter_id, referral_id, created_at FROM referral_connections')
+            backup_referrals = cursor.fetchall()
+
+            # 5. СКАЧИВАЕМ СИСТЕМНУЮ 5-Ю ТАБЛИЦУ: sqlite_sequence (Счетчики автоинкремента)
+            try:
+                cursor.execute('SELECT name, seq FROM sqlite_sequence')
+                backup_sequence = cursor.fetchall()
+            except sqlite3.OperationalError:
+                backup_sequence = []
+
+            conn.close()
+
+            # Сохраняем во временную оперативную память сервера все 5 таблиц
+            DB_MEMORY_BACKUP = {
+                "users": backup_users,
+                "promocodes": backup_promocodes,
+                "activations": backup_activations,
+                "referrals": backup_referrals,
+                "sequence": backup_sequence  # Записали пятую таблицу
+            }
+
+            # На Amvera дублируем бэкап в изолированный JSON-файл в папку /data/ для вечного хранения
+            backup_file_path = "/data/db_backup_secure.json" if os.path.exists("/data") else "db_backup_secure.json"
+            with open(backup_file_path, "w", encoding="utf-8") as f:
+                json.dump(DB_MEMORY_BACKUP, f, ensure_ascii=False, indent=4)
+
+            # ТЕПЕРЬ В ТЕКСТЕ ОТОБРАЖАЮТСЯ ВСЕ 5 ТАБЛИЦ СТРОГО ПО ВАШЕМУ СКРИНШОТУ!
+            await status_msg.edit_text(
+                f"📦 <b>Бэкап 5 таблиц успешно создан!</b>\n"
+                f"Данные сохранены в кэш и в файл <code>db_backup_secure.json</code>:\n"
+                f"• Таблица <code>users</code>: {len(backup_users)} строк\n"
+                f"• Таблица <code>promocodes</code>: {len(backup_promocodes)} строк\n"
+                f"• Таблица <code>promocode_activations</code>: {len(backup_activations)} строк\n"
+                f"• Таблица <code>referral_connections</code>: {len(backup_referrals)} строк\n"
+                f"• Таблица <code>sqlite_sequence</code>: {len(backup_sequence)} строк\n\n"
+                f"🔥 Теперь вы можете спокойно делать пуш и обновлять код на Amvera. После перезапуска бота введите эту команду повторно для разворачивания базы.",
+                parse_mode="HTML"
+            )
+            return
+
+        # ====================================================================
+        # РЕЖИМ 2: ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ БЭКАПА (Вызывать ПОСЛЕ обновления кода)
+        # ====================================================================
+        else:
+            await status_msg.edit_text("⏳ <b>Режим: Восстановление. Поиск сохраненных архивов...</b>", parse_mode="HTML")
+            
+            backup_file_path = "/data/db_backup_secure.json" if os.path.exists("/data") else "db_backup_secure.json"
+            
+            if DB_MEMORY_BACKUP is None and os.path.exists(backup_file_path):
+                with open(backup_file_path, "r", encoding="utf-8") as f:
+                    DB_MEMORY_BACKUP = json.load(f)
+
+            if not DB_MEMORY_BACKUP:
+                conn.close()
+                await status_msg.edit_text("❌ <b>Файлы бэкапа не найдены!</b> Восстановление отменено. Сначала сделайте бэкап на старой версии кода.", parse_mode="HTML")
+                return
+
+            # Инициализируем пустую структуру вашей базы данных
+            init_db() 
+
+            # Подключаемся заново для массовой заливки данных обратно
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Переносим 1. users
+            if "users" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["users"]:
+                cursor.executemany('''
+                    INSERT OR IGNORE INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role, actions_gift, actions_gen, saved_os, saved_app)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', DB_MEMORY_BACKUP["users"])
+
+            # Переносим 2. promocodes
+            if "promocodes" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["promocodes"]:
+                cursor.executemany('''
+                    INSERT OR IGNORE INTO promocodes (code, days, max_uses, current_uses)
+                    VALUES (?, ?, ?, ?)
+                ''', DB_MEMORY_BACKUP["promocodes"])
+
+            # Переносим 3. promocode_activations
+            if "activations" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["activations"]:
+                cursor.executemany('''
+                    INSERT OR IGNORE INTO promocode_activations (id, code, user_id, activated_at)
+                    VALUES (?, ?, ?, ?)
+                ''', DB_MEMORY_BACKUP["activations"])
+
+            # Переносим 4. referral_connections
+            if "referrals" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["referrals"]:
+                cursor.executemany('''
+                    INSERT OR IGNORE INTO referral_connections (id, inviter_id, referral_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', DB_MEMORY_BACKUP["referrals"])
+
+            # Переносим 5. Системную sqlite_sequence (Обновляем счетчики ID)
+            if "sequence" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["sequence"]:
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO sqlite_sequence (name, seq)
+                    VALUES (?, ?)
+                ''', DB_MEMORY_BACKUP["sequence"])
+
+            conn.commit()
+            conn.close()
+
+            await status_msg.edit_text(
+                "✅ <b>Миграция успешно завершена!</b>\n"
+                "Все 5 таблиц структуры заново развернуты на сервере Amvera. Данные пользователей (включая сохраненные ОС и приложения импорта), промокоды, логи рефералов и системные счетчики полностью восстановлены.",
+                parse_mode="HTML"
+            )
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка миграции: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ <b>Ошибка миграции:</b>\n<code>{e}</code>", parse_mode="HTML")
 
 
 
@@ -2261,13 +2428,14 @@ async def process_os_choice(callback: types.CallbackQuery):
             selected_os = data_parts[2] if len(data_parts) > 2 else "ios"
             sub_id = "e" + hashlib.md5(str(callback.from_user.id).encode()).hexdigest()[:15]
         
-        # Конфигурируем список доступных приложений под каждую конкретную ОС
+        # ТЕПЕРЬ HAPP ДОСТУПЕН НА ВСЕХ ПЛАТФОРМАХ!
         apps_by_os = {
-            "ios": [("Happ", "happ"), ("Streisand", "streisand"), ("Karing", "karing")],
-            "and": [("v2rayNG", "v2rayng"), ("Karing", "karing"), ("INCY", "incy")],
-            "win": [("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing")],
-            "mac": [("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs")]
+            "ios": [("Happ 🍏", "happ"), ("Streisand", "streisand"), ("Karing", "karing")],
+            "and": [("Happ 🤖", "happ"), ("v2rayNG", "v2rayng"), ("INCY", "incy"), ("Karing", "karing")],
+            "win": [("Happ 🪟", "happ"), ("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing")],
+            "mac": [("Happ 💻", "happ"), ("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs")]
         }
+
         
         available_apps = apps_by_os.get(selected_os, [("Happ", "happ")])
         
