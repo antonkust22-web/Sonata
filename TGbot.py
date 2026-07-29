@@ -2152,38 +2152,70 @@ async def connect(callback: types.CallbackQuery):
         ])
         text = (
             "🔒 <b>Требуется подписка на канал</b>\n\n"
-            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
+            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш official канал.\n\n"
             "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
         )
         try:
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-        except Exception: pass
+        except Exception: 
+            pass
         return
 
-    # 2. Получаем данные из БД (Имитируем структуру: предполагаем, что вы допишете получение сохраненной ОС и Приложения)
+    # 2. Получаем данные из БД и проверяем сохраненные настройки устройства
     db_data = get_user_from_db(user_id)
     saved_os = db_data[8] if (db_data and len(db_data) > 8) else None
     saved_app = db_data[9] if (db_data and len(db_data) > 9) else None
 
-    
-    # Если пользователь УЖЕ выбирал устройство ранее — пускаем без лишних вопросов!
+    # Если пользователь УЖЕ выбирал устройство ранее — пускаем сразу на экран дебага
     if saved_os and saved_app:
-        await callback.message.answer("⏳ Формирование и синхронизация...") # Или сразу вызов Шага 3
-        # Формируем callback вручную или перенаправляем на финальную генерацию
+        await callback.message.answer("⏳ Формирование и синхронизация...")
         await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
         return
 
-        # ... (весь ваш начальный код генерации vless_links, sub_id и сохранения в БД остается без изменений) ...
+    # 3. Если зашел впервые, запускаем генерацию конфигов и выводим выбор ОС
+    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
+    try:
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
+    except Exception as e:
+        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
+
+    try:
+        # Восстановлен удаленный блок генерации VPN токенов
+        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+        
+        combined_configs = "\n".join(vless_links) if vless_links else ""
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+
+        try:
+            expiry_in_db = int(db_data[4]) if (db_data and len(db_data) > 4 and db_data[4] is not None) else 0
+        except (ValueError, TypeError):
+            expiry_in_db = 0
+
+        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
+        if expiry_seconds == 0:
+            expiry_seconds = int(time.time() + 2592000)
+            
+        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+
+        # Отправляем синхронизацию на PHP домен
+        if expiry_seconds <= int(time.time()):
+            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+        else:
+            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
             
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
-        # 1. СНАЧАЛА УДАЛЯЕМ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
+        # Удаляем приветственное сообщение
         try:
             await callback.message.delete()
         except Exception as e:
             logging.warning(f"Не удалось удалить старое сообщение: {e}")
 
-        # 2. ТЕПЕРЬ ОТПРАВЛЯЕМ НОВОЕ (Префиксы строго set_os_ под функции БД)
+        # Отправляем меню выбора операционной системы
         kb_os = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🍏 iPhone / iPad", callback_data=f"set_os_ios_{sub_id}"),
@@ -2202,7 +2234,6 @@ async def connect(callback: types.CallbackQuery):
             "Мы запомним ваш выбор, чтобы не спрашивать в следующий раз. 😉"
         )
 
-        # Отправляем как новое сообщение, так как старое удалили
         await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
             
     except Exception as e:
