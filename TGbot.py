@@ -151,6 +151,14 @@ def init_db():
         )
     ''')
 
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ СХЕМА-ИНДЕКСОВ [8] и: Добавляем поля для сохранения ОС и Приложения
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN saved_os TEXT DEFAULT NULL;")
+        cursor.execute("ALTER TABLE users ADD COLUMN saved_app TEXT DEFAULT NULL;")
+        logging.info("Диспетчер: Колонки saved_os и saved_app успешно проверены/добавлены.")
+    except sqlite3.OperationalError:
+        pass # Если колонки уже есть, SQLite их просто пропустит
+
     
     conn.commit()
     conn.close()
@@ -158,27 +166,34 @@ def init_db():
 
 
 
-def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None):
+def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None, saved_os=None, saved_app=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # 0 = user_id, 1 = username, 2 = vpn_config, 3 = github_raw_url, 4 = expiry_time, 5 = role
-    cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
+    # Запрашиваем абсолютно ВСЕ 10 полей строго по порядку индексов от 0 до 9
+    cursor.execute('''
+        SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
+               role, actions_gift, actions_gen, saved_os, saved_app 
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
     row = cursor.fetchone()
 
     # Защита: гарантируем, что expiry_time — это int перед записью
     clean_expiry = int(expiry_time) if expiry_time is not None else None
 
     if not row:
-        cursor.execute(
-            'INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role) VALUES (?, ?, ?, ?, ?, ?)',
-            (
+        cursor.execute('''
+            INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role, actions_gift, actions_gen, saved_os, saved_app) 
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+        ''', (
                 user_id, 
                 username, 
                 vpn_config, 
                 github_raw_url, 
                 clean_expiry if clean_expiry is not None else 0, 
-                role if role is not None else 'user'
+                role if role is not None else 'user',
+                saved_os,  # db[8]
+                saved_app  # db[9]
             )
         )
     else:
@@ -186,19 +201,31 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
         new_github = github_raw_url if github_raw_url is not None else row[3]
         new_expiry = clean_expiry if clean_expiry is not None else row[4]
         new_role = role if role is not None else row[5]
+        
+        # Если новые значения ОС/Приложения не переданы в функцию, оставляем те, что уже лежали в БД
+        new_os = saved_os if saved_os is not None else row[8]
+        new_app = saved_app if saved_app is not None else row[9]
 
-        # Принудительно проверяем, что старое значение из базы тоже приведется к int при перезаписи
         try:
             new_expiry = int(new_expiry)
         except (ValueError, TypeError):
             new_expiry = 0
 
-        cursor.execute(
-            'UPDATE users SET username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ?, role = ? WHERE user_id = ?',
-            (username, new_config, new_github, new_expiry, new_role, user_id)
-        )
+        cursor.execute('''
+            UPDATE users SET 
+                username = ?, 
+                vpn_config = ?, 
+                github_raw_url = ?, 
+                expiry_time = ?, 
+                role = ?,
+                saved_os = ?,
+                saved_app = ?
+            WHERE user_id = ?
+        ''', (username, new_config, new_github, new_expiry, new_role, new_os, new_app, user_id))
+        
     conn.commit()
     conn.close()
+
 
 
 
@@ -206,18 +233,26 @@ def get_user_from_db(user_id):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # ВНИМАНИЕ: user_id строго на первом месте (индекс 0)!
-    # Порядок и индексы возвращаемого обычного кортежа (tuple):
+    # Строго соблюдаем структуру выдачи кортежа (tuple):
     # [0] = user_id
     # [1] = username
     # [2] = vpn_config
     # [3] = github_raw_url
-    # [4] = expiry_time -> Теперь строка 1565 в хэндлере connect должна использовать именно этот индекс!
+    # [4] = expiry_time
     # [5] = role
-    cursor.execute('SELECT user_id, username, vpn_config, github_raw_url, expiry_time, role FROM users WHERE user_id = ?', (user_id,))
+    # [6] = actions_gift
+    # [7] = actions_gen
+    # [8] = saved_os   <- Новое поле устройства
+    # [9] = saved_app  <- Новое поле сохраненного приложения
+    cursor.execute('''
+        SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
+               role, actions_gift, actions_gen, saved_os, saved_app 
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
     row = cursor.fetchone()
     conn.close()
-    return row  # Возвращает чистый обычный кортеж (tuple)
+    return row
+
 
 
 def set_user_role(user_id, new_role):
@@ -396,6 +431,23 @@ def get_user_invite_count(user_id: int) -> int:
     count = cursor.fetchone()[0] 
     conn.close()
     return count
+
+
+def save_user_device_prefs(user_id, os_name, app_name):
+    """Быстрое сохранение только ОС и приложения без изменения остальных полей"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET saved_os = ?, saved_app = ? WHERE user_id = ?', (os_name, app_name, user_id))
+    conn.commit()
+    conn.close()
+
+def clear_user_device_prefs(user_id):
+    """Сброс настроек устройства (запись NULL в базу)"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET saved_os = NULL, saved_app = NULL WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
 
 
 
@@ -1933,54 +1985,54 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(F.data == "connect")
-async def connect(callback: types.CallbackQuery):
-    await callback.answer()
-    
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""    
+#@dp.callback_query(F.data == "connect")
+#async def connect(callback: types.CallbackQuery):
+#   await callback.answer()
+#   
+#    user_id = callback.from_user.id
+#    username = callback.from_user.username or ""    
     # 1. Запускаем нашу проверку подписки
-    is_subscribed = await check_user_subscription(callback.bot, user_id)
+#    is_subscribed = await check_user_subscription(callback.bot, user_id)
     
-    if not is_subscribed:
+#    if not is_subscribed:
         # Если пользователь не подписан, прерываем логику и выдаем блокирующее окно
-        await callback.answer("⚠️ Требуется подписка!")
+#        await callback.answer("⚠️ Требуется подписка!")
         
         # Получаем прямую ссылку на канал для кнопки
-        channel_username = CHANNEL_ID.replace("@", "")
-        channel_url = f"https://t.me/{channel_username}"
+#        channel_username = CHANNEL_ID.replace("@", "")
+#        channel_url = f"https://t.me/{channel_username}"
         
         # Кнопка проверки и кнопка перехода в канал
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
+#        kb = InlineKeyboardMarkup(inline_keyboard=[
+#            [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
             # Важно: callback_data должна вести на этот же хэндлер ("connect"), 
             # чтобы при повторном нажатии после подписки пользователя сразу пропустило дальше!
-            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
-        ])
+#            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
+#        ])
         
-        text = (
-            "🔒 <b>Требуется подписка на канал</b>\n\n"
-            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
-            "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
-        )
+#        text = (
+#            "🔒 <b>Требуется подписка на канал</b>\n\n"
+#            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
+#            "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
+#        )
         
-        try:
-            if callback.message.caption:
-                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-            else:
-                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            pass
-        return  # Завершаем выполнение, не давая скачать VPN-конфиг
+#        try:
+#            if callback.message.caption:
+#                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+#            else:
+#                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+#        except Exception:
+#            pass
+#        return  # Завершаем выполнение, не давая скачать VPN-конфиг
 
     # 1. Проверяем статус подписки перед генерацией
-    db_data = get_user_from_db(user_id)
-    current_time = time.time()
+#    db_data = get_user_from_db(user_id)
+#    current_time = time.time()
     
-    try:
-        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
-    except (ValueError, TypeError):
-        expiry_in_db = 0
+#    try:
+#        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
+#    except (ValueError, TypeError):
+#        expiry_in_db = 0
     
     # ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТИРОВАНИЯ
     # if expiry_in_db <= current_time:
@@ -1996,84 +2048,255 @@ async def connect(callback: types.CallbackQuery):
     #         await callback.message.edit_text(text=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
     #     return
 
-    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
-    try:
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
-    except Exception as e:
-        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
+#    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
+#    try:
+#        if callback.message.caption:
+#            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
+#        else:
+#            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
+#    except Exception as e:
+#        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
 
-    try:
-        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+#    try:
+#        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
-        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+#        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         
         # ИСПРАВЛЕНО СТРОГО ПО ВАШЕЙ СТРУКТУРЕ: Убраны фигурные скобки вокруг переменной
-        auto_connect_url = f"https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
+#        auto_connect_url = f"https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
 
         # Склеиваем ссылки строго через перенос строки (\n) для базы данных
-        combined_configs = "\n".join(vless_links) if vless_links else ""
-        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+#        combined_configs = "\n".join(vless_links) if vless_links else ""
+#        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
-        if expiry_seconds == 0:
-            expiry_seconds = int(time.time() + 2592000)
+#        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
+#        if expiry_seconds == 0:
+#            expiry_seconds = int(time.time() + 2592000)
             
-        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+#        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
-        debug_servers_info = ""
-        for link in vless_links:
-            if "#" in link:
-                server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
-            else:
-                server_name = "Доступный узел"
-            debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
+#        debug_servers_info = ""
+#        for link in vless_links:
+#            if "#" in link:
+#                server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
+#            else:
+#                server_name = "Доступный узел"
+#            debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
 
-        if not vless_links:
+#        if not vless_links:
             debug_servers_info = "❌ <b>Ни одна нода не ответила!</b> Проверьте логи.\n"
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=auto_connect_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-        ])
+#        kb = InlineKeyboardMarkup(inline_keyboard=[
+#            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=auto_connect_url)],
+#            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+#        ])
 
-        text = (
-            f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
-            f"📅 Срок действия: до <b>{expiry_date}</b>\n"
-            f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
-            f"<b>Статус синхронизации нод:</b>\n"
-            f"{debug_servers_info}\n"
-            f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
-        )
+#        text = (
+#            f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
+#            f"📅 Срок действия: до <b>{expiry_date}</b>\n"
+#            f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
+#            f"<b>Статус синхронизации нод:</b>\n"
+#            f"{debug_servers_info}\n"
+#            f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
+#        )
 
         # Проверяем реальный статус для сайта, не отключая режим отладки в ТГ
-        if expiry_seconds <= int(time.time()):
+#        if expiry_seconds <= int(time.time()):
             # Если подписка РЕАЛЬНО просрочена прямо сейчас (новое время вышло)
-            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
-            logging.info(f"[ОТЛАДКА] Пользователь {user_id} действительно просрочен. На сайт ушла пустота.")
-        else:
+#            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+#            logging.info(f"[ОТЛАДКА] Пользователь {user_id} действительно просрочен. На сайт ушла пустота.")
+#        else:
             # Если подписка активна (новое время больше текущего)
-            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
-            logging.info(f"[ОТЛАДКА] Пользователь {user_id} активен до {expiry_date}. Конфиги отправлены.")
+#            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+#            logging.info(f"[ОТЛАДКА] Пользователь {user_id} активен до {expiry_date}. Конфиги отправлены.")
             
-        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+#        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
 
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
+#        try:
+#            await callback.message.delete()
+#        except Exception:
+#            pass
             
-        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+#        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
             
-    except Exception as e:
-        logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
+#    except Exception as e:
+#        logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
+#        try:
+#            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
+#        except Exception:
+#            pass
+
+
+
+
+
+
+
+@dp.callback_query(F.data == "connect")
+async def connect(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    user_id = callback.from_user.id
+    username = callback.from_user.username or ""    
+    
+    # 1. Проверка подписки на канал
+    is_subscribed = await check_user_subscription(callback.bot, user_id)
+    if not is_subscribed:
+        await callback.answer("⚠️ Требуется подписка!")
+        channel_username = CHANNEL_ID.replace("@", "")
+        channel_url = f"https://t.me/{channel_username}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
+            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
+        ])
+        text = (
+            "🔒 <b>Требуется подписка на канал</b>\n\n"
+            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
+            "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
+        )
         try:
-            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
-        except Exception:
-            pass
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        except Exception: pass
+        return
+
+    # 2. Получаем данные из БД (Имитируем структуру: предполагаем, что вы допишете получение сохраненной ОС и Приложения)
+    db_data = get_user_from_db(user_id)
+    saved_os = db_data[8] if (db_data and len(db_data) > 8) else None
+    saved_app = db_data[9] if (db_data and len(db_data) > 9) else None
+
+    
+    # Если пользователь УЖЕ выбирал устройство ранее — пускаем без лишних вопросов!
+    if saved_os and saved_app:
+        await callback.message.answer("⏳ Формирование и синхронизация...") # Или сразу вызов Шага 3
+        # Формируем callback вручную или перенаправляем на финальную генерацию
+        await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
+        return
+
+    # 3. Если зашел ВПЕРВЫЕ (данных нет) -> Показываем выбор ОС
+    kb_os = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🍏 iPhone / iPad", callback_data="set_os_ios"),
+            InlineKeyboardButton(text="🤖 Android", callback_data="set_os_and")
+        ],
+        [
+            InlineKeyboardButton(text="🪟 Windows", callback_data="set_os_win"),
+            InlineKeyboardButton(text="💻 macOS", callback_data="set_os_mac")
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+    ])
+
+    text_os = (
+        "💻 <b>Выберите ваше устройство</b>\n\n"
+        "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
+        "Мы запомним ваш выбор, чтобы не спрашивать в следующий раз. 😉"
+    )
+    try:
+        await callback.message.edit_text(text=text_os, reply_markup=kb_os, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
+
+
+
+
+
+
+@dp.callback_query(F.data.startswith("save_"))
+async def save_user_preferences(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    # Разбираем callback_data (например: save_ios_happ)
+    _, selected_os, selected_app = callback.data.split("_")
+    user_id = callback.from_user.id
+    username = callback.from_user.username or ""
+    
+    save_user_device_prefs(user_id, selected_os, selected_app)
+
+    logging.info(f"Пользователь {user_id} сохранил выбор: ОС={selected_os}, Приложение={selected_app}")
+    
+    db_data = get_user_from_db(user_id)
+    await process_final_screen(callback, user_id, username, db_data, selected_os, selected_app)
+
+
+# Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
+async def process_final_screen(callback: types.CallbackQuery, user_id, username, db_data, selected_os, selected_app):
+    # Генерация конфигов (ваш оригинальный код)
+    vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+    sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+    
+    combined_configs = "\n".join(vless_links) if vless_links else ""
+    base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+
+    try:
+        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
+    except (ValueError, TypeError):
+        expiry_in_db = 0
+
+    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
+    if expiry_seconds == 0:
+        expiry_seconds = int(time.time() + 2592000)
+        
+    expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+    
+    # Отправка на сайт и апдейт БД основных данных
+    if expiry_seconds <= int(time.time()):
+        asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+    else:
+        asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+        
+    add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+
+    # Список нод для дебага
+    debug_servers_info = ""
+    for link in vless_links:
+        if "#" in link:
+            server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
+        else:
+            server_name = "Доступный узел"
+        debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
+
+    if not vless_links:
+        debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
+
+    # ФОРМИРУЕМ ССЫЛКУ. Передаем в PHP и ОС, и конкретное приложение!
+    auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+
+    # КНОПКА «Новое устройство» ведет на хэндлер очистки reset_device
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⚡️ Импортировать в {selected_app.upper()}", url=auto_connect_url)],
+        [InlineKeyboardButton(text="🔄 Подключить другое устройство", callback_data="reset_device")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+    ])
+
+    text = (
+        f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
+        f"📱 Устройство: <b>{selected_os.upper()}</b> | Клиент: <b>{selected_app.upper()}</b>\n"
+        f"📅 Срок действия: до <b>{expiry_date}</b>\n"
+        f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
+        f"<b>Статус синхронизации нод:</b>\n"
+        f"{debug_servers_info}\n"
+        f"Нажмите кнопку ниже для импорта настроек."
+    )
+
+    try:
+        await callback.message.delete()
+    except Exception: pass
+        
+    await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
+
+# Хэндлер сброса настроек устройства
+@dp.callback_query(F.data == "reset_device")
+async def reset_device_preferences(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    clear_user_device_prefs(user_id)
+
+    
+    # После очистки вызываем заново хэндлер connect, который запустит опрос сначала!
+    await connect(callback)
+
 
 
 
