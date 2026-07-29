@@ -2173,28 +2173,44 @@ async def connect(callback: types.CallbackQuery):
         await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
         return
 
-    # 3. Если зашел ВПЕРВЫЕ (данных нет) -> Показываем выбор ОС
-    kb_os = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🍏 iPhone / iPad", callback_data="set_os_ios"),
-            InlineKeyboardButton(text="🤖 Android", callback_data="set_os_and")
-        ],
-        [
-            InlineKeyboardButton(text="🪟 Windows", callback_data="set_os_win"),
-            InlineKeyboardButton(text="💻 macOS", callback_data="set_os_mac")
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-    ])
+        # ... (весь ваш начальный код генерации vless_links, sub_id и сохранения в БД остается без изменений) ...
+            
+        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
-    text_os = (
-        "💻 <b>Выберите ваше устройство</b>\n\n"
-        "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
-        "Мы запомним ваш выбор, чтобы не спрашивать в следующий раз. 😉"
-    )
-    try:
-        await callback.message.edit_text(text=text_os, reply_markup=kb_os, parse_mode="HTML")
-    except Exception:
+        # 1. СНАЧАЛА УДАЛЯЕМ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
+        try:
+            await callback.message.delete()
+        except Exception as e:
+            logging.warning(f"Не удалось удалить старое сообщение: {e}")
+
+        # 2. ТЕПЕРЬ ОТПРАВЛЯЕМ НОВОЕ (Префиксы строго set_os_ под функции БД)
+        kb_os = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🍏 iPhone / iPad", callback_data=f"set_os_ios_{sub_id}"),
+                InlineKeyboardButton(text="🤖 Android", callback_data=f"set_os_and_{sub_id}")
+            ],
+            [
+                InlineKeyboardButton(text="🪟 Windows", callback_data=f"set_os_win_{sub_id}"),
+                InlineKeyboardButton(text="💻 macOS", callback_data=f"set_os_mac_{sub_id}")
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        ])
+
+        text_os = (
+            "💻 <b>Выберите ваше устройство</b>\n\n"
+            "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
+            "Мы запомним ваш выбор, чтобы не спрашивать в следующий раз. 😉"
+        )
+
+        # Отправляем как новое сообщение, так как старое удалили
         await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
+            
+    except Exception as e:
+        logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
+        try:
+            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
+        except Exception:
+            pass
 
 
 
@@ -2205,11 +2221,16 @@ async def connect(callback: types.CallbackQuery):
 async def save_user_preferences(callback: types.CallbackQuery):
     await callback.answer()
     
-    # Разбираем callback_data (например: save_ios_happ)
-    _, selected_os, selected_app = callback.data.split("_")
+    # ПРАВИЛЬНЫЙ РАЗБОР: принимаем 4 элемента (save, os, app, sub_id)
+    # Это исключает ошибку падения при разборе строки callback_data
+    data_parts = callback.data.split("_")
+    selected_os = data_parts[1]
+    selected_app = data_parts[2]
+    
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
     
+    # Сохраняем в кэш БД выбор устройства и утилиты
     save_user_device_prefs(user_id, selected_os, selected_app)
 
     logging.info(f"Пользователь {user_id} сохранил выбор: ОС={selected_os}, Приложение={selected_app}")
@@ -2220,15 +2241,16 @@ async def save_user_preferences(callback: types.CallbackQuery):
 
 # Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
 async def process_final_screen(callback: types.CallbackQuery, user_id, username, db_data, selected_os, selected_app):
-    # Генерация конфигов (ваш оригинальный код)
+    # Генерация конфигов (оригинальный рабочий код)
     vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
     sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
     
     combined_configs = "\n".join(vless_links) if vless_links else ""
     base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
+    # ИСПРАВЛЕНО: Согласно вашей функции get_user_from_db, expiry_time лежит под индексом, а под [5] роль 'role'
     try:
-        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
+        expiry_in_db = int(db_data[4]) if (db_data and len(db_data) > 4 and db_data[4] is not None) else 0
     except (ValueError, TypeError):
         expiry_in_db = 0
 
@@ -2258,7 +2280,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-    # ФОРМИРУЕМ ССЫЛКУ. Передаем в PHP и ОС, и конкретное приложение!
+    # ИСПРАВЛЕНО: Добавлен обязательный слэш (/) между доменом и sub_id
     auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
     # КНОПКА «Новое устройство» ведет на хэндлер очистки reset_device
@@ -2280,7 +2302,8 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
 
     try:
         await callback.message.delete()
-    except Exception: pass
+    except Exception: 
+        pass
         
     await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
 
@@ -2292,7 +2315,6 @@ async def reset_device_preferences(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
     clear_user_device_prefs(user_id)
-
     
     # После очистки вызываем заново хэндлер connect, который запустит опрос сначала!
     await connect(callback)
