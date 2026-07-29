@@ -2084,7 +2084,7 @@ async def cabinet(callback: types.CallbackQuery):
 #            debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
 
 #        if not vless_links:
-            debug_servers_info = "❌ <b>Ни одна нода не ответила!</b> Проверьте логи.\n"
+#            debug_servers_info = "❌ <b>Ни одна нода не ответила!</b> Проверьте логи.\n"
 
 #        kb = InlineKeyboardMarkup(inline_keyboard=[
 #            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=auto_connect_url)],
