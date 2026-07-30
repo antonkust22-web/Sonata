@@ -1905,41 +1905,28 @@ def back_kb():
     ])
 
 # --- Хендлеры ---
-import time
-import asyncio
-from aiogram import types
-from aiogram.filters import Command, CommandObject
 
-# Секунды в 3 днях
 THREE_DAYS_SECONDS = 3 * 24 * 3600
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
-    # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
-    # Отправляем сообщение о загрузке, чтобы пользователь видел, что бот работает
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     
-    # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
-    
     ref_bonus_text = ""
     
-    # 2. Реферальная система (строго для новых пользователей)
     if command and command.args and command.args.startswith("ref") and is_new_user:
         try:
             inviter_id = int(command.args.replace("ref", ""))
             
-            # Защита: нельзя пригласить самого себя
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
                 
                 if inviter_data:
-                    # === НАЧИСЛЕНИЕ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ) ===
-                    # Извлекаем текущее время окончания подписки пригласившего (индекс 4 из вашей БД)
                     try:
                         inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
                     except (ValueError, TypeError):
@@ -1947,15 +1934,14 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
                     current_time = int(time.time())
 
-                    # Если подписка еще активна, прибавляем к ней, иначе — к текущему времени
                     if inviter_old_expiry > current_time:
-                        days_left = (inviter_old_expiry - current_time) / (24 * 3600)
-                        days_to_add = int(days_left) + 3
-                        await renew_vpn_subscription_flexible(inviter_id, days_to_add)
+                        new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
                     else:
-                        await renew_vpn_subscription_flexible(inviter_id, 3)
+                        new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
 
-                    # Уведомление пригласившему
+                    # ВАРИАНТ А: Прямое обновление timestamp в БД (измените название функции на вашу)
+                    await update_user_expiry_in_db(inviter_id, new_expiry_timestamp)
+
                     try:
                         await message.bot.send_message(
                             chat_id=inviter_id,
@@ -1967,11 +1953,9 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     except Exception:
                         pass
 
-                    # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
                     add_or_update_user(user_id, username, expiry_time=0)
                     await renew_vpn_subscription_flexible(user_id, 3)
 
-                    # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
                     try:
                         add_referral_connection(inviter_id, user_id)
                     except Exception:
@@ -1985,7 +1969,6 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         except (ValueError, TypeError):
             pass
 
-    # 3. Обработка регистрации и обновлений (если не было реферального бонуса)
     if is_new_user and not ref_bonus_text:
         add_or_update_user(user_id, username, expiry_time=0)
     elif not is_new_user:
@@ -1995,6 +1978,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
             old_expiry = 0
             
         add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
+
 
     # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
     # Все тяжелые запросы в X-UI панель и БД завершены. Удаляем «Загрузка...»
@@ -2626,21 +2610,25 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "<b>Поддержка:</b> @Sonata_VPN_Admin\n"
+        "<b>Поддержка:</b> @Sonata_VPN_Support\n"
         "<b>Канал:</b> https://t.me/Sonata_Information\n\n"
         "<i>Информация будет обновляться</i>"
     )
     
-    # Создаем клавиатуру с кнопкой Нагрузки и кнопкой Назад
+    # Создаем клавиатуру с кнопкой Инструкции (ссылка), Нагрузки и Назад
     info_kb = InlineKeyboardMarkup(inline_keyboard=[
+        # Новая кнопка-ссылка на ваш HTML-сайт с инструкциями
+        [InlineKeyboardButton(text="📖 Инструкция", url="https://sonatavpn.ru/Instruktion")],
         [InlineKeyboardButton(text="📊 Нагрузка серверов", callback_data="server_status")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")] # Замените "back" на реальный callback вашей кнопки назад, если он другой
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
     
     try:
         await callback.message.edit_caption(caption=text, reply_markup=info_kb, parse_mode="HTML")
     except Exception:
         pass
+
+
 
 
 
