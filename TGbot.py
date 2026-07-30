@@ -20,7 +20,7 @@ import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.types import Message
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.exceptions import TelegramBadRequest
 from datetime import datetime, timedelta
 from aiogram import types
