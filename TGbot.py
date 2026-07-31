@@ -1906,10 +1906,7 @@ def back_kb():
 
 # --- Хендлеры ---
 
-import time
-import asyncio
-from aiogram import types
-from aiogram.filters import Command, CommandObject
+
 
 # Секунды в 3 днях
 THREE_DAYS_SECONDS = 3 * 24 * 3600
@@ -1946,20 +1943,27 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
                     current_time = int(time.time())
 
-                    # Рассчитываем точный timestamp окончания подписки реферера
+                    # ПРЯМОЙ РАСЧЕТ TIMESTAMP (ДЛЯ СТОЛБЦА expiry_time)
                     if inviter_old_expiry > current_time:
-                        # Если подписка активна, прибавляем 3 дня к дате её окончания
+                        # Если подписка еще активна — прибавляем 3 дня к дате окончания
                         new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
                     else:
-                        # Если подписка истекла или её не было, прибавляем 3 дня к текущему времени
+                        # Если подписка истекла или ее не было — прибавляем 3 дня к текущему времени
                         new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
 
-                    # Переводим итоговую дату обратно в количество ДНЕЙ от текущего момента для X-UI панели
+                    # Считаем, сколько это дней от ТЕКУЩЕГО момента для передачи в X-UI панель
                     days_from_now = int((new_expiry_timestamp - current_time) / (24 * 3600))
                     if days_from_now <= 0:
-                        days_from_now = 3  # Минимальная подстраховка
+                        days_from_now = 3
 
-                    # Безопасно начисляем дни рефереру через вашу рабочую функцию
+                    # ОБНОВЛЯЕМ БД: Сохраняем правильный timestamp в expiry_time через твою родную функцию
+                    try:
+                        inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
+                        add_or_update_user(inviter_id, inviter_data[2], expiry_time=new_expiry_timestamp, role=inviter_role)
+                    except Exception:
+                        pass
+
+                    # ОБНОВЛЯЕМ X-UI ПАНЕЛЬ: Передаем итоговое количество дней от сегодня
                     await renew_vpn_subscription_flexible(inviter_id, days_from_now)
 
                     # Уведомление пригласившему
