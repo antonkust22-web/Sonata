@@ -1906,27 +1906,39 @@ def back_kb():
 
 # --- Хендлеры ---
 
+import time
+import asyncio
+from aiogram import types
+from aiogram.filters import Command, CommandObject
+
+# Секунды в 3 днях
 THREE_DAYS_SECONDS = 3 * 24 * 3600
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
+    # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     
+    # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
+    
     ref_bonus_text = ""
     
+    # 2. Реферальная система (строго для новых пользователей)
     if command and command.args and command.args.startswith("ref") and is_new_user:
         try:
             inviter_id = int(command.args.replace("ref", ""))
             
+            # Защита: нельзя пригласить самого себя
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
                 
                 if inviter_data:
+                    # === НАЧИСЛЕНИЕ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ) ===
                     try:
                         inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
                     except (ValueError, TypeError):
@@ -1934,14 +1946,23 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
                     current_time = int(time.time())
 
+                    # Рассчитываем точный timestamp окончания подписки реферера
                     if inviter_old_expiry > current_time:
+                        # Если подписка активна, прибавляем 3 дня к дате её окончания
                         new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
                     else:
+                        # Если подписка истекла или её не было, прибавляем 3 дня к текущему времени
                         new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
 
-                    # ВАРИАНТ А: Прямое обновление timestamp в БД (измените название функции на вашу)
-                    await update_user_expiry_in_db(inviter_id, new_expiry_timestamp)
+                    # Переводим итоговую дату обратно в количество ДНЕЙ от текущего момента для X-UI панели
+                    days_from_now = int((new_expiry_timestamp - current_time) / (24 * 3600))
+                    if days_from_now <= 0:
+                        days_from_now = 3  # Минимальная подстраховка
 
+                    # Безопасно начисляем дни рефереру через вашу рабочую функцию
+                    await renew_vpn_subscription_flexible(inviter_id, days_from_now)
+
+                    # Уведомление пригласившему
                     try:
                         await message.bot.send_message(
                             chat_id=inviter_id,
@@ -1953,9 +1974,11 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     except Exception:
                         pass
 
+                    # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
                     add_or_update_user(user_id, username, expiry_time=0)
                     await renew_vpn_subscription_flexible(user_id, 3)
 
+                    # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
                     try:
                         add_referral_connection(inviter_id, user_id)
                     except Exception:
@@ -1969,6 +1992,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         except (ValueError, TypeError):
             pass
 
+    # 3. Обработка регистрации и обновлений (если не было реферального бонуса)
     if is_new_user and not ref_bonus_text:
         add_or_update_user(user_id, username, expiry_time=0)
     elif not is_new_user:
@@ -1979,9 +2003,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
             
         add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
 
-
     # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
-    # Все тяжелые запросы в X-UI панель и БД завершены. Удаляем «Загрузка...»
     try:
         await loading_msg.delete()
     except Exception:
@@ -1996,6 +2018,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         reply_markup=main_kb(), 
         parse_mode="HTML"
     )
+
 
 
 
