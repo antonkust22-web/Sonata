@@ -2409,7 +2409,7 @@ async def connect(callback: types.CallbackQuery):
         text_os = (
             "💻 <b>Выберите ваше устройство</b>\n\n"
             "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
-            "Мы запомним ваш выбор, чтобы не спрашивать в следующий раз. 😉"
+            "Нажмите один раз для решения"
         )
 
         await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
@@ -2468,6 +2468,7 @@ async def process_os_choice(callback: types.CallbackQuery):
         text_apps = (
             f"📥 <b>Вы выбрали систему: {selected_os.upper()}</b>\n\n"
             "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве:"
+            "Нажмите один раз для решения"
         )
         
         try:
@@ -2637,10 +2638,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "<b>Поддержка:</b> @Sonata_VPN_Support\n"
-        "<b>Канал:</b> https://t.me/Sonata_Information\n\n"
+        "⚙️ <b><a href=\"https://t.me/Sonata_VPN_Support\">Основная поддержка</a></b>\n"
+        "📢 <b>Канал:</b> <a href=\"https://t.me/Sonata_Information\">Sonata | INFO</a>\n\n"
+        "📋 <a href=\"https://sonatavpn.ru/terms\">Пользовательское соглашение</a>\n"
+        "🔒 <a href=\"https://sonatavpn.ru/privacy\">Политика конфиденциальности</a>\n\n"
         "<i>Информация будет обновляться</i>"
     )
+
     
     # Создаем клавиатуру с кнопкой Инструкции (ссылка), Нагрузки и Назад
     info_kb = InlineKeyboardMarkup(inline_keyboard=[
