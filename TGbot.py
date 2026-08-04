@@ -2696,7 +2696,7 @@ async def process_os_choice(callback: types.CallbackQuery):
         logging.error(f"Критическая ошибка в process_os_choice: {e}", exc_info=True)
 
 
-
+import datetime as dt
 
 
 @dp.callback_query(F.data.startswith("save_"))
@@ -2740,7 +2740,9 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if expiry_seconds == 0:
         expiry_seconds = int(time.time() + 2592000)
         
-    expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+    
+    expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+
     
     # Отправка на сайт и апдейт БД основных данных
     if expiry_seconds <= int(time.time()):
@@ -2975,11 +2977,22 @@ async def subscription(callback: types.CallbackQuery):
         "📖 Доступные варианты подписки:"
     )
     
-    # ОТПРАВЛЯЕМ новое сообщение (если у вас раньше была картинка, используйте send_photo, если просто текст — send_message)
-    # Предполагаем, что у вас была картинка (раз использовался edit_caption):
-    await callback.message.answer_photo(
-        photo=callback.message.photo[-1].file_id if callback.message.photo else "ВАШ_FILE_ID_КАРТИНКИ", 
-        caption=caption_text,
+    # 3. Отправляем тарифы вместе с видео (или текстом, если видео не нашлось)
+    if old_video:
+        try:
+            await callback.message.answer_video(
+                video=old_video, 
+                caption=caption_text,
+                reply_markup=buy_kb,
+                parse_mode="HTML"
+            )
+            return
+        except Exception as e:
+            logging.error(f"Не удалось отправить старое видео: {e}")
+            
+    # Подстраховка: если видео почему-то не вытащилось, отправляем просто текст с кнопками
+    await callback.message.answer(
+        text=caption_text,
         reply_markup=buy_kb,
         parse_mode="HTML"
     )
