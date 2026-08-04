@@ -1130,13 +1130,14 @@ async def creator_panel_help(message: types.Message):
         "• Одноразовый: <code>/gen [дни] [код]</code>\n"
         "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
         "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>\n\n"
-        "Рассылка: <code>/send</code>\n
+        "Рассылка: <code>/send</code>\n"
         "<code>/start_promo</code> начало акции\n\n"
         "<code>/team</code> cписок админов и амбассодоров\n"
-        "<code>/find_user_name (username) </code> узнать ТГ АЙДИ по юзеру\n\n"
+        "<code>/find_user_name [username]</code> узнать ТГ АЙДИ по юзеру\n\n"
         "<i>💡 ID пользователя можно узнать в его Личном кабинете или скопировать из логов.</i>",
         parse_mode="HTML"
     )
+
 
 
 @dp.message(F.text.startswith("/setrole"), IsCreator())
