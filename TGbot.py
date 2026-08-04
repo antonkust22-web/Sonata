@@ -2813,7 +2813,7 @@ async def reset_device_preferences(callback: types.CallbackQuery):
 
 
 
-from aiogram.filters import Command
+
 
 @dp.callback_query(F.data == "back")
 async def back_to_main_menu(callback: types.CallbackQuery):
@@ -2962,20 +2962,21 @@ async def subscription(callback: types.CallbackQuery):
     p90, _ = get_discount_price(350)
     p150, _ = get_discount_price(650)
     
-    prefix = "🔥 " if is_promo else "💳 "
+    prefix = "🔥 АКЦИЯ -30%! " if is_promo else "💳 "
     
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{prefix}1 месяц — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца — {p90} руб.", callback_data="pay_90_days")],
         [InlineKeyboardButton(text=f"{prefix}5 месяцев — {p150} руб.", callback_data="pay_150_days")],
-        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="to_main_menu")]
+        # ИСПРАВЛЕНО: Теперь callback_data строго равен "back", чтобы триггерить ваш хендлер главного меню
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
     ])
     
     caption_text = (
         "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
     ) + (
         "Выбор тарифа:\n\n"
-        "Оплатите подписку, чтобы использовать VPN.\n\n"
+        "Оплатите подписку, чтобы снять ограничения по времени работы ваших VPN-ключей.\n\n"
         "📖 Доступные варианты подписки:"
     )
     
@@ -2998,6 +2999,7 @@ async def subscription(callback: types.CallbackQuery):
         reply_markup=buy_kb,
         parse_mode="HTML"
     )
+
 
 
 # КНОПКА «НАЗАД» ВНУТРИ ИНВОЙСОВ (возвращает к выбору тарифов)
@@ -3028,7 +3030,7 @@ async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (30 дней) {'% -30!' if is_promo else ''}",
+        title=f"Подписка на VPN (30 дней) {'-30%!' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 1 месяц.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -3058,7 +3060,7 @@ async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (3 месяца) {'% -30!' if is_promo else ''}",
+        title=f"Подписка на VPN (3 месяца) {'-30%!' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 3 месяца.",
         payload="vpn_90_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -3088,7 +3090,7 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (5 месяцев) {'% -30!' if is_promo else ''}",
+        title=f"Подписка на VPN (5 месяцев) {'-30%!' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 5 месяцев.",
         payload="vpn_150_days_subscription",
         provider_token=PROVIDER_TOKEN,
