@@ -3012,30 +3012,30 @@ async def back_to_tariffs(callback: types.CallbackQuery):
 async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
     
-    # УДАЛЯЕМ меню выбора тарифов
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
+    except Exception:
         pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
     final_price_rub, is_promo = get_discount_price(150)
     
-    # Создаем кнопку НАЗАД к тарифам. В инвойсах Telegram позволяет добавлять свои инлайн-кнопки под инвойс!
+    # ПРАВИЛЬНАЯ КЛАВИАТУРА ДЛЯ ИНВОЙСА: Первая кнопка ОБЯЗАТЕЛЬНО должна быть с pay=True
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
     ])
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"Подписка на VPN (30 дней) {'% -30!' if is_promo else ''}",
-        description="Продление доступа к подписке на 1 месяц.",
+        description="Продление доступа к подписке VPN Sonata на 1 месяц.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
         prices=[LabeledPrice(label="1 месяц подписки", amount=final_price_rub * 100)],
         start_parameter="vpn-sub-30-days",
-        reply_markup=invoice_kb # Прикрепляем кнопку назад к инвойсу
+        reply_markup=invoice_kb  # Передаем исправленную клавиатуру
     )
 
 # 3 МЕСЯЦА
@@ -3045,20 +3045,21 @@ async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
+    except Exception:
         pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
     final_price_rub, is_promo = get_discount_price(350)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
     ])
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"Подписка на VPN (3 месяца) {'% -30!' if is_promo else ''}",
-        description="Продление доступа к подписке на 3 месяца.",
+        description="Продление доступа к подписке VPN Sonata на 3 месяца.",
         payload="vpn_90_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
@@ -3074,20 +3075,21 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
+    except Exception:
         pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
     final_price_rub, is_promo = get_discount_price(650)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
     ])
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"Подписка на VPN (5 месяцев) {'% -30!' if is_promo else ''}",
-        description="Продление доступа к подписке на 5 месяцев.",
+        description="Продление доступа к подписке VPN Sonata на 5 месяцев.",
         payload="vpn_150_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
