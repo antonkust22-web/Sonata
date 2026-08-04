@@ -2948,11 +2948,14 @@ def get_discount_price(base_price_rub: int) -> tuple[int, bool]:
 async def subscription(callback: types.CallbackQuery):
     await callback.answer()
     
-    # 1. УДАЛЯЕМ старое сообщение, чтобы интерфейс не засорялся
+    # 1. Забираем ID видеоролика из старого сообщения, если оно там есть
+    old_video = callback.message.video.file_id if callback.message.video else None
+    
+    # 2. УДАЛЯЕМ старое сообщение (главное меню)
     try:
         await callback.message.delete()
-    except TelegramBadRequest:
-        pass # Если сообщение уже удалено, бот не упадет
+    except Exception:
+        pass
         
     # Считаем динамические цены из БД
     p30, is_promo = get_discount_price(150)
@@ -2965,7 +2968,6 @@ async def subscription(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=f"{prefix}1 месяц — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца — {p90} руб.", callback_data="pay_90_days")],
         [InlineKeyboardButton(text=f"{prefix}5 месяцев — {p150} руб.", callback_data="pay_150_days")],
-        # Кнопка НАЗАД в главное меню (замените "to_main_menu" на ваш callback главного меню, если он другой)
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="to_main_menu")]
     ])
     
@@ -2973,7 +2975,7 @@ async def subscription(callback: types.CallbackQuery):
         "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
     ) + (
         "Выбор тарифа:\n\n"
-        "Оплатите подписку, чтобы снять ограничения по времени работы ваших VPN-ключей.\n\n"
+        "Оплатите подписку, чтобы использовать VPN.\n\n"
         "📖 Доступные варианты подписки:"
     )
     
@@ -2996,6 +2998,7 @@ async def subscription(callback: types.CallbackQuery):
         reply_markup=buy_kb,
         parse_mode="HTML"
     )
+
 
 # КНОПКА «НАЗАД» ВНУТРИ ИНВОЙСОВ (возвращает к выбору тарифов)
 @dp.callback_query(F.data == "back_to_tariffs")
