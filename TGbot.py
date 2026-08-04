@@ -2593,7 +2593,7 @@ async def connect(callback: types.CallbackQuery):
         if expiry_seconds == 0:
             expiry_seconds = int(time.time() + 2592000)
             
-        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+        expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
         # Отправляем синхронизацию на PHP домен
         if expiry_seconds <= int(time.time()):
