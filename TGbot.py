@@ -22,6 +22,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPri
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
 from aiogram.exceptions import TelegramBadRequest
+import datetime as dt_module
 from datetime import datetime, timedelta
 from aiogram import types
 
