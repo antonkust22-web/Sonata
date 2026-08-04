@@ -62,7 +62,7 @@ VIDEO_MAIN = "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3W
 
 text1 = (
     "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
-    " 🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
+    " 🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
     "📖 Выберите действие:"
 )
 
@@ -2821,7 +2821,7 @@ async def back_to_main_menu(callback: types.CallbackQuery):
     
     text = (
         "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
-        "🖥️ У нас доступны локации: Европейские страны, а также Белые Списки\n\n"
+        "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
         "📖 Выберите действие:"
     )
     
@@ -2962,7 +2962,7 @@ async def subscription(callback: types.CallbackQuery):
     p90, _ = get_discount_price(350)
     p150, _ = get_discount_price(650)
     
-    prefix = "🔥 АКЦИЯ -30%! " if is_promo else "💳 "
+    prefix = "🔥 " if is_promo else "💳 "
     
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{prefix}1 месяц — {p30} руб.", callback_data="pay_30_days")],
@@ -3030,7 +3030,7 @@ async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (30 дней) {'-30%!' if is_promo else ''}",
+        title=f"Подписка на VPN (30 дней) {'-30%' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 1 месяц.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -3060,7 +3060,7 @@ async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (3 месяца) {'-30%!' if is_promo else ''}",
+        title=f"Подписка на VPN (3 месяца) {'-30%' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 3 месяца.",
         payload="vpn_90_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -3090,7 +3090,7 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на VPN (5 месяцев) {'-30%!' if is_promo else ''}",
+        title=f"Подписка на VPN (5 месяцев) {'-30%' if is_promo else ''}",
         description="Продление доступа к подписке VPN Sonata на 5 месяцев.",
         payload="vpn_150_days_subscription",
         provider_token=PROVIDER_TOKEN,
