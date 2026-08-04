@@ -455,6 +455,91 @@ def clear_user_device_prefs(user_id):
 
 
 
+
+
+
+import sqlite3
+import os
+import datetime
+
+# Функция автоматического создания новой таблицы для промоакций
+def init_promo_table():
+    """Создает таблицу для хранения состояния акций, если её еще нет"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS promo_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            promo_name TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Сразу вызываем инициализацию, чтобы таблица создалась при запуске бота
+init_promo_table()
+
+
+def get_all_users_ids():
+    """Выгружает ID абсолютно всех зарегистрированных пользователей для рассылки"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users')
+    rows = cursor.fetchall()
+    conn.close()
+    # Превращаем список кортежей [(123,), (456,)] в обычный список [123, 456]
+    return [row[0] for row in rows]
+
+
+def set_promo_discount(hours=24):
+    """Записывает в БД время окончания акции (текущее время + hours)"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Сначала деактивируем старые акции, чтобы не было путаницы
+    cursor.execute('UPDATE promo_actions SET is_active = 0')
+    
+    # Считаем время окончания и переводим в строку ISO-формата
+    end_dt = datetime.datetime.now() + datetime.timedelta(hours=hours)
+    end_time_str = end_dt.isoformat()
+    
+    cursor.execute('''
+        INSERT INTO promo_actions (promo_name, end_time, is_active)
+        VALUES (?, ?, 1)
+    ''', ("discount_30", end_time_str))
+    
+    conn.commit()
+    conn.close()
+
+
+def check_promo_active_db() -> bool:
+    """Проверяет в БД, действует ли сейчас скидка"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT end_time FROM promo_actions 
+        WHERE promo_name = 'discount_30' AND is_active = 1
+        ORDER BY id DESC LIMIT 1
+    ''')
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return False
+        
+    try:
+        # Парсим время окончания из строки назад в объект datetime
+        end_time = datetime.datetime.fromisoformat(row[0])
+        if datetime.datetime.now() < end_time:
+            return True
+    except Exception as e:
+        logging.error(f"Ошибка при проверке промокода из БД: {e}")
+        
+    return False
+
+
 #-------миграция бд ------------------
   
 
@@ -1888,6 +1973,58 @@ async def check_user_subscription(bot: Bot, user_id: int) -> bool:
 
 
 
+@dp.message(Command("start_promo"))
+async def start_promo_command(message: types.Message, bot: Bot):
+    # 1. Проверка прав администратора
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    # 2. Фиксируем акцию на 24 часа в базе данных
+    set_promo_discount(hours=24)
+    
+    await message.answer("✅ <b>Акция на 24 часа зафиксирована в БД!</b>\nНачинаю рассылку по пользователям...")
+    
+    # 3. Текст рекламного сообщения
+    promo_text = (
+        "🎉 <b>Внимание! Действует временная скидка!</b> 🎉\n\n"
+        "Ровно на <b>24 часа</b> мы снижаем цены на все варианты!\n\n"
+        "🔥 Скидка <b>30%</b> уже активирована в меню покупки и применится автоматически.\n\n"
+        "Успейте продлить доступ по самой выгодной цене, пока таймер акции не истек! Скидка закроется ровно через сутки."
+    )
+
+    
+    # 4. Выгружаем реальные ID всех пользователей из БД
+    try:
+        all_users = get_all_users_ids() 
+    except Exception as db_error:
+        logging.error(f"Ошибка при запросе пользователей из БД: {db_error}")
+        await message.answer("❌ Ошибка при получении пользователей из базы данных.")
+        return
+
+    # 5. Цикл рассылки с защитой от флуд-бана Telegram
+    success_count = 0
+    blocked_count = 0
+    
+    for uid in all_users:
+        try:
+            await bot.send_message(chat_id=uid, text=promo_text, parse_mode="HTML")
+            success_count += 1
+            await asyncio.sleep(0.05) # Пауза, чтобы не спамить серверы Telegram слишком быстро
+        except Exception as e:
+            # Сюда залетают те, кто заблокировал бота или удалил аккаунт
+            blocked_count += 1
+            
+    await message.answer(
+        f"📢 <b>Рассылка успешно завершена!</b>\n\n"
+        f"✅ Успешно доставлено: <b>{success_count}</b>\n"
+        f"🚫 Бот заблокирован пользователями: <b>{blocked_count}</b>"
+    )
+
+
+
+
+
+
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -2346,6 +2483,10 @@ async def connect(callback: types.CallbackQuery):
 
     # Если пользователь УЖЕ выбирал устройство ранее — пускаем сразу на экран дебага
     if saved_os and saved_app:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer("⏳ Формирование и синхронизация...")
         await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
         return
@@ -2706,81 +2847,164 @@ async def server_status(callback: types.CallbackQuery):
 
 
 
+def get_discount_price(base_price_rub: int) -> tuple[int, bool]:
+    """
+    Возвращает (итоговая_цена_руб, активна_ли_скидка).
+    Данные берутся напрямую из долговечной Базы Данных SQLite.
+    """
+    # Вызываем функцию проверки, которую мы добавили в блок работы с БД выше
+    is_promo = check_promo_active_db() 
+    
+    if is_promo:
+        # Скидка 30%, округляем до целых рублей
+        discount_price = int(base_price_rub * 0.7)
+        return discount_price, True
+        
+    return base_price_rub, False
+
+
+
+
+
+# ВЫБОР ТАРИФА (Вызывается по кнопке "buy" или "back" из инвойса)
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
     await callback.answer()
     
-    # ИСПРАВЛЕНО: Добавлены новые кнопки для тарифов на 3 и 5 месяцев
+    # 1. УДАЛЯЕМ старое сообщение, чтобы интерфейс не засорялся
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass # Если сообщение уже удалено, бот не упадет
+        
+    # Считаем динамические цены из БД
+    p30, is_promo = get_discount_price(150)
+    p90, _ = get_discount_price(350)
+    p150, _ = get_discount_price(650)
+    
+    prefix = "🔥 " if is_promo else "💳 "
+    
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 1 месяц — 150 руб.", callback_data="pay_30_days")],
-        [InlineKeyboardButton(text="💳 3 месяца — 350 руб.", callback_data="pay_90_days")],
-        [InlineKeyboardButton(text="💳 5 месяцев — 650 руб.", callback_data="pay_150_days")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+        [InlineKeyboardButton(text=f"{prefix}1 месяц — {p30} руб.", callback_data="pay_30_days")],
+        [InlineKeyboardButton(text=f"{prefix}3 месяца — {p90} руб.", callback_data="pay_90_days")],
+        [InlineKeyboardButton(text=f"{prefix}5 месяцев — {p150} руб.", callback_data="pay_150_days")],
+        # Кнопка НАЗАД в главное меню (замените "to_main_menu" на ваш callback главного меню, если он другой)
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="to_main_menu")]
     ])
     
-    try:
-        await callback.message.edit_caption(
-            caption=(
-                "Выбор тарифа:\n\n"
-                "Оплатите подписку, чтобы снять ограничения по времени работы ваших VPN-ключей.\n\n"
-                "📖 Доступные варианты подписки:"
-            ),
-            reply_markup=buy_kb,
-            parse_mode="HTML"
-        )
-    except TelegramBadRequest:
-        pass
+    caption_text = (
+        "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
+    ) + (
+        "Выбор тарифа:\n\n"
+        "Оплатите подписку, чтобы снять ограничения по времени работы ваших VPN-ключей.\n\n"
+        "📖 Доступные варианты подписки:"
+    )
+    
+    # ОТПРАВЛЯЕМ новое сообщение (если у вас раньше была картинка, используйте send_photo, если просто текст — send_message)
+    # Предполагаем, что у вас была картинка (раз использовался edit_caption):
+    await callback.message.answer_photo(
+        photo=callback.message.photo[-1].file_id if callback.message.photo else "ВАШ_FILE_ID_КАРТИНКИ", 
+        caption=caption_text,
+        reply_markup=buy_kb,
+        parse_mode="HTML"
+    )
 
-# 1 МЕСЯЦ (Остался без изменений)
+# КНОПКА «НАЗАД» ВНУТРИ ИНВОЙСОВ (возвращает к выбору тарифов)
+@dp.callback_query(F.data == "back_to_tariffs")
+async def back_to_tariffs(callback: types.CallbackQuery):
+    # Просто перенаправляем в хендлер выбора тарифов, он сам удалит старое и пришлет новое
+    await subscription(callback)
+
+
+# 1 МЕСЯЦ
 @dp.callback_query(F.data == "pay_30_days")
 async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
+    
+    # УДАЛЯЕМ меню выбора тарифов
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+        
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    logging.info(f"Диспетчер: Отправка инвойса 30 дней пользователю {callback.from_user.id}")
+    final_price_rub, is_promo = get_discount_price(150)
+    
+    # Создаем кнопку НАЗАД к тарифам. В инвойсах Telegram позволяет добавлять свои инлайн-кнопки под инвойс!
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
+    ])
+    
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Подписка на VPN (30 дней)",
-        description="Прoдление доступа к подписке VPN Sonata на 1 месяц.",
+        title=f"Подписка на VPN (30 дней) {'% -30!' if is_promo else ''}",
+        description="Продление доступа к подписке на 1 месяц.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="1 месяц подписки", amount=15000)], # 150.00 RUB
-        start_parameter="vpn-sub-30-days"
+        prices=[LabeledPrice(label="1 месяц подписки", amount=final_price_rub * 100)],
+        start_parameter="vpn-sub-30-days",
+        reply_markup=invoice_kb # Прикрепляем кнопку назад к инвойсу
     )
 
-# 3 МЕСЯЦА (ДОБАВЛЕНО)
+# 3 МЕСЯЦА
 @dp.callback_query(F.data == "pay_90_days")
 async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
+    
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+        
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    logging.info(f"Диспетчер: Отправка инвойса 90 дней пользователю {callback.from_user.id}")
+    final_price_rub, is_promo = get_discount_price(350)
+    
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
+    ])
+    
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Подписка на VPN (3 месяца)",
-        description="Продление доступа к подписке VPN Sonata на 3 месяца.",
-        payload="vpn_90_days_subscription", # Изменен payload для отслеживания при оплате
+        title=f"Подписка на VPN (3 месяца) {'% -30!' if is_promo else ''}",
+        description="Продление доступа к подписке на 3 месяца.",
+        payload="vpn_90_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="3 месяца подписки", amount=35000)], # 350.00 RUB в копейках
-        start_parameter="vpn-sub-90-days"
+        prices=[LabeledPrice(label="3 месяца подписки", amount=final_price_rub * 100)],
+        start_parameter="vpn-sub-90-days",
+        reply_markup=invoice_kb
     )
 
-# 5 МЕСЯЦЕВ (ДОБАВЛЕНО)
+# 5 МЕСЯЦЕВ
 @dp.callback_query(F.data == "pay_150_days")
 async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     await callback.answer()
+    
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+        
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    logging.info(f"Диспетчер: Отправка инвойса 150 дней пользователю {callback.from_user.id}")
+    final_price_rub, is_promo = get_discount_price(650)
+    
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="back_to_tariffs")]
+    ])
+    
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Подписка на VPN (5 месяцев)",
-        description="Продление доступа к подписке VPN Sonata на 5 месяцев.",
-        payload="vpn_150_days_subscription", # Изменен payload для отслеживания при оплате
+        title=f"Подписка на VPN (5 месяцев) {'% -30!' if is_promo else ''}",
+        description="Продление доступа к подписке на 5 месяцев.",
+        payload="vpn_150_days_subscription",
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="5 месяцев подписки", amount=65000)], # 650.00 RUB в копейках
-        start_parameter="vpn-sub-150-days"
+        prices=[LabeledPrice(label="5 месяцев подписки", amount=final_price_rub * 100)],
+        start_parameter="vpn-sub-150-days",
+        reply_markup=invoice_kb
     )
+
 
 
 
