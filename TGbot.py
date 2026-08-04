@@ -541,6 +541,29 @@ def check_promo_active_db() -> bool:
     return False
 
 
+
+
+
+def get_id_by_username(username: str):
+    """Ищет user_id в базе данных по юзернейму (без учета знака @)"""
+    clean_username = username.lstrip('@')
+    
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    # Ищем пользователя, игнорируя регистр букв (NOCASE)
+    cursor.execute('''
+        SELECT user_id, expiry_time, role 
+        FROM users 
+        WHERE username = ? COLLATE NOCASE
+    ''', (clean_username,))
+    
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+
 #-------миграция бд ------------------
   
 
@@ -1104,10 +1127,13 @@ async def creator_panel_help(message: types.Message):
         "<code>/setrole [ID] ambassador</code> — назначить амбассадора\n\n"
         "• <b>Разжаловать до юзера:</b>\n"
         "<code>/demote [ID]</code> — вернуть статус обычного пользователя\n\n"
-        "Рассылка: <code>/send</code>\n"
         "• Одноразовый: <code>/gen [дни] [код]</code>\n"
         "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
-        "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>" 
+        "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>\n\n"
+        "Рассылка: <code>/send</code>\n
+        "<code>/start_promo</code> начало акции\n\n"
+        "<code>/team</code> cписок админов и амбассодоров\n"
+        "<code>/find_user_name (username) </code> узнать ТГ АЙДИ по юзеру\n\n"
         "<i>💡 ID пользователя можно узнать в его Личном кабинете или скопировать из логов.</i>",
         parse_mode="HTML"
     )
@@ -1233,6 +1259,53 @@ async def handle_demote_user(message: types.Message):
 
 
 #-----с пользователями и создание---
+
+
+
+import datetime
+from aiogram.filters import CommandObject, Command
+from aiogram import types
+
+@dp.message(Command("find_user_name"))
+async def find_user_by_username_cmd(message: types.Message, command: CommandObject):
+    # 1. Проверяем, передал ли человек юзернейм после команды
+    if not command.args:
+        await message.answer(
+            "⚠️ <b>Ошибка использования команды!</b>\n\n"
+            "Пишите так: <code>/find_user_name юзернейм</code>\n"
+            "Пример: <code>/find_user_name Sonata_VPN_Admin</code>", 
+            parse_mode="HTML"
+        )
+        return
+
+    target_username = command.args.strip()
+    
+    # 2. Ищем целевого пользователя в базе данных
+    user_data = get_id_by_username(target_username)
+    
+    if user_data:
+        uid, expiry_timestamp, role = user_data
+        
+        # Переводим timestamp подписки в красивую дату
+        try:
+            expiry_date = datetime.datetime.fromtimestamp(expiry_timestamp).strftime('%d.%m.%Y %H:%M')
+        except Exception:
+            expiry_date = "Не определена"
+
+        await message.answer(
+            f"🔍 <b>Пользователь найден!</b>\n\n"
+            f"🆔 <b>Telegram ID:</b> <code>{uid}</code> (Нажмите для копирования)\n"
+            f"👤 <b>Юзернейм:</b> @{target_username}\n"
+            f"👑 <b>Текущая роль:</b> <code>{role}</code>\n"
+            f"📅 <b>Подписка до:</b> {expiry_date}",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"❌ Пользователь <b>@{target_username}</b> отсутствует в базе данных бота.\n"
+            f"Скорее всего, он еще ни разу не запускал бота.",
+            parse_mode="HTML"
+        )
 
 
 
