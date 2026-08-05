@@ -1,3 +1,18 @@
+import sys
+import subprocess
+
+# Автоматический установщик потерянных библиотек хостинга
+try:
+    import qrcode
+except ImportError:
+    print("[СИСТЕМА] Модуль qrcode не найден. Запускаю принудительную установку...")
+    try:
+        # Скрытно вызываем pip текущего контейнера и ставим нужный пакет
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "qrcode[pil]"])
+        import qrcode
+        print("[СИСТЕМА] Модуль qrcode успешно установлен силами самого бота!")
+    except Exception as e:
+        print(f"[ОШИБКА СБОРКИ] Не удалось установить модуль через subprocess: {e}")
 
 import asyncio
 import logging
