@@ -15,6 +15,8 @@ import re
 import sqlite3  
 import datetime
 import shutil
+import io
+import qrcode
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
