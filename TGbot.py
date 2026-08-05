@@ -2722,15 +2722,20 @@ async def save_user_preferences(callback: types.CallbackQuery):
 
 
 # Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
+import io
+import qrcode
+import urllib.parse
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+
+# Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
 async def process_final_screen(callback: types.CallbackQuery, user_id, username, db_data, selected_os, selected_app):
-    # Генерация конфигов (оригинальный рабочий код)
+    # Generation config (оригинальный рабочий код)
     vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
     sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
     
     combined_configs = "\n".join(vless_links) if vless_links else ""
     base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
-    # ИСПРАВЛЕНО: Согласно вашей функции get_user_from_db, expiry_time лежит под индексом, а под [5] роль 'role'
     try:
         expiry_in_db = int(db_data[4]) if (db_data and len(db_data) > 4 and db_data[4] is not None) else 0
     except (ValueError, TypeError):
@@ -2740,10 +2745,8 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if expiry_seconds == 0:
         expiry_seconds = int(time.time() + 2592000)
         
-    
     expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
-    
     # Отправка на сайт и апдейт БД основных данных
     if expiry_seconds <= int(time.time()):
         asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
@@ -2764,12 +2767,12 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-    # ИСПРАВЛЕНО: Добавлен обязательный слэш (/) между доменом и sub_id
     auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
-    # КНОПКА «Новое устройство» ведет на хэндлер очистки reset_device
+    # ДОБАВЛЕНА КНОПКА ДЛЯ ГЕНЕРАЦИИ QR-КОДА
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⚡️ Импортировать в {selected_app.upper()}", url=auto_connect_url)],
+        [InlineKeyboardButton(text="🖼 Получить QR-код", callback_data=f"showqr_{sub_id}")], # Зашиваем sub_id
         [InlineKeyboardButton(text="🔄 Подключить другое устройство", callback_data="reset_device")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
@@ -2790,6 +2793,69 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
         pass
         
     await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
+
+
+
+@dp.callback_query(F.data.startswith("showqr_"))
+async def send_sub_qr_callback(callback: types.CallbackQuery):
+    await callback.answer("Генерирую QR-код...")
+    
+    # Получаем sub_id из callback_data ("showqr_e1a2b3...")
+    sub_id = callback.data.split("_")[1]
+    
+    # Формируем чистую ссылку на сайт, которую распознают VPN-клиенты
+    qr_link = f"https://sonatavpn.ru/{sub_id}"
+    
+    try:
+        # Конфигурируем и создаем QR-код
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_link)
+        qr.make(fit=True)
+
+        # Рендерим черно-белое изображение подписки
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Сохраняем картинку прямо в оперативную память сервера
+        img_io = io.BytesIO()
+        img.save(img_io, format='PNG')
+        img_io.seek(0)
+        
+        # Подготавливаем файл для отправки в aiogram 3.x
+        photo_file = BufferedInputFile(img_io.getvalue(), filename="sonata_vpn_qr.png")
+        
+        # Подпись под фотографией с красивым оформлением через HTML тег <pre>
+        caption_text = (
+            f"🖼 <b>Ваш QR-код для подключения</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<pre>"
+            f"Отсканируйте этот QR-код через камеру вашего VPN-клиента "
+            f"(например, v2rayNG, Streisand, Karing) для моментальной настройки подписки."
+            f"</pre>"
+        )
+        
+        # Отправляем фото следующим сообщением пользователю в чат
+        await callback.message.answer_photo(
+            photo=photo_file,
+            caption=caption_text,
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка при создании QR в боте: {e}")
+        await callback.message.answer(
+            f"⚠️ Не удалось сгенерировать QR-код.\nВаша ссылка для ручного ввода:\n<code>{qr_link}</code>",
+            parse_mode="HTML"
+        )
+
+
+
+
 
 
 # Хэндлер сброса настроек устройства
