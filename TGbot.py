@@ -2849,10 +2849,10 @@ async def send_sub_qr_callback(callback: types.CallbackQuery):
         # Подпись под фотографией с красивым оформлением через HTML тег <pre>
         caption_text = (
             f"🖼 <b>Ваш QR-код для подключения</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"━━━━━━━━━━━━━━━━━\n"
             f"<pre>"
             f"Отсканируйте этот QR-код через камеру вашего VPN-клиента "
-            f"(например, v2rayNG, Streisand, Karing) для моментальной настройки подписки."
+            f"(Happ, v2rayNG, Streisand, Karing и т.д.) для моментальной настройки подписки."
             f"</pre>"
         )
         
@@ -2939,7 +2939,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        "⚙️ <b><a href=\"https://t.me/Sonata_VPN_Support\">Основная поддержка</a></b>\n"
+        "⚙️ <b><a href=\"https://t.me/SonataSupport_bot\">Основная поддержка</a></b>\n"
         "📢 <b>Канал:</b> <a href=\"https://t.me/Sonata_Information\">Sonata | INFO</a>\n\n"
         "📋 <a href=\"https://sonatavpn.ru/terms\">Пользовательское соглашение</a>\n"
         "🔒 <a href=\"https://sonatavpn.ru/privacy\">Политика конфиденциальности</a>\n\n"
