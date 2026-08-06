@@ -2700,7 +2700,7 @@ async def process_os_choice(callback: types.CallbackQuery):
         
         text_apps = (
             f"📥 <b>Вы выбрали систему: {selected_os.upper()}</b>\n\n"
-            "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве:"
+            "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве.\n"
             "Нажмите один раз для решения"
         )
         
@@ -2745,6 +2745,7 @@ import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 
 # Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
+# Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
 async def process_final_screen(callback: types.CallbackQuery, user_id, username, db_data, selected_os, selected_app):
     # Generation config (оригинальный рабочий код)
     vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
@@ -2753,23 +2754,32 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     combined_configs = "\n".join(vless_links) if vless_links else ""
     base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
 
+    # Безопасное чтение вашей колонки expiry_time на [4] месте в БД
     try:
         expiry_in_db = int(db_data[4]) if (db_data and len(db_data) > 4 and db_data[4] is not None) else 0
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, IndexError):
         expiry_in_db = 0
 
-    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
-    if expiry_seconds == 0:
-        expiry_seconds = int(time.time() + 2592000)
-        
-    expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+    current_time = int(time.time())
 
-    # Отправка на сайт и апдейт БД основных данных
-    if expiry_seconds <= int(time.time()):
+    # Берем время из панели X-UI (конвертируем в секунды), если там 0 — берем из вашей БД
+    expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
+    
+    # ИСПРАВЛЕНИЕ БАГА: Если подписка отсутствует (0) или просрочена, НЕ начисляем 30 дней.
+    # Фиксируем текущее время, чтобы показать статус "Истекла" и не давать бесплатный доступ.
+    if expiry_seconds <= current_time:
+        expiry_seconds = current_time
+        expiry_date = "❌ Истекла или не приобреталась"
+    else:
+        expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+
+    # Синхронизация с сайтом
+    if expiry_seconds <= current_time:
         asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
     else:
         asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
         
+    # Обновляем БД. В 5-й аргумент (к вашей колонке expiry_time) улетит актуальный Unix-штамп
     add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
     # Список нод для дебага
@@ -2784,20 +2794,20 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+    auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
-    # ДОБАВЛЕНА КНОПКА ДЛЯ ГЕНЕРАЦИИ QR-КОДА
+    # Клавиатура
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⚡️ Импортировать в {selected_app.upper()}", url=auto_connect_url)],
-        [InlineKeyboardButton(text="🖼 Получить QR-код", callback_data=f"showqr_{sub_id}")], # Зашиваем sub_id
-        [InlineKeyboardButton(text="🔄 Подключить другое устройство", callback_data="reset_device")],
+        [InlineKeyboardButton(text="🖼 Получить QR-код", callback_data=f"showqr_{sub_id}")], 
+        [InlineKeyboardButton(text="🔄 Выбрать другое устройство", callback_data="reset_device")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
 
     text = (
         f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
         f"📱 Устройство: <b>{selected_os.upper()}</b> | Клиент: <b>{selected_app.upper()}</b>\n"
-        f"📅 Срок действия: до <b>{expiry_date}</b>\n"
+        f"📅 Срок действия: <b>{expiry_date}</b>\n"
         f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
         f"<b>Статус синхронизации нод:</b>\n"
         f"{debug_servers_info}\n"
@@ -2810,6 +2820,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
         pass
         
     await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
 
 
 
@@ -3218,7 +3229,7 @@ async def process_successful_payment(message: types.Message):
             # Получаем обновленную дату для вывода пользователю
             user_data = get_user_from_db(user_id)
             updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
-            expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y %H:%M')
+            expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
             
             await message.answer(
                 f"🎉 <b>Оплата прошла успешно!</b>\n\n"
@@ -3332,10 +3343,18 @@ async def admin_revoke_sub(message: types.Message):
     success = await revoke_vpn_subscription(target_user_id)
     
     if success:
+        # === СИНХРОНИЗАЦИЯ: ОБНУЛЯЕМ СРОК В КОЛОНКЕ expiry_time (индекс) ===
+        current_time = int(time.time())
+        target_sub_id = "e" + hashlib.md5(str(target_user_id).encode()).hexdigest()[:15]
+        
+        # Записываем пустые конфиги и текущее Unix-время (что означает окончание подписки прямо сейчас)
+        add_or_update_user(target_user_id, "", "", target_sub_id, current_time)
+        # =======================================================================
+
         await message.answer(
             f"🛑 <b>Доступ аннулирован!</b>\n\n"
             f"<blockquote>👤 Пользователь: {target_user_id}\n"
-            f"🔴 Статус: Подписка досрочно завершена\n"
+            f"🔴 Статус: Подписка досрочно завершена и сброшена в БД\n"
             f"🔒 Доступ: Заблокирован в панели X-UI</blockquote>",
             parse_mode="HTML"
         )
