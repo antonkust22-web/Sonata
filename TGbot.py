@@ -2120,7 +2120,7 @@ async def start_promo_command(message: types.Message, bot: Bot):
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться (Happ)", callback_data="connect")], 
+        [InlineKeyboardButton(text="📲 Подключиться", callback_data="connect")], 
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
@@ -2794,7 +2794,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-    auto_connect_url = f"https://sonatavpn.ru{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
     # Клавиатура
     kb = InlineKeyboardMarkup(inline_keyboard=[
