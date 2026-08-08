@@ -174,9 +174,7 @@ text1 = (
     "📖 Выберите действие:"
 )
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
-dp.errors.register(VideoErrorMiddleware())
+
 
 
 #-----------Работа с базой данных----------------
