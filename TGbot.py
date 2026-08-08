@@ -77,6 +77,10 @@ API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
+dp.errors.register(VideoErrorMiddleware())
+
 
 
 
