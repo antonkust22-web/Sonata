@@ -113,22 +113,7 @@ def save_new_video_id(new_id: str):
 
 
 
-# 1. ХЕНДЛЕР ПРИЕМА НОВОГО ВИДЕО (Ловит видео только от тебя)
-@dp.message(F.video)
-async def auto_replace_video_id(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return # Обычные пользователи мимо
-        
-    new_file_id = message.video.file_id
-    save_new_video_id(new_file_id) # Перезаписывает файл и переменную VIDEO_MAIN в памяти
-    
-    await message.reply(
-        f"✅ <b>ID видео успешно обновлен везде (включая кнопку Назад)!</b>\n\n"
-        f"Новый активный ID: <code>{new_file_id}</code>",
-        parse_mode="HTML"
-    )
-
-# 2. ПЕРЕХВАТЧИК ОШИБОК (Срабатывает, если Telegram не смог отправить старое видео)
+# 2. ИСПРАВЛЕННЫЙ ПЕРЕХВАТЧИК ОШИБОК
 @dp.errors()
 async def video_error_handler(event: ErrorEvent):
     exception = event.exception
@@ -138,9 +123,12 @@ async def video_error_handler(event: ErrorEvent):
         err_msg = str(exception).lower()
         if "video" in err_msg or "file id" in err_msg or "wrong" in err_msg or "failed to get" in err_msg:
             
+            # Импортируем твой живой объект бота прямо из твоего файла, чтобы избежать NoneType
+            from TGbot import bot  
+            
             # А. Моментально отправляем уведомление тебе в ЛС
             try:
-                await event.bot.send_message(
+                await bot.send_message(
                     chat_id=ADMIN_ID,
                     text="⚠️ <b>Внимание! Приветственное видео устарело или удалено!</b>\n\n"
                          "Пользователь нажал кнопку или ввел /start, но видео не отправилось.\n"
@@ -160,7 +148,7 @@ async def video_error_handler(event: ErrorEvent):
             if chat_id:
                 from TGbot import text1, main_kb  # Подгружаем твои тексты и кнопки панели
                 try:
-                    await event.bot.send_message(
+                    await bot.send_message(
                         chat_id=chat_id,
                         text=f"⏳ Загрузка меню...\n\n{text1}",
                         reply_markup=main_kb(),
@@ -171,7 +159,8 @@ async def video_error_handler(event: ErrorEvent):
             
             return True  # Ошибка успешно обработана, бот продолжает работать!
             
-    return False  # Все остальные ошибки (например, синтаксические) не трогаем, пусть летят в консоль
+    return False  # Все остальные ошибки пропускаем
+
 
 
 
