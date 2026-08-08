@@ -37,11 +37,14 @@ import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.types import Message
+from aiogram.filters import CommandStart
 from aiogram.filters import Command, CommandObject
 from aiogram.exceptions import TelegramBadRequest
 import datetime as dt_module
 from datetime import datetime, timedelta
 from aiogram import types
+from aiogram import BaseMiddleware
+from aiogram.types import ErrorEvent
 
 
 
@@ -74,8 +77,78 @@ API_TOKEN = '8728088789:AAFZSnTY46Z2v2-5hk3Henv5JBSkHXi5avQ'
 # ТОКЕН ПЛАТЕЖКИ ЮKASSA
 PROVIDER_TOKEN = "390540012:LIVE:96775"
 
-# File ID вашего видео
-VIDEO_MAIN = "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
+
+
+
+
+
+
+
+DB_FILE = "bot_data.json"
+
+# Умная переменная: при каждом обращении к VIDEO_MAIN она сама лезет в файл за свежим ID
+class DynamicVideoID:
+    @property
+    def file_id(self):
+        if not os.path.exists(DB_FILE):
+            # Твой изначальный ID на случай, если файла еще нет
+            return "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
+        with open(DB_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("video_main")
+
+    # Этот метод позволяет коду использовать объект как обычную строку
+    def __str__(self):
+        return self.file_id
+
+# Теперь старый код `video=VIDEO_MAIN` внутри /start продолжит работать без изменений!
+VIDEO_MAIN = DynamicVideoID()
+
+# Функция для сохранения нового ID (вызывается при отправке тобой видео)
+def save_new_video_id(new_id: str):
+    with open(DB_FILE, "w") as f:
+        json.dump({"video_main": new_id}, f)
+
+
+
+
+
+class VideoErrorMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: ErrorEvent, data: dict):
+        # Проверяем, что ошибка произошла из-за невалидного file_id
+        if isinstance(event.exception, TelegramBadRequest):
+            # Если в тексте ошибки есть намек на неверный файл/ID
+            if "file id" in str(event.exception).lower() or "wrong" in str(event.exception).lower():
+                
+                # 1. Моментально шлем алерт тебе в ЛС
+                await event.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text="⚠️ <b>Внимание! Видео в команде /start больше не работает!</b>\n\n"
+                         "Прямо сейчас пришли мне новое видео файлом, и я автоматически обновлю ID во всем боте.",
+                    parse_mode="HTML"
+                )
+                
+                # 2. Пытаемся спасти ситуацию для пользователя: отправляем ему ТЕКСТ и КНОПКИ из /start без видео
+                # Пытаемся достать оригинальное сообщение пользователя, чтобы ответить ему
+                chat_id = event.update.message.chat.id if event.update.message else None
+                if chat_id:
+                    from main import text1, main_kb  # Импортируй свои тексты и кнопки, если они в другом файле
+                    await event.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Привет! Добро пожаловать!\n\n{text1}", # Отправляем текст панели
+                        reply_markup=main_kb(), # Отправляем кнопки меню, чтобы панель работала
+                        parse_mode="HTML"
+                    )
+                return  # Гасим ошибку, чтобы бот не уходил в бесконечный рестарт
+                
+        # Если это любая другая ошибка — передаем её дальше
+        return await handler(event, data)
+
+
+
+
+
+
 
 text1 = (
     "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
@@ -85,6 +158,7 @@ text1 = (
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+dp.errors.register(VideoErrorMiddleware())
 
 
 #-----------Работа с базой данных----------------
