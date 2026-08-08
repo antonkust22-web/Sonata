@@ -86,25 +86,36 @@ PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 DB_FILE = "bot_data.json"
 
-# Умная переменная: при каждом обращении к VIDEO_MAIN она сама лезет в файл за свежим ID
-class DynamicVideoID:
-    @property
-    def file_id(self):
-        if not os.path.exists(DB_FILE):
-            # Твой изначальный ID на случай, если файла еще нет
-            return "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
-        with open(DB_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("video_main")
+def get_current_video_id() -> str:
+    if not os.path.exists(DB_FILE):
+        # Твой изначальный ID, пока файла нет
+        return "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
+    with open(DB_FILE, "r") as f:
+        data = json.load(f)
+        return data.get("video_main")
 
-    # Этот метод позволяет коду использовать объект как обычную строку
+# Кастомный класс, который наследуется от str, чтобы обмануть валидацию Pydantic
+class DynamicStr(str):
+    def __new__(cls):
+        # Инициализируем пустую строку, но переопределяем все методы
+        return super().__new__(cls, "")
+        
     def __str__(self):
-        return self.file_id
+        return get_current_video_id()
+        
+    def __repr__(self):
+        return get_current_video_id()
 
-# Теперь старый код `video=VIDEO_MAIN` внутри /start продолжит работать без изменений!
-VIDEO_MAIN = DynamicVideoID()
+    # Перенаправляем все строковые операции (Len, кодирование и т.д.) на актуальный ID
+    def __getattribute__(self, name):
+        if name in ['__class__', '__doc__', '__module__', '__new__', '__str__', '__repr__']:
+            return super().__getattribute__(name)
+        actual_str = get_current_video_id()
+        return getattr(actual_str, name)
 
-# Функция для сохранения нового ID (вызывается при отправке тобой видео)
+
+VIDEO_MAIN = DynamicStr()
+
 def save_new_video_id(new_id: str):
     with open(DB_FILE, "w") as f:
         json.dump({"video_main": new_id}, f)
@@ -113,36 +124,55 @@ def save_new_video_id(new_id: str):
 
 
 
+
+
+
 class VideoErrorMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: ErrorEvent, data: dict):
-        # Проверяем, что ошибка произошла из-за невалидного file_id
-        if isinstance(event.exception, TelegramBadRequest):
-            # Если в тексте ошибки есть намек на неверный файл/ID
-            if "file id" in str(event.exception).lower() or "wrong" in str(event.exception).lower():
+        exception = event.exception
+        
+        # Ловим ошибку BadRequest (невалидный file_id)
+        if isinstance(exception, TelegramBadRequest):
+            err_msg = str(exception).lower()
+            if "file id" in err_msg or "wrong" in err_msg or "failed to get" in err_msg:
                 
-                # 1. Моментально шлем алерт тебе в ЛС
-                await event.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text="⚠️ <b>Внимание! Видео в команде /start больше не работает!</b>\n\n"
-                         "Прямо сейчас пришли мне новое видео файлом, и я автоматически обновлю ID во всем боте.",
-                    parse_mode="HTML"
-                )
-                
-                # 2. Пытаемся спасти ситуацию для пользователя: отправляем ему ТЕКСТ и КНОПКИ из /start без видео
-                # Пытаемся достать оригинальное сообщение пользователя, чтобы ответить ему
-                chat_id = event.update.message.chat.id if event.update.message else None
-                if chat_id:
-                    from main import text1, main_kb  # Импортируй свои тексты и кнопки, если они в другом файле
+                # 1. Оповещаем админа
+                try:
                     await event.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"Привет! Добро пожаловать!\n\n{text1}", # Отправляем текст панели
-                        reply_markup=main_kb(), # Отправляем кнопки меню, чтобы панель работала
+                        chat_id=ADMIN_ID,
+                        text="⚠️ <b>Внимание! Видео в команде /start больше не работает!</b>\n\n"
+                             "Прямо сейчас пришли мне новое видео файлом, и я автоматически обновлю ID во всем боте.",
                         parse_mode="HTML"
                     )
-                return  # Гасим ошибку, чтобы бот не уходил в бесконечный рестарт
+                except Exception as admin_err:
+                    print(f"Не удалось отправить сообщение админу: {admin_err}")
                 
-        # Если это любая другая ошибка — передаем её дальше
+                # 2. Спасаем пользователя (отправляем текст панели без видео)
+                # Извлекаем chat_id из апдейта
+                chat_id = None
+                if event.update.message:
+                    chat_id = event.update.message.chat.id
+                elif event.update.callback_query:
+                    chat_id = event.update.callback_query.message.chat.id
+
+                if chat_id:
+                    # Импортируем твои переменные прямо внутри функции во избежание циклического импорта
+                    from TGbot import text1, main_kb 
+                    try:
+                        await event.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Привет! Добро пожаловать!\n\n{text1}",
+                            reply_markup=main_kb(),
+                            parse_mode="HTML"
+                        )
+                    except Exception as user_err:
+                        print(f"Не удалось отправить заглушку пользователю: {user_err}")
+                
+                return  # Блокируем падение бота, ошибка обработана успешно!
+                
+        # Если это другая ошибка — передаем дальше по цепочке
         return await handler(event, data)
+
 
 
 
