@@ -92,70 +92,57 @@ dp = Dispatcher()
 
 DB_FILE = "bot_data.json"
 
-# Внутреннее хранилище для ID в памяти бота
-_CURRENT_VIDEO_ID = "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
-
-# Загружаем ID из файла при старте скрипта
-if os.path.exists(DB_FILE):
+# Функция автоматической загрузки ID при старте бота
+def load_startup_video_id() -> str:
+    if not os.path.exists(DB_FILE):
+        # Твой изначальный ID, пока файла еще нет на сервере
+        return "BAACAgIAAxkBAAIL9mp3hKvAcX29t0ufhL-Zddqeyps5AAIjqgACxWG4Sx4JI1ekkuC_PQQ"
     with open(DB_FILE, "r") as f:
-        try:
-            data = json.load(f)
-            _CURRENT_VIDEO_ID = data.get("video_main", _CURRENT_VIDEO_ID)
-        except Exception:
-            pass
+        data = json.load(f)
+        return data.get("video_main", "BAACAgIAAxkBAAIL9mp3hKvAcX29t0ufhL-Zddqeyps5AAIjqgACxWG4Sx4JI1ekkuC_PQQ")
 
-# Умный контейнер, который прикидывается обычной строкой для Pydantic
-class VideoIdContainer:
-    def __str__(self):
-        return str(_CURRENT_VIDEO_ID)
-    def __repr__(self):
-        return str(_CURRENT_VIDEO_ID)
-    def __len__(self):
-        return len(str(_CURRENT_VIDEO_ID))
-    def __eq__(self, other):
-        return str(_CURRENT_VIDEO_ID) == str(other)
+# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ — теперь это ОБЫЧНАЯ строка str, Pydantic её примет везде
+VIDEO_MAIN = load_startup_video_id()
 
-# Эту переменную используют твои хендлеры /start и кнопка back. 
-# Менять их код не нужно, они автоматически будут получать свежий ID!
-VIDEO_MAIN = VideoIdContainer()
-
-# Функция обновления ID (меняет значение и в памяти, и в JSON файле)
+# Функция сохранения нового ID (обновляет и файл, и переменную в оперативной памяти)
 def save_new_video_id(new_id: str):
-    global _CURRENT_VIDEO_ID
-    _CURRENT_VIDEO_ID = new_id  # Меняем значение в памяти бота
+    global VIDEO_MAIN
+    VIDEO_MAIN = new_id  # Мгновенно меняем значение во всем боте (для всех кнопок и /start)
     with open(DB_FILE, "w") as f:
         json.dump({"video_main": new_id}, f)
 
-# 1. ХЕНДЛЕР ПРИЕМА НОВОГО ВИДЕО (Ловит видео от тебя и сразу применяет)
+
+
+
+
+# 1. ХЕНДЛЕР ПРИЕМА НОВОГО ВИДЕО (Ловит видео только от тебя)
 @dp.message(F.video)
 async def auto_replace_video_id(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return # Обычные пользователи мимо
         
     new_file_id = message.video.file_id
-    save_new_video_id(new_file_id) # Перезаписывает хранилище
+    save_new_video_id(new_file_id) # Перезаписывает файл и переменную VIDEO_MAIN в памяти
     
-    # Проверяем, что в VIDEO_MAIN действительно лежит новый ID
     await message.reply(
-        f"✅ <b>ID видео успешно обновлен и ПРИМЕНЕН во всем боте!</b>\n\n"
-        f"Текущий активный ID: <code>{VIDEO_MAIN}</code>",
+        f"✅ <b>ID видео успешно обновлен везде (включая кнопку Назад)!</b>\n\n"
+        f"Новый активный ID: <code>{new_file_id}</code>",
         parse_mode="HTML"
     )
 
-# 2. ПЕРЕХВАТЧИК ОШИБОК
+# 2. ПЕРЕХВАТЧИК ОШИБОК (Срабатывает, если Telegram не смог отправить старое видео)
 @dp.errors()
 async def video_error_handler(event: ErrorEvent):
     exception = event.exception
     
+    # Ловим ошибку, если Telegram ругается на невалидное видео/ID
     if isinstance(exception, TelegramBadRequest):
         err_msg = str(exception).lower()
         if "video" in err_msg or "file id" in err_msg or "wrong" in err_msg or "failed to get" in err_msg:
             
-            from TGbot import bot  
-            
-            # А. Пишем тебе в ЛС
+            # А. Моментально отправляем уведомление тебе в ЛС
             try:
-                await bot.send_message(
+                await event.bot.send_message(
                     chat_id=ADMIN_ID,
                     text="⚠️ <b>Внимание! Приветственное видео устарело или удалено!</b>\n\n"
                          "Пользователь нажал кнопку или ввел /start, но видео не отправилось.\n"
@@ -165,7 +152,7 @@ async def video_error_handler(event: ErrorEvent):
             except Exception as admin_err:
                 print(f"Не удалось отправить алерт админу: {admin_err}")
             
-            # Б. Спасаем пользователя
+            # Б. Спасаем пользователя (отправляем ему меню текстом, чтобы бот не завис)
             chat_id = None
             if event.update.message:
                 chat_id = event.update.message.chat.id
@@ -173,20 +160,20 @@ async def video_error_handler(event: ErrorEvent):
                 chat_id = event.update.callback_query.message.chat.id
 
             if chat_id:
-                from TGbot import text1, main_kb  
+                from TGbot import text1, main_kb  # Подгружаем твои тексты и кнопки панели
                 try:
-                    await bot.send_message(
+                    await event.bot.send_message(
                         chat_id=chat_id,
-                        text=f"⏳ Загрузка меню...\n\n{text1}",
+                        text=f"{text1}",
                         reply_markup=main_kb(),
                         parse_mode="HTML"
                     )
                 except Exception as user_err:
                     print(f"Не удалось отправить текстовую панель пользователю: {user_err}")
             
-            return True  
+            return True  # Ошибка успешно обработана, бот продолжает работать!
             
-    return False  
+    return False  # Все остальные ошибки (например, синтаксические) не трогаем, пусть летят в консоль
 
 
 
