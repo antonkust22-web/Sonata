@@ -90,46 +90,55 @@ dp = Dispatcher()
 
 DB_FILE = "bot_data.json"
 
-# 1. Функция получения ID из файла
-def get_current_video_id() -> str:
+# Функция автоматической загрузки ID при старте бота
+def load_startup_video_id() -> str:
     if not os.path.exists(DB_FILE):
-        # Дефолтный ID, если файла еще нет
+        # Твой изначальный ID, пока файла еще нет на сервере
         return "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
     with open(DB_FILE, "r") as f:
         data = json.load(f)
         return data.get("video_main", "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA")
 
-# 2. Функция сохранения нового ID
+# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ — теперь это ОБЫЧНАЯ строка str, Pydantic её примет везде
+VIDEO_MAIN = load_startup_video_id()
+
+# Функция сохранения нового ID (обновляет и файл, и переменную в оперативной памяти)
 def save_new_video_id(new_id: str):
+    global VIDEO_MAIN
+    VIDEO_MAIN = new_id  # Мгновенно меняем значение во всем боте (для всех кнопок и /start)
     with open(DB_FILE, "w") as f:
         json.dump({"video_main": new_id}, f)
 
-# Хитрость: заставляем Python возвращать чистый str при вызове VIDEO_MAIN в любой части кода
-class ModuleWrapper:
-    def __init__(self, original_module):
-        self.__dict__['_wrapped_module'] = original_module
 
-    def __getattr__(self, name):
-        if name == 'VIDEO_MAIN':
-            return str(get_current_video_id())  # Возвращает строго чистую строку str!
-        return getattr(self._wrapped_module, name)
 
-    def __setattr__(self, name, value):
-        setattr(self._wrapped_module, name, value)
 
-# Применяем магию к текущему файлу
-sys.modules[__name__] = ModuleWrapper(sys.modules[__name__])
 
+# 1. ХЕНДЛЕР ПРИЕМА НОВОГО ВИДЕО (Ловит видео только от тебя)
+@dp.message(F.video)
+async def auto_replace_video_id(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return # Обычные пользователи мимо
+        
+    new_file_id = message.video.file_id
+    save_new_video_id(new_file_id) # Перезаписывает файл и переменную VIDEO_MAIN в памяти
+    
+    await message.reply(
+        f"✅ <b>ID видео успешно обновлен везде (включая кнопку Назад)!</b>\n\n"
+        f"Новый активный ID: <code>{new_file_id}</code>",
+        parse_mode="HTML"
+    )
+
+# 2. ПЕРЕХВАТЧИК ОШИБОК (Срабатывает, если Telegram не смог отправить старое видео)
 @dp.errors()
 async def video_error_handler(event: ErrorEvent):
     exception = event.exception
     
-    # Ловим ошибку, если Telegram BadRequest (видео устарело/не существует)
+    # Ловим ошибку, если Telegram ругается на невалидное видео/ID
     if isinstance(exception, TelegramBadRequest):
         err_msg = str(exception).lower()
         if "video" in err_msg or "file id" in err_msg or "wrong" in err_msg or "failed to get" in err_msg:
             
-            # А. Пишем тебе в ЛС
+            # А. Моментально отправляем уведомление тебе в ЛС
             try:
                 await event.bot.send_message(
                     chat_id=ADMIN_ID,
@@ -141,7 +150,7 @@ async def video_error_handler(event: ErrorEvent):
             except Exception as admin_err:
                 print(f"Не удалось отправить алерт админу: {admin_err}")
             
-            # Б. Отправляем пользователю меню без видео (чтобы кнопки работали)
+            # Б. Спасаем пользователя (отправляем ему меню текстом, чтобы бот не завис)
             chat_id = None
             if event.update.message:
                 chat_id = event.update.message.chat.id
@@ -149,7 +158,7 @@ async def video_error_handler(event: ErrorEvent):
                 chat_id = event.update.callback_query.message.chat.id
 
             if chat_id:
-                from TGbot import text1, main_kb  # Импорт твоих текстов и кнопок
+                from TGbot import text1, main_kb  # Подгружаем твои тексты и кнопки панели
                 try:
                     await event.bot.send_message(
                         chat_id=chat_id,
@@ -158,12 +167,11 @@ async def video_error_handler(event: ErrorEvent):
                         parse_mode="HTML"
                     )
                 except Exception as user_err:
-                    print(f"Не удалось отправить текстовую панель: {user_err}")
+                    print(f"Не удалось отправить текстовую панель пользователю: {user_err}")
             
-            return True  # Ошибка обработана, бот продолжает работать
+            return True  # Ошибка успешно обработана, бот продолжает работать!
             
-    return False  # Остальные ошибки не трогаем
-
+    return False  # Все остальные ошибки (например, синтаксические) не трогаем, пусть летят в консоль
 
 
 
