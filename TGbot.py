@@ -31,6 +31,7 @@ import sqlite3
 import datetime
 import shutil
 import io
+import sys
 import qrcode
 
 import aiohttp
@@ -87,57 +88,60 @@ dp = Dispatcher()
 
 
 
-
-
-
 DB_FILE = "bot_data.json"
 
-# 1. Функция получения ID из JSON-файла
+# 1. Функция получения ID из файла
 def get_current_video_id() -> str:
     if not os.path.exists(DB_FILE):
-        # Стартовый ID, если файла еще нет на сервере
+        # Дефолтный ID, если файла еще нет
         return "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA"
     with open(DB_FILE, "r") as f:
         data = json.load(f)
-        return data.get("video_main")
+        return data.get("video_main", "BAACAgIAAxkBAAPqamn9mx0ZjN8O9LOXE_Nv1Vy8FHkAAo-qAAK3H1BL0SO5M78W3WA9BA")
 
-# 2. Объект-пустышка. Когда Pydantic или Telegram запросят строку, он отдаст свежий ID из файла
-class StableDynamicStr:
-    def __str__(self):
-        return get_current_video_id()
-    def __repr__(self):
-        return get_current_video_id()
-
-# Переменная, которую использует твоя команда /start (теперь она динамическая)
-VIDEO_MAIN = StableDynamicStr()
-
-# 3. Функция сохранения нового ID
+# 2. Функция сохранения нового ID
 def save_new_video_id(new_id: str):
     with open(DB_FILE, "w") as f:
         json.dump({"video_main": new_id}, f)
 
-# 4. Перехватчик ошибок (Вместо ломающейся мидлвари)
+# Хитрость: заставляем Python возвращать чистый str при вызове VIDEO_MAIN в любой части кода
+class ModuleWrapper:
+    def __init__(self, original_module):
+        self.__dict__['_wrapped_module'] = original_module
+
+    def __getattr__(self, name):
+        if name == 'VIDEO_MAIN':
+            return str(get_current_video_id())  # Возвращает строго чистую строку str!
+        return getattr(self._wrapped_module, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._wrapped_module, name, value)
+
+# Применяем магию к текущему файлу
+sys.modules[__name__] = ModuleWrapper(sys.modules[__name__])
+
 @dp.errors()
 async def video_error_handler(event: ErrorEvent):
     exception = event.exception
     
-    # Если Telegram ругается, что видео не найдено по этому file_id
+    # Ловим ошибку, если Telegram BadRequest (видео устарело/не существует)
     if isinstance(exception, TelegramBadRequest):
         err_msg = str(exception).lower()
         if "video" in err_msg or "file id" in err_msg or "wrong" in err_msg or "failed to get" in err_msg:
             
-            # А. Моментально пишем тебе в ЛС уведомление
+            # А. Пишем тебе в ЛС
             try:
                 await event.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text="⚠️ <b>Внимание! Видео в команде /start больше не работает!</b>\n\n"
-                         "Прямо сейчас пришли мне новое видео файлом, и я автоматически обновлю ID во всем боте.",
+                    text="⚠️ <b>Внимание! Приветственное видео устарело или удалено!</b>\n\n"
+                         "Пользователь нажал кнопку или ввел /start, но видео не отправилось.\n"
+                         "Пришли мне новое видео файлом прямо сюда, и я автоматически обновлю ID.",
                     parse_mode="HTML"
                 )
             except Exception as admin_err:
                 print(f"Не удалось отправить алерт админу: {admin_err}")
             
-            # Б. Спасаем пользователя (отправляем текстовую панель с кнопками)
+            # Б. Отправляем пользователю меню без видео (чтобы кнопки работали)
             chat_id = None
             if event.update.message:
                 chat_id = event.update.message.chat.id
@@ -145,7 +149,7 @@ async def video_error_handler(event: ErrorEvent):
                 chat_id = event.update.callback_query.message.chat.id
 
             if chat_id:
-                from TGbot import text1, main_kb  # Подгружаем твои тексты и кнопки
+                from TGbot import text1, main_kb  # Импорт твоих текстов и кнопок
                 try:
                     await event.bot.send_message(
                         chat_id=chat_id,
@@ -154,11 +158,11 @@ async def video_error_handler(event: ErrorEvent):
                         parse_mode="HTML"
                     )
                 except Exception as user_err:
-                    print(f"Не удалось отправить панель пользователю: {user_err}")
+                    print(f"Не удалось отправить текстовую панель: {user_err}")
             
-            return True  # Ошибка успешно обработана, бот НЕ падает!
+            return True  # Ошибка обработана, бот продолжает работать
             
-    return False  # Все остальные ошибки пропускаем дальше в консоль
+    return False  # Остальные ошибки не трогаем
 
 
 
