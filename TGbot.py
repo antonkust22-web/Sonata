@@ -79,7 +79,7 @@ PROVIDER_TOKEN = "390540012:LIVE:96775"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-dp.errors.register(VideoErrorMiddleware())
+
 
 
 
