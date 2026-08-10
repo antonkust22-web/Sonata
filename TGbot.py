@@ -1560,72 +1560,59 @@ async def handle_generate_promo(message: types.Message):
 
 @dp.message(PromoStates.waiting_for_promo, F.text)
 async def handle_promo_text_activation(message: types.Message, state: FSMContext):
-    # Очищаем пробелы и переводим в верхний регистр весь текст сообщения
     promo_code = message.text.strip().upper()
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     
-    # Сразу закрываем состояние, чтобы последующие сообщения не летели сюда же
     await state.clear()
+    logging.info(f"🔍 [ПРОМО] Пользователь {user_id} ввел промокод: {promo_code}")
     
-    # 1. Проверяем и гасим промокод в локальной SQLite
+    # 1. Проверяем в БД
     db_result = activate_promo_in_db(promo_code, user_id)
+    logging.info(f"🔍 [ПРОМО] Результат activate_promo_in_db: {db_result}")
     
     if db_result == "NOT_FOUND":
-        await message.answer("❌ <b>Такого промокода не существует.</b> Проверьте правильность букв.", parse_mode="HTML")
+        await message.answer("❌ <b>Такого промокода не существует.</b>", parse_mode="HTML")
         return
     elif db_result == "ALREADY_USED":
-        await message.answer("❌ <b>Этот промокод больше не активен.</b> Лимит его активаций полностью исчерпан.", parse_mode="HTML")
+        await message.answer("❌ <b>Этот промокод больше не активен.</b>", parse_mode="HTML")
         return
     elif db_result == "YOU_ALREADY_USED":
-        await message.answer("❌ <b>Вы уже активировали этот промокод ранее!</b> Повторная активация невозможна.", parse_mode="HTML")
+        await message.answer("❌ <b>Вы уже активировали этот промокод ранее!</b>", parse_mode="HTML")
         return
         
-    # Если проверка успешна, db_result вернет количество дней (int)
     days_to_add = db_result
-    
     if not isinstance(days_to_add, int) or days_to_add <= 0:
-        logging.error(f"⚠️ Функция activate_promo_in_db вернула некорректное значение: {db_result}")
-        await message.answer("❌ Произошла внутренняя ошибка при проверке промокода. Обратитесь к администратору.")
+        logging.error(f"⚠️ Некорректное значение дней: {db_result}")
+        await message.answer("❌ Внутренняя ошибка базы данных.")
         return
 
     status_msg = await message.answer(f"🔄 Промокод принят!\nНачисляю {days_to_add} дней подписки и обновляю сервера...")
+    logging.info(f"⏳ [ПРОМО] Сообщение отправлено. Начинаем apply_subscription_extension...")
     
     try:
-        # 2. Запуск комплексного обновления (Панели + Локальная БД + Сайт)
+        # ЗАВИСАНИЕ ПРОИСХОДИТ ЗДЕСЬ:
         await apply_subscription_extension(user_id, username, days_to_add)
+        logging.info(f"✅ [ПРОМО] Функция apply_subscription_extension успешно завершилась!")
         
-        # Получаем обновленную дату для вывода пользователю
         user_data = get_user_from_db(user_id)
-        
         try:
-            # Исправленный индекс [4] для expiry_time
             updated_expiry = int(user_data[4]) if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
         except (ValueError, TypeError):
             updated_expiry = 0
             
-        if updated_expiry > 0:
-            expiry_date = dt.datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
-        else:
-            expiry_date = "Не определена"
+        expiry_date = dt.datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M') if updated_expiry > 0 else "Не определена"
 
         await status_msg.edit_text(
             f"🎉 <b>Промокод успешно активирован!</b>\n\n"
             f"➕ Начислено: <b>{days_to_add} дней</b>\n"
-            f"📅 Новая дата окончания: <b>{expiry_date}</b>\n\n"
-            f"<i>💡 Конфигурации на вашем устройстве обновятся автоматически, переподключать заново ничего не нужно!</i>",
+            f"📅 Новая дата окончания: <b>{expiry_date}</b>",
             parse_mode="HTML"
         )
     except Exception as e:
-        logging.error(f"❌ Ошибка выполнения apply_subscription_extension для {user_id}: {e}", exc_info=True)
-        try:
-            await status_msg.edit_text(
-                "⚠️ <b>Промокод зафиксирован, но произошел сбой обновления серверов.</b>\n"
-                "Пожалуйста, напишите администратору, вам начислят дни вручную.", 
-                parse_mode="HTML"
-            )
-        except Exception as edit_err:
-            logging.error(f"Не удалось изменить сообщение статуса: {edit_err}")
+        logging.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в блоке выполнения промокода: {e}", exc_info=True)
+        await status_msg.edit_text("⚠️ Произошел сбой обновления серверов.", parse_mode="HTML")
+
 
 
 
