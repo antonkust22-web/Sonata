@@ -47,6 +47,13 @@ from aiogram import types
 from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent
 
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+
+class PromoStates(StatesGroup):
+    waiting_for_promo = State()  # Состояние ожидания текста промокода
+
+
 
 
 # --- ПРАВА АДМИНИСТРАТОРА ---
@@ -1551,20 +1558,15 @@ async def handle_generate_promo(message: types.Message):
 
 
 
-@dp.message(F.text.startswith("/promo") | F.text.startswith("/activate"))
-async def handle_promo_activation(message: types.Message): # Используем types.Message
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer(
-            "⚠️ <b>Пожалуйста, укажите промокод!</b>\n\n"
-            "Пример ввода:\n<code>/promo СONATA_FREE</code> (нажмите для копирования)", 
-            parse_mode="HTML"
-        )
-        return
-        
-    promo_code = parts[1].strip().upper()
+@dp.message(PromoStates.waiting_for_promo, F.text)
+async def handle_promo_text_activation(message: types.Message, state: FSMContext):
+    # Очищаем пробелы и переводим в верхний регистр весь текст сообщения
+    promo_code = message.text.strip().upper()
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
+    
+    # Сразу закрываем состояние, чтобы последующие сообщения не летели сюда же
+    await state.clear()
     
     # 1. Проверяем и гасим промокод в локальной SQLite
     db_result = activate_promo_in_db(promo_code, user_id)
@@ -1581,39 +1583,49 @@ async def handle_promo_activation(message: types.Message): # Используе�
         
     # Если проверка успешна, db_result вернет количество дней (int)
     days_to_add = db_result
-    status_msg = await message.answer(f"🔄 Промокод принят!\n Начисляю {days_to_add} дней подписки и обновляю сервера...")
+    
+    if not isinstance(days_to_add, int) or days_to_add <= 0:
+        logging.error(f"⚠️ Функция activate_promo_in_db вернула некорректное значение: {db_result}")
+        await message.answer("❌ Произошла внутренняя ошибка при проверке промокода. Обратитесь к администратору.")
+        return
+
+    status_msg = await message.answer(f"🔄 Промокод принят!\nНачисляю {days_to_add} дней подписки и обновляю сервера...")
     
     try:
         # 2. Запуск комплексного обновления (Панели + Локальная БД + Сайт)
         await apply_subscription_extension(user_id, username, days_to_add)
         
-        # Получаем обновленную дату для красивого вывода пользователю
+        # Получаем обновленную дату для вывода пользователю
         user_data = get_user_from_db(user_id)
         
-        # ИСПРАВЛЕНО: Используем правильный индекс [4] и приводим к числу int
         try:
+            # Исправленный индекс [4] для expiry_time
             updated_expiry = int(user_data[4]) if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
         except (ValueError, TypeError):
             updated_expiry = 0
             
-        expiry_date = datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
+        if updated_expiry > 0:
+            expiry_date = dt.datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
+        else:
+            expiry_date = "Не определена"
 
-
-        
         await status_msg.edit_text(
-            f"✅ <b>Промокод успешно активирован!</b>\n\n"
+            f"🎉 <b>Промокод успешно активирован!</b>\n\n"
             f"➕ Начислено: <b>{days_to_add} дней</b>\n"
             f"📅 Новая дата окончания: <b>{expiry_date}</b>\n\n"
             f"<i>💡 Конфигурации на вашем устройстве обновятся автоматически, переподключать заново ничего не нужно!</i>",
             parse_mode="HTML"
         )
     except Exception as e:
-        logging.error(f"Ошибка выполнения apply_subscription_extension для {user_id}: {e}", exc_info=True)
-        await status_msg.edit_text(
-            "⚠️ <b>Промокод зафиксирован, но произошел сбой обновления серверов.</b>\n"
-            "Пожалуйста, напишите администратору, вам начислят дни вручную.", 
-            parse_mode="HTML"
-        )
+        logging.error(f"❌ Ошибка выполнения apply_subscription_extension для {user_id}: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text(
+                "⚠️ <b>Промокод зафиксирован, но произошел сбой обновления серверов.</b>\n"
+                "Пожалуйста, напишите администратору, вам начислят дни вручную.", 
+                parse_mode="HTML"
+            )
+        except Exception as edit_err:
+            logging.error(f"Не удалось изменить сообщение статуса: {edit_err}")
 
 
 
@@ -2365,17 +2377,18 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
 
 @dp.callback_query(F.data == "enter_promo")
-async def enter_promo_callback(callback: types.CallbackQuery):
+async def enter_promo_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    
+    # Включаем состояние ожидания промокода
+    await state.set_state(PromoStates.waiting_for_promo)
     
     text = (
         "🎟 <b>Активация промокода Sonata VPN</b>\n\n"
-        "Чтобы активировать промокод, отправьте его в чат с командой <code>/promo</code>.\n\n"
-        "<b>Пример ввода:</b>\n"
-        "<code>/promo ВАШ_ПРОМОКОД</code> (нажмите, чтобы скопировать)"
+        "Отправьте ваш промокод в ответ на это сообщение (просто текстом в чат, без команд)."
     )
     
-    # Кнопка возврата в главное меню
+    # Кнопка возврата в главное меню (использует стандартный 'back')
     back_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
@@ -2384,6 +2397,8 @@ async def enter_promo_callback(callback: types.CallbackQuery):
         await callback.message.edit_caption(caption=text, reply_markup=back_kb, parse_mode="HTML")
     else:
         await callback.message.edit_text(text=text, reply_markup=back_kb, parse_mode="HTML")
+
+
 
 
 
@@ -3016,8 +3031,12 @@ async def reset_device_preferences(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data == "back")
-async def back_to_main_menu(callback: types.CallbackQuery):
+async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext = None):
     await callback.answer()
+    
+    # ИСПРАВЛЕНО: Сбрасываем FSM состояние, если пользователь пришел из ввода промокода
+    if state:
+        await state.clear()
     
     text = (
         "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
@@ -3041,12 +3060,13 @@ async def back_to_main_menu(callback: types.CallbackQuery):
         )
     except Exception as e:
         logging.error(f"Ошибка отправки видео при возврате в меню: {e}")
-        # Запасной вариант: если видео упадет (как из-за кривого file_id), отправляем хотя бы текст с кнопками
+        # Запасной вариант: если видео упадет, отправляем хотя бы текст с кнопками
         await callback.message.answer(
             text=text,
             reply_markup=main_kb(),
             parse_mode="HTML"
         )
+
 
 
 
@@ -3334,7 +3354,7 @@ async def process_successful_payment(message: types.Message):
             
             # Получаем обновленную дату для вывода пользователю
             user_data = get_user_from_db(user_id)
-            updated_expiry = user_data[3] if (user_data and len(user_data) > 3) else 0
+            updated_expiry = user_data[4] if (user_data and len(user_data) > 4) else 0
             expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
             
             await message.answer(
