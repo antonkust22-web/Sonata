@@ -472,8 +472,8 @@ def activate_promo_in_db(code: str, user_id: int) -> str | int:
         conn.close()
         return "ALREADY_USED" # Код исчерпал лимиты полностью
 
-    # 4. Если всё отлично, фиксируем активацию
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
     try:
         # Логируем, что этот юзер ввел этот код
         cursor.execute(
@@ -488,7 +488,6 @@ def activate_promo_in_db(code: str, user_id: int) -> str | int:
         conn.commit()
         return days
     except sqlite3.IntegrityError:
-        conn.close()
         return "YOU_ALREADY_USED"
     finally:
         conn.close()
