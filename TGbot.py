@@ -1122,6 +1122,28 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False):
 
 
 
+async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, expiry_time: int):
+    """Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App"""
+    url = "https://sonatavpn.ru/miniapp" 
+    
+    data = {
+        "bot_sync": "1",
+        "secret": "SuperSecretVpnKey123", 
+        "user_id": str(user_id),
+        "username": username,
+        "vpn_config": vpn_config,
+        "expiry_time": str(expiry_time)
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data, timeout=5) as response:
+                res_text = await response.text()
+                logging.info(f"🔄 [MINIAPP SYNC] Юзер {user_id}: {res_text}")
+    except Exception as e:
+        logging.error(f"❌ [MINIAPP SYNC ERROR] Не удалось синхронизировать {user_id}: {e}")
+
+
 
 
 
@@ -2246,10 +2268,31 @@ def back_kb():
 # Секунды в 3 днях
 THREE_DAYS_SECONDS = 3 * 24 * 3600
 
+from aiogram.types import WebAppInfo, MenuButtonWebApp
+from aiogram.filters import CommandObject
+import logging
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
+    uid = message.from_user.id
+
     # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
+
+    # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
+    try:
+        await bot.set_chat_menu_button(
+            chat_id=message.chat.id,
+            menu_button=MenuButtonWebApp(
+                text="Open",  # Текст на синей кнопке
+                web_app=WebAppInfo(url="https://sonatavpn.ru/miniapp")  # Чистая ЧПУ ссылка
+            )
+        )
+    except Exception as e:
+        logging.error(f"Ошибка установки Menu Button для пользователя {uid}: {e}")
+
+    # === ДАЛЬШЕ ИДЕТ ВАШ ОСТАЛЬНОЙ КОД (Проверка рефералов, регистрация в БД, удаление/редактирование loading_msg) ===
+
 
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
