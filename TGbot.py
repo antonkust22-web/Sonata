@@ -887,7 +887,7 @@ SERVERS = [
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "www.sony.com",                                   
+        "sni": "www.cloudflare.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     },
@@ -999,7 +999,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
-                    current_fp = "chrome"
+                    current_fp = "qq"
                 
                 # Полное посимвольное соответствие вашей структуре, но без лишнего слэша перед ремаркой
                 config_link = (
@@ -3344,7 +3344,7 @@ async def process_successful_payment(message: types.Message):
             # Получаем обновленную дату для вывода пользователю
             user_data = get_user_from_db(user_id)
             updated_expiry = user_data[4] if (user_data and len(user_data) > 4) else 0
-            expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
+            expiry_date = dt.datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
             
             await message.answer(
                 f"🎉 <b>Оплата прошла успешно!</b>\n\n"
