@@ -2285,7 +2285,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА С TELEGRAM ID ===
     try:
         # Формируем красивую ЧПУ ссылку, подставляя реальный Telegram ID пользователя
-        personal_miniapp_url = f"https://sonatavpn.ru/{user_id}"
+        personal_miniapp_url = f"https://sonatavpn.ru/{uid}"
         
         await bot.set_chat_menu_button(
             chat_id=message.chat.id,
