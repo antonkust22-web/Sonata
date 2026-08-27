@@ -47,6 +47,9 @@ from aiogram import types
 from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent
 
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import WebAppInfo, InlineKeyboardButton
+
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
@@ -2279,17 +2282,22 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
-    # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
+    # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА С TELEGRAM ID ===
     try:
+        # Формируем красивую ЧПУ ссылку, подставляя реальный Telegram ID пользователя
+        personal_miniapp_url = f"https://sonatavpn.ru/{user_id}"
+        
         await bot.set_chat_menu_button(
             chat_id=message.chat.id,
             menu_button=MenuButtonWebApp(
-                text="Open",  # Текст на синей кнопке
-                web_app=WebAppInfo(url="https://sonatavpn.ru/miniapp")  # Чистая ЧПУ ссылка
+                text="Open",  # Текст на синей кнопке в углу экрана
+                web_app=WebAppInfo(url=personal_miniapp_url)  # Персональная динамическая ссылка
             )
         )
+        logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
     except Exception as e:
-        logging.error(f"Ошибка установки Menu Button для пользователя {uid}: {e}")
+        logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
+
 
     # === ДАЛЬШЕ ИДЕТ ВАШ ОСТАЛЬНОЙ КОД (Проверка рефералов, регистрация в БД, удаление/редактирование loading_msg) ===
 
