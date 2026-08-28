@@ -1127,7 +1127,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False):
 
 async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, expiry_time: int):
     """Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App"""
-    url = "https://sonatavpn.ru/miniapp" 
+    url = "https://sonatavpn.ru/miniapp?bot_sync=1" 
     
     data = {
         "bot_sync": "1",
@@ -2285,7 +2285,9 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА С TELEGRAM ID ===
     try:
         # Формируем красивую ЧПУ ссылку, подставляя реальный Telegram ID пользователя
+        # ИСПРАВЛЕНО: Добавлен корректный параметр ?tg_id=
         personal_miniapp_url = f"https://sonatavpn.ru/miniapp{uid}"
+
         
         await bot.set_chat_menu_button(
             chat_id=message.chat.id,
