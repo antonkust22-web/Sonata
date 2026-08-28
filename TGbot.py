@@ -2286,7 +2286,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА С TELEGRAM ID ===
     try:
         # ИСПРАВЛЕНО: Теперь GET-параметр передается абсолютно правильно через знак вопроса
-        personal_miniapp_url = f"https://sonatavpn.ru?tg_id={uid}"
+        personal_miniapp_url = f"https://sonatavpn.ru/miniapp?tg_id={uid}"
         
         await bot.set_chat_menu_button(
             chat_id=message.chat.id,
