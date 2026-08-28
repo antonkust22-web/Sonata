@@ -1134,7 +1134,7 @@ async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, exp
     Данные сохраняются в локальный текстовый JSON-кэш сайта.
     """
     # 🔥 ИСПРАВЛЕНО: Строка адреса точно в вашем формате с параметром ?bot_sync=1
-    url = "https://sonatavpn.ru/miniapp?bot_sync=1" 
+    url = "https://sonatavpn.ru/miniapp/index.php?bot_sync=1" 
     
     # Собираем все POST-данные для передачи на PHP-сервер
     data = {
