@@ -1125,26 +1125,37 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False):
 
 
 
-async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, expiry_time: int):
-    """Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App"""
+import aiohttp
+import logging
+
+async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, expiry_time: int, github_raw_url: str = ""):
+    """
+    Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App.
+    Данные сохраняются в локальный текстовый JSON-кэш сайта.
+    """
+    # 🔥 ИСПРАВЛЕНО: Строка адреса точно в вашем формате с параметром ?bot_sync=1
     url = "https://sonatavpn.ru/miniapp?bot_sync=1" 
     
+    # Собираем все POST-данные для передачи на PHP-сервер
     data = {
-        "bot_sync": "1",
         "secret": "SuperSecretVpnKey123", 
         "user_id": str(user_id),
-        "username": username,
-        "vpn_config": vpn_config,
-        "expiry_time": str(expiry_time)
+        "username": username if username else "Пользователь",
+        "vpn_config": vpn_config if vpn_config else "",
+        "expiry_time": str(expiry_time),
+        "github_raw_url": str(github_raw_url) # Аргумент успешно добавлен в тело запроса
     }
     
     try:
         async with aiohttp.ClientSession() as session:
+            # Делаем чистый POST-запрос с заполненным data-словарем
             async with session.post(url, data=data, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"🔄 [MINIAPP SYNC] Юзер {user_id}: {res_text}")
+                logging.info(f"🔄 [MINIAPP SYNC] Ответ от сайта для юзера {user_id}: {res_text}")
+                return res_text
     except Exception as e:
         logging.error(f"❌ [MINIAPP SYNC ERROR] Не удалось синхронизировать {user_id}: {e}")
+        return None
 
 
 
