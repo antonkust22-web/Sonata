@@ -2274,6 +2274,7 @@ THREE_DAYS_SECONDS = 3 * 24 * 3600
 from aiogram.types import WebAppInfo, MenuButtonWebApp
 from aiogram.filters import CommandObject
 import logging
+import time
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
@@ -2284,10 +2285,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА С TELEGRAM ID ===
     try:
-        # Формируем красивую ЧПУ ссылку, подставляя реальный Telegram ID пользователя
-        # ИСПРАВЛЕНО: Добавлен корректный параметр ?tg_id=
-        personal_miniapp_url = f"https://sonatavpn.ru/miniapp{uid}"
-
+        # ИСПРАВЛЕНО: Теперь GET-параметр передается абсолютно правильно через знак вопроса
+        personal_miniapp_url = f"https://sonatavpn.ru?tg_id={uid}"
         
         await bot.set_chat_menu_button(
             chat_id=message.chat.id,
@@ -2299,6 +2298,36 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
     except Exception as e:
         logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
+
+        # === КОРРЕКТНЫЙ БЛОК СИНХРОНИЗАЦИИ (ВСТАВИТЬ СЮДА) ===
+        try:
+            # 🔍 ПОЛУЧЕНИЕ ДАННЫХ ИЗ ВАШЕЙ БД:
+            user_data = await callback.from_user.id 
+            
+            if user_data:
+                # Берем имя и проверяем наличие полей в бд (подставьте ваши ключи/атрибуты, если они отличаются)
+                username_str = message.from_user.username or message.from_user.first_name
+                vpn_config_str = user_data.get('vpn_config', '') if isinstance(user_data, dict) else getattr(user_data, 'vpn_config', '')
+                expiry_time_int = int(user_data.get('expiry_time', 0)) if isinstance(user_data, dict) else int(getattr(user_data, 'expiry_time', 0))
+                github_raw_url_str = user_data.get('github_raw_url', '') if isinstance(user_data, dict) else getattr(user_data, 'github_raw_url', '')
+
+                # Отправляем данные на PHP-сайт в текстовый кэш
+                await sync_user_to_miniapp(
+                    user_id=uid,
+                    username=username_str,
+                    vpn_config=vpn_config_str,
+                    expiry_time=expiry_time_int,
+                    github_raw_url=github_raw_url_str
+                )
+                logging.info(f"🔄 [AUTO SYNC] Данные профиля {uid} успешно отправлены на сайт.")
+            else:
+                logging.warning(f"⚠️ [AUTO SYNC] Не удалось выполнить синхронизацию: юзер {uid} не найден в БД бота.")
+        except Exception as sync_err:
+            logging.error(f"❌ [AUTO SYNC ERROR] Сбой при выгрузке данных в Mini App: {sync_err}")
+        # === КОНЕЦ БЛОКА СИНХРОНИЗАЦИИ (Дальше идет ваш остальной код команды) ===
+
+
+
 
 
     # === ДАЛЬШЕ ИДЕТ ВАШ ОСТАЛЬНОЙ КОД (Проверка рефералов, регистрация в БД, удаление/редактирование loading_msg) ===
