@@ -3121,123 +3121,88 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
 import aiohttp
 import base64
 import logging
+import asyncio
 
-# ------------------ ВСПOМОГАТЕЛЬНАЯ ФУНКЦИЯ ВАЛИДАЦИИ И ОТПРАВКИ НА ТВ ------------------
+# ------------------ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ВАЛИДАЦИИ И ОТПРАВКИ НА ТВ ------------------
 async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_name: str):
     """
-    Фоновая валидация, логирование и отправка ссылки импорта на шлюз Happ.su
+    Фоновая валидация кода ТВ, кодирование персональной ссылки подписки sonatavpn.ru в Base64
+    и отправка на API-шлюз Happ.su.
     """
-    # Очищаем код от лишних пробелов
-    tv_uid = message.text.strip().replace(" ", "")
+    # Очищаем код от пробелов и приводим к верхнему регистру
+    tv_uid = message.text.strip().replace(" ", "").upper()
     
-    # 1. Валидация входных данных
+    # 1. Валидация кода (буквы и цифры, длина от 4 до 7 символов)
     if not tv_uid.isalnum() or len(tv_uid) < 4 or len(tv_uid) > 7:
-        logging.warning(f"[Happ TV] Пользователь {message.from_user.id} ввел невалидный код: '{message.text}'")
+        logging.warning(f"[Happ TV] Невалидный код от {message.from_user.id}: '{message.text}'")
         await message.answer(
             f"⚠️ <b>Неверный формат кода для {platform_name}!</b>\n\n"
-            f"Код должен состоять только из букв и цифр, содержать от 4 до 7 символов (обычно 5).\n"
+            f"Код сопряжения должен состоять только из латинских букв и цифр (обычно 5 символов).\n"
             f"Пожалуйста, проверьте код на экране ТВ и отправьте заново:",
             parse_mode="HTML"
         )
         return False
 
-    # Формируем целевую ссылку, содержащую base64 с vless ключами
-    import_url = f"https://sonatavpn.ru/{sub_id}"
+    # Формируем точно такую же ссылку, которую генерирует ваш PHP-скрипт
+    clean_token = sub_id.strip()
+    clean_sub_url = f"https://sonatavpn.ru/{clean_token}"
     
-    # Кодируем саму ссылку в Base64 (требование API Happ для удаленного импорта по URL)
-    encoded_url_payload = base64.b64encode(import_url.encode('utf-8')).decode('utf-8')
+    # Кодируем ССЫЛКУ подписки в Base64 (требование Happ API для удаленного Web Import)
+    encoded_url_payload = base64.b64encode(clean_sub_url.encode('utf-8')).decode('utf-8')
     
-    # Конечный эндпоинт Happ API
-    happ_api_endpoint = f"https://happ.su/{tv_uid}"
+    # Официальный шлюз API Happ.su для приема кодов с телевизора
+    happ_api_endpoint = f"https://tv.happ.su/{tv_uid}"
     payload_json = {"data": encoded_url_payload}
 
-    logging.info(f"[Happ TV] Попытка отправки подписки для {platform_name}. User: {message.from_user.id}, UID: {tv_uid}, URL: {import_url}")
+    logging.info(f"[Happ TV] Попытка отправки ссылки на {platform_name}. User: {message.from_user.id}, UID: {tv_uid}, Ссылка: {clean_sub_url}")
 
-    # Отправляем предварительный статус в чат
-    status_msg = await message.answer(f"⏳ <i>Передаем настройки на ваш {platform_name}...</i>", parse_mode="HTML")
+    # Отправляем предварительный статус пользователю
+    status_msg = await message.answer(f"⏳ <i>Фоном связываем подписку с вашим {platform_name}...</i>", parse_mode="HTML")
 
-    # 2. HTTP-запрос к бэкенду Happ с логированием результата
+    # 2. HTTP POST-запрос к API
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(happ_api_endpoint, json=payload_json, timeout=12) as response:
+                response_text = await response.text()
                 
-                # Ссылка успешно доставлена на шлюз
+                # Если Happ успешно сохранил ссылку в буфер для этого ТВ
                 if response.status == 200:
-                    logging.info(f"[Happ TV] СЛУЖБА ДОСТАВЛЕНА УСПЕШНО. Платформа: {platform_name}, UID: {tv_uid}, Пользователь: {message.from_user.id}")
+                    logging.info(f"[Happ TV] ССЫЛКА ДОСТАВЛЕНА УСПЕШНО. Платформа: {platform_name}, UID: {tv_uid}, Пользователь: {message.from_user.id}, Ответ: {response_text}")
                     
                     success_text = (
-                        f"✅ <b>Успешно подключено к {platform_name}!</b>\n\n"
-                        f"Ссылка на подписку Sonata VPN фоном передана по коду <code>{tv_uid}</code>.\n"
-                        f"В течение нескольких секунд приложение на телевизоре обновит настройки автоматически."
+                        f"✅ <b>Успешно отправлено на {platform_name}!</b>\n\n"
+                        f"Ваша персональная ссылка подписки <code>{clean_sub_url}</code> успешно передана на телевизор по коду <code>{tv_uid}</code>.\n"
+                        f"Приложение Happ на ТВ должно автоматически подтянуть настройки вашей локации."
                     )
                     await status_msg.edit_text(text=success_text, parse_mode="HTML")
                     return True
                 
-                # Сервер вернул ошибку (код не существует или устарел)
+                # Если сервер вернул ошибку
                 else:
-                    response_error = await response.text()
-                    logging.error(f"[Happ TV] Ошибка сервера Happ ({response.status}) для {platform_name}. Ответ: {response_error}. UID: {tv_uid}")
+                    logging.error(f"[Happ TV] Ошибка Happ API ({response.status}) для {platform_name}. UID: {tv_uid}. Ответ: {response_text[:300]}")
                     
                     await status_msg.edit_text(
-                        f"❌ <b>Ошибка сопряжения с {platform_name}!</b>\n\n"
-                        f"Сервер Happ не принял этот код. Возможные причины:\n"
-                        f"1. Код на экране телевизора устарел или обновился.\n"
-                        f"2. Приложение Happ на ТВ потеряло сеть.\n\n"
-                        f"Пожалуйста, обновите страницу Web Import на ТВ и введите новый код.",
+                        f"❌ <b>Ошибка импорта на {platform_name}!</b>\n\n"
+                        f"Шлюз вернул статус {response.status}. Вероятнее всего, код <code>{tv_uid}</code> устарел или введен с ошибкой.\n\n"
+                        f"Пожалуйста, откройте заново меню <b>Web Import</b> на вашем телевизоре и пришлите новый актуальный код.",
                         parse_mode="HTML"
                     )
                     return False
                     
     except aiohttp.ClientConnectorError:
-        logging.error(f"[Happ TV] Ошибка подключения к check.happ.su для {platform_name}. Не удалось установить соединение.")
-        await status_msg.edit_text("⚠️ Ошибка сети: Не удалось связаться с сервером Happ. Попробуйте еще раз позже.")
+        logging.error(f"[Happ TV] Ошибка подключения к check.happ.su для {platform_name}.")
+        await status_msg.edit_text("⚠️ Ошибка сети: Не удалось установить соединение с сервером импорта Happ. Попробуйте позже.")
         return False
-        
     except asyncio.TimeoutError:
-        logging.error(f"[Happ TV] Таймаут операции при отправке кода {tv_uid} для {platform_name}.")
-        await status_msg.edit_text("⚠️ Время ожидания запроса истекло. Пожалуйста, попробуйте отправить код повторно.")
+        logging.error(f"[Happ TV] Таймаут операции при отправке на ТВ {tv_uid}.")
+        await status_msg.edit_text("⚠️ Время ожидания запроса истекло. Пожалуйста, попробуйте отправить код еще раз.")
         return False
-        
     except Exception as e:
-        logging.error(f"[Happ TV] Критическая ошибка API на {platform_name}: {e}", exc_info=True)
-        await status_msg.edit_text("⚠️ Произошла непредвиденная внутренняя ошибка при синхронизации с ТВ.")
+        logging.error(f"[Happ TV] Критическая ошибка API: {e}", exc_info=True)
+        await status_msg.edit_text("⚠️ Произошла непредвиденная ошибка при фоновой отправке ссылки на ТВ.")
         return False
 
 
-# ------------------ ХЕНДЛЕР APPLE TV ------------------
-@dp.message(AppleTVState.waiting_for_code)
-async def handle_apple_tv_code(message: types.Message, state: FSMContext):
-    state_data = await state.get_data()
-    sub_id = state_data.get("sub_id")
-    
-    if not sub_id:
-        logging.error(f"[Happ TV] Утерян sub_id в FSM контексте Apple TV для пользователя {message.from_user.id}")
-        await message.answer("⚠️ Ошибка сессии. Пожалуйста, выберите устройство заново через меню.")
-        await state.clear()
-        return
-
-    # Запускаем валидацию и отправку. Сбрасываем стейт только если данные валидны, чтобы дать шанс исправить опечатку.
-    success = await send_payload_to_happ_tv(message, sub_id, "Apple TV")
-    if success:
-        await state.clear()
-
-
-# ------------------ ХЕНДЛЕР ANDROID TV ------------------
-@dp.message(AndroidTVState.waiting_for_code)
-async def handle_android_tv_code(message: types.Message, state: FSMContext):
-    state_data = await state.get_data()
-    sub_id = state_data.get("sub_id")
-    
-    if not sub_id:
-        logging.error(f"[Happ TV] Утерян sub_id в FSM контексте Android TV для пользователя {message.from_user.id}")
-        await message.answer("⚠️ Ошибка сессии. Пожалуйста, выберите устройство заново через меню.")
-        await state.clear()
-        return
-
-    # Запускаем валидацию и отправку
-    success = await send_payload_to_happ_tv(message, sub_id, "Android TV")
-    if success:
-        await state.clear()
 
 
 
