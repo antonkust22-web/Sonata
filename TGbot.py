@@ -109,7 +109,7 @@ def load_startup_video_id() -> str:
         return "BAACAgIAAxkBAAIL9mp3hKvAcX29t0ufhL-Zddqeyps5AAIjqgACxWG4Sx4JI1ekkuC_PQQ"
     with open(DB_FILE, "r") as f:
         data = json.load(f)
-        return data.get("video_main", "BAACAgIAAxkBAAIL9mp3hKvAcX29t0ufhL-Zddqeyps5AAIjqgACxWG4Sx4JI1ekkuC_PQQ")
+        return data.get("video_main", "BAACAgIAAxkBAAPvaprQWoLjFs_GP9VXwQ2ytZuyKY8AAgqqAAIv-thIgn2mMJbKbEU9BA")
 
 # ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ — теперь это ОБЫЧНАЯ строка str, Pydantic её примет везде
 VIDEO_MAIN = load_startup_video_id()
@@ -901,7 +901,7 @@ SERVERS = [
         "panel_user": "Asad",  
         "panel_password": "542013",  
         "inbound_id": 1,  
-        "my_ip": "158.160.233.149",  # ПРЯМО СЮДА СТАВИМ БЕЛЫЙ IP ЯНДЕКСА!
+        "my_ip": "217.171.146.33",  # 158.160.233.149 айпи второго серва
         "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  
         "sid": "29a872b6",  
         "sni": "yandex.ru",  
@@ -1133,7 +1133,7 @@ async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, exp
     Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App.
     Данные сохраняются в локальный текстовый JSON-кэш сайта.
     """
-    # 🔥 ИСПРАВЛЕНО: Строка адреса точно в вашем формате с параметром ?bot_sync=1
+    # 🔥 ИСПРАВЛЕНО: Строка адреса точно в формате
     url = "https://sonatavpn.ru/miniapp/index.php?bot_sync=1" 
     
     # Собираем все POST-данные для передачи на PHP-сервер
@@ -1143,7 +1143,7 @@ async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, exp
         "username": username if username else "Пользователь",
         "vpn_config": vpn_config if vpn_config else "",
         "expiry_time": str(expiry_time),
-        "github_raw_url": str(github_raw_url) # Аргумент успешно добавлен в тело запроса
+        "github_raw_url": str(github_raw_url) # Аргумент добавлен в тело запроса
     }
     
     try:
@@ -2845,6 +2845,7 @@ async def connect(callback: types.CallbackQuery):
             logging.warning(f"Не удалось удалить старое сообщение: {e}")
 
         # Отправляем меню выбора операционной системы
+        # Отправляем меню выбора операционной системы
         kb_os = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🍏 iPhone / iPad", callback_data=f"set_os_ios_{sub_id}"),
@@ -2854,8 +2855,18 @@ async def connect(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="🪟 Windows", callback_data=f"set_os_win_{sub_id}"),
                 InlineKeyboardButton(text="💻 macOS", callback_data=f"set_os_mac_{sub_id}")
             ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
+            [
+                InlineKeyboardButton(text="🐧 Linux", callback_data=f"set_os_lin_{sub_id}")
+            ],
+            [
+                InlineKeyboardButton(text="🍏📺 Apple TV", callback_data=f"set_os_atv_{sub_id}"),
+                InlineKeyboardButton(text="🤖📺 Android TV", callback_data=f"set_os_antv_{sub_id}")
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back")
+            ]
         ])
+
 
         text_os = (
             "💻 <b>Выберите ваше устройство</b>\n\n"
@@ -2892,11 +2903,15 @@ async def process_os_choice(callback: types.CallbackQuery):
         
         # ТЕПЕРЬ HAPP ДОСТУПЕН НА ВСЕХ ПЛАТФОРМАХ!
         apps_by_os = {
-            "ios": [("Happ 🍏", "happ"), ("Streisand", "streisand"), ("Karing", "karing")],
+            "ios": [("Happ 🍏", "happ"), ("Streisand", "streisand"), ("Karing", "karing"), ("INCY", "incy")],
             "and": [("Happ 🤖", "happ"), ("v2rayNG", "v2rayng"), ("INCY", "incy"), ("Karing", "karing")],
-            "win": [("Happ 🪟", "happ"), ("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing")],
-            "mac": [("Happ 💻", "happ"), ("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs")]
+            "win": [("Happ 🪟", "happ"), ("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing"), ("INCY", "incy")],
+            "mac": [("Happ 💻", "happ"), ("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs"), ("Karing", "karing"), ("INCY", "incy")],
+            "lin": [("Happ 🐧", "happ"), ("Nekobox", "nekobox"), ("Sing-Box", "singbox"), ("v2rayN", "v2rayn"), ("Karing", "karing")],
+            "atv": [("Happ 📺 (По умолчанию)", "happ")],
+            "antv": [("Happ 🤖📺 (По умолчанию)", "happ")]
         }
+
 
         
         available_apps = apps_by_os.get(selected_os, [("Happ", "happ")])
@@ -2934,15 +2949,31 @@ async def process_os_choice(callback: types.CallbackQuery):
 import datetime as dt
 
 
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+# Сначала объявляем состояния для ТВ, если они еще не объявлены выше в вашем коде
+class AppleTVState(StatesGroup):
+    waiting_for_code = State()
+
+class AndroidTVState(StatesGroup):
+    waiting_for_code = State()
+
+
 @dp.callback_query(F.data.startswith("save_"))
-async def save_user_preferences(callback: types.CallbackQuery):
+async def save_user_preferences(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     
-    # ПРАВИЛЬНЫЙ РАЗБОР: принимаем 4 элемента (save, os, app, sub_id)
-    # Это исключает ошибку падения при разборе строки callback_data
+    # ПРАВИЛЬНЫЙ РАЗБОР: принимаем элементы (save, os, app, sub_id)
     data_parts = callback.data.split("_")
     selected_os = data_parts[1]
     selected_app = data_parts[2]
+    
+    # Извлекаем sub_id, если он есть в callback_data, иначе генерируем по user_id
+    if len(data_parts) > 3:
+        sub_id = data_parts[3]
+    else:
+        sub_id = "e" + hashlib.md5(str(callback.from_user.id).encode()).hexdigest()[:15]
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""
@@ -2952,8 +2983,51 @@ async def save_user_preferences(callback: types.CallbackQuery):
 
     logging.info(f"Пользователь {user_id} сохранил выбор: ОС={selected_os}, Приложение={selected_app}")
     
+    # Кнопка отмены для выхода из режима ожидания ввода кода ТВ
+    kb_cancel = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="connect")]
+    ])
+
+    # 🍏 ВЕТКА APPLE TV
+    if selected_os == "atv":
+        await state.update_data(sub_id=sub_id)
+        await state.set_state(AppleTVState.waiting_for_code)
+        
+        text_atv = (
+            "🍏📺 <b>Настройка Happ на Apple TV</b>\n\n"
+            "1. Откройте приложение <b>Happ</b> на вашем Apple TV.\n"
+            "2. Перейдите в настройки и выберите <b>Web Import</b>.\n"
+            "3. Экран телевизора покажет <b>5-значный код</b>.\n\n"
+            "✍️ <b>Просто напишите этот код сообщением в чат:</b>"
+        )
+        try:
+            await callback.message.edit_text(text=text_atv, reply_markup=kb_cancel, parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(text=text_atv, reply_markup=kb_cancel, parse_mode="HTML")
+        return  # Завершаем выполнение хендлера фоном, ждем текст
+
+    # 🤖 ВЕТКА ANDROID TV
+    if selected_os == "antv":
+        await state.update_data(sub_id=sub_id)
+        await state.set_state(AndroidTVState.waiting_for_code)
+        
+        text_antv = (
+            "🤖📺 <b>Настройка Happ на Android TV</b>\n\n"
+            "1. Запустите <b>Happ</b> на вашем телевизоре или медиаплеере.\n"
+            "2. Нажмите на вкладку <b>Web Import</b> в меню приложения.\n"
+            "3. На ТВ сгенерируется <b>5-значный код сопряжения</b>.\n\n"
+            "✍️ <b>Просто напишите этот код сообщением в чат:</b>"
+        )
+        try:
+            await callback.message.edit_text(text=text_antv, reply_markup=kb_cancel, parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(text=text_antv, reply_markup=kb_cancel, parse_mode="HTML")
+        return  # Завершаем выполнение хендлера фоном, ждем текст
+
+    # Для всех остальных устройств (iOS, Android, Windows, macOS, Linux) вызываем стандартный финальный экран
     db_data = get_user_from_db(user_id)
     await process_final_screen(callback, user_id, username, db_data, selected_os, selected_app)
+
 
 
 # Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
@@ -3038,6 +3112,134 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
         pass
         
     await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
+
+
+
+
+
+import aiohttp
+import base64
+import logging
+
+# ------------------ ВСПOМОГАТЕЛЬНАЯ ФУНКЦИЯ ВАЛИДАЦИИ И ОТПРАВКИ НА ТВ ------------------
+async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_name: str):
+    """
+    Фоновая валидация, логирование и отправка ссылки импорта на шлюз Happ.su
+    """
+    # Очищаем код от лишних пробелов
+    tv_uid = message.text.strip().replace(" ", "")
+    
+    # 1. Валидация входных данных
+    if not tv_uid.isalnum() or len(tv_uid) < 4 or len(tv_uid) > 7:
+        logging.warning(f"[Happ TV] Пользователь {message.from_user.id} ввел невалидный код: '{message.text}'")
+        await message.answer(
+            f"⚠️ <b>Неверный формат кода для {platform_name}!</b>\n\n"
+            f"Код должен состоять только из букв и цифр, содержать от 4 до 7 символов (обычно 5).\n"
+            f"Пожалуйста, проверьте код на экране ТВ и отправьте заново:",
+            parse_mode="HTML"
+        )
+        return False
+
+    # Формируем целевую ссылку, содержащую base64 с vless ключами
+    import_url = f"https://sonatavpn.ru/{sub_id}"
+    
+    # Кодируем саму ссылку в Base64 (требование API Happ для удаленного импорта по URL)
+    encoded_url_payload = base64.b64encode(import_url.encode('utf-8')).decode('utf-8')
+    
+    # Конечный эндпоинт Happ API
+    happ_api_endpoint = f"https://happ.su/{tv_uid}"
+    payload_json = {"data": encoded_url_payload}
+
+    logging.info(f"[Happ TV] Попытка отправки подписки для {platform_name}. User: {message.from_user.id}, UID: {tv_uid}, URL: {import_url}")
+
+    # Отправляем предварительный статус в чат
+    status_msg = await message.answer(f"⏳ <i>Передаем настройки на ваш {platform_name}...</i>", parse_mode="HTML")
+
+    # 2. HTTP-запрос к бэкенду Happ с логированием результата
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(happ_api_endpoint, json=payload_json, timeout=12) as response:
+                
+                # Ссылка успешно доставлена на шлюз
+                if response.status == 200:
+                    logging.info(f"[Happ TV] СЛУЖБА ДОСТАВЛЕНА УСПЕШНО. Платформа: {platform_name}, UID: {tv_uid}, Пользователь: {message.from_user.id}")
+                    
+                    success_text = (
+                        f"✅ <b>Успешно подключено к {platform_name}!</b>\n\n"
+                        f"Ссылка на подписку Sonata VPN фоном передана по коду <code>{tv_uid}</code>.\n"
+                        f"В течение нескольких секунд приложение на телевизоре обновит настройки автоматически."
+                    )
+                    await status_msg.edit_text(text=success_text, parse_mode="HTML")
+                    return True
+                
+                # Сервер вернул ошибку (код не существует или устарел)
+                else:
+                    response_error = await response.text()
+                    logging.error(f"[Happ TV] Ошибка сервера Happ ({response.status}) для {platform_name}. Ответ: {response_error}. UID: {tv_uid}")
+                    
+                    await status_msg.edit_text(
+                        f"❌ <b>Ошибка сопряжения с {platform_name}!</b>\n\n"
+                        f"Сервер Happ не принял этот код. Возможные причины:\n"
+                        f"1. Код на экране телевизора устарел или обновился.\n"
+                        f"2. Приложение Happ на ТВ потеряло сеть.\n\n"
+                        f"Пожалуйста, обновите страницу Web Import на ТВ и введите новый код.",
+                        parse_mode="HTML"
+                    )
+                    return False
+                    
+    except aiohttp.ClientConnectorError:
+        logging.error(f"[Happ TV] Ошибка подключения к check.happ.su для {platform_name}. Не удалось установить соединение.")
+        await status_msg.edit_text("⚠️ Ошибка сети: Не удалось связаться с сервером Happ. Попробуйте еще раз позже.")
+        return False
+        
+    except asyncio.TimeoutError:
+        logging.error(f"[Happ TV] Таймаут операции при отправке кода {tv_uid} для {platform_name}.")
+        await status_msg.edit_text("⚠️ Время ожидания запроса истекло. Пожалуйста, попробуйте отправить код повторно.")
+        return False
+        
+    except Exception as e:
+        logging.error(f"[Happ TV] Критическая ошибка API на {platform_name}: {e}", exc_info=True)
+        await status_msg.edit_text("⚠️ Произошла непредвиденная внутренняя ошибка при синхронизации с ТВ.")
+        return False
+
+
+# ------------------ ХЕНДЛЕР APPLE TV ------------------
+@dp.message(AppleTVState.waiting_for_code)
+async def handle_apple_tv_code(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    sub_id = state_data.get("sub_id")
+    
+    if not sub_id:
+        logging.error(f"[Happ TV] Утерян sub_id в FSM контексте Apple TV для пользователя {message.from_user.id}")
+        await message.answer("⚠️ Ошибка сессии. Пожалуйста, выберите устройство заново через меню.")
+        await state.clear()
+        return
+
+    # Запускаем валидацию и отправку. Сбрасываем стейт только если данные валидны, чтобы дать шанс исправить опечатку.
+    success = await send_payload_to_happ_tv(message, sub_id, "Apple TV")
+    if success:
+        await state.clear()
+
+
+# ------------------ ХЕНДЛЕР ANDROID TV ------------------
+@dp.message(AndroidTVState.waiting_for_code)
+async def handle_android_tv_code(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    sub_id = state_data.get("sub_id")
+    
+    if not sub_id:
+        logging.error(f"[Happ TV] Утерян sub_id в FSM контексте Android TV для пользователя {message.from_user.id}")
+        await message.answer("⚠️ Ошибка сессии. Пожалуйста, выберите устройство заново через меню.")
+        await state.clear()
+        return
+
+    # Запускаем валидацию и отправку
+    success = await send_payload_to_happ_tv(message, sub_id, "Android TV")
+    if success:
+        await state.clear()
+
+
 
 
 
