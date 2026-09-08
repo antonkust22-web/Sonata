@@ -2351,15 +2351,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         # Если база заблокирована или путь неверный — мы гарантированно увидим причину в логах!
         logging.error(f"❌ [CRITICAL SYNC ERROR] Не удалось принудительно выгрузить данные юзера {uid}: {sync_err}")
 
-    # === ДАЛЬШЕ ИДЕТ ВАШ ОСТАЛЬНОЙ СУЩЕСТВУЮЩИЙ КОД КОМАНДЫ СТАРТ ===
-    # (Например, удаление loading_msg, отправка приветственного текста, инлайн-меню и т.д.)
-
-
-
-
-
-
-    # === ДАЛЬШЕ ИДЕТ ВАШ ОСТАЛЬНОЙ КОД (Проверка рефералов, регистрация в БД, удаление/редактирование loading_msg) ===
+Й КОД (Проверка рефералов, регистрация в БД, удаление/редактирование loading_msg) ===
 
 
     user_id = message.from_user.id
@@ -2466,7 +2458,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         video=VIDEO_MAIN,  
         caption=final_caption,
         reply_markup=main_kb(), 
-        parse_mode="HTML"
+        parse_mode="HTML",
+        message_effect_id="5159385139981059251"
     )
 
 
