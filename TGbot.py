@@ -2289,6 +2289,8 @@ from aiogram.filters import CommandObject
 import logging
 import sqlite3  # Используем стандартный драйвер, который гарантированно есть в Python
 
+CONFETTI_EFFECT_ID = "5159385139981059251"
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
     uid = message.from_user.id
@@ -2342,7 +2344,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     username=username_str,
                     vpn_config=vpn_config_str,
                     expiry_time=expiry_time_int,
-                    github_raw_url=github_raw_url_str
+                    github_raw_url=github_raw_url_str,
+                    message_effect_id=CONFETTI_EFFECT_ID
                 )
             else:
                 logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
@@ -2590,7 +2593,7 @@ async def cabinet(callback: types.CallbackQuery):
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
         else:
             text += "⚠️ Для получения доступа к высокоскоростному VPN Sonata, пожалуйста, приобретите подписку или активируйте промокод."
-            kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")])
+            kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)])
             kb.inline_keyboard.append([InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")])
             kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
     else:
@@ -3649,6 +3652,133 @@ async def process_successful_payment(message: types.Message):
     else:
         logging.error(f"Неизвестный payload платежа: {payload}")
         await message.answer("⚠️ Произошла ошибка: неизвестный тип подписки.")
+
+
+
+
+from aiogram.types import LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
+
+@dp.message(F.web_app_data)
+async def handle_miniapp_data(message: types.Message, bot: Bot):
+    # Получаем строку, которую отправил JavaScript (например, "pay_30_days" или "promo_X")
+    incoming_data = message.web_app_data.data
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+    
+    # -------------------------------------------------------------
+    # ЛОГИКА 1: ОБРАБОТКА ОПЛАТЫ ТАРИФОВ
+    # -------------------------------------------------------------
+    if incoming_data.startswith("pay_"):
+        # Перед генерацией инвойса очищаем/готовим конфиг (как в ваших хендлерах)
+        await get_vpn_config_clean(user_id, username)
+        
+        # Настраиваем параметры под выбранный тариф
+        if incoming_data == "pay_30_days":
+            title = "Подписка на VPN (30 дней)"
+            description = "Продление доступа к подписке VPN Sonata на 1 месяц."
+            payload = "vpn_30_days_subscription"
+            start_param = "vpn-sub-30-days"
+            base_price = 150
+            price_label = "1 месяц подписки"
+            
+        elif incoming_data == "pay_90_days":
+            title = "Подписка на VPN (3 месяца)"
+            description = "Продление доступа к подписке VPN Sonata на 3 месяца."
+            payload = "vpn_90_days_subscription"
+            start_param = "vpn-sub-90-days"
+            base_price = 350
+            price_label = "3 месяца подписки"
+            
+        elif incoming_data == "pay_150_days":
+            title = "Подписка на VPN (5 месяцев)"
+            description = "Продление доступа к подписке VPN Sonata на 5 месяцев."
+            payload = "vpn_150_days_subscription"
+            start_param = "vpn-sub-150-days"
+            base_price = 650
+            price_label = "5 месяцев подписки"
+        else:
+            return
+
+        # Считаем скидку по вашей функции
+        final_price_rub, is_promo = get_discount_price(base_price)
+        if is_promo:
+            title += " -30%"
+
+        # Создаем нативную ссылку инвойса ЮKassa
+        try:
+            invoice_link = await bot.create_invoice_link(
+                title=title,
+                description=description,
+                payload=payload,
+                provider_token=PROVIDER_TOKEN,
+                currency="RUB",
+                prices=[LabeledPrice(label=price_label, amount=final_price_rub * 100)],
+                start_parameter=start_param
+            )
+            
+            # Отправляем пользователю красивую кнопку оплаты прямо в чат бота!
+            await message.answer(
+                f"💰 Ссылка для оплаты тарифа **{title}** сформирована!\n"
+                f"Нажмите кнопку ниже, чтобы оплатить подписку через ЮKassa.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", url=invoice_link)]
+                ]),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await message.answer("⚠️ Ошибка при создании платежа. Попробуйте позже.")
+            logging.error(f"Ошибка MiniApp Invoice: {e}")
+
+    # -------------------------------------------------------------
+    # 🎁 ЛОГИКА 2: ОБРАБОТКА И АКТИВАЦИЯ ПРОМОКОДОВ
+    # -------------------------------------------------------------
+    elif incoming_data.startswith("promo_"):
+        # Извлекаем чистый код, убирая техническую приставку
+        promo_code = incoming_data.replace("promo_", "").strip().upper()
+        
+        # 1. Проверяем лимиты и логируем активацию промокода в БД купонов
+        result = activate_promo_in_db(promo_code, user_id)
+        
+        if result == "NOT_FOUND":
+            await message.answer(
+                f"❌ Промокод **{promo_code}** не существует.\n"
+                f"Проверьте правильность ввода символов и попробуйте снова."
+            )
+            
+        elif result == "YOU_ALREADY_USED":
+            await message.answer(
+                f"⚠️ Вы уже активировали промокод **{promo_code}** ранее.\n"
+                f"Повторная активация невозможна."
+            )
+            
+        elif result == "ALREADY_USED":
+            await message.answer(
+                f"🚫 К сожалению, промокод **{promo_code}** больше недействителен.\n"
+                f"Он исчерпал максимальное количество общих активаций."
+            )
+            
+        elif isinstance(result, int):
+            # 2. НАСТОЯЩЕЕ НАЧИСЛЕНИЕ СРОКА НА ВСЕ СЕРВЕРЫ И В ЛОКАЛЬНУЮ БАЗУ ДАННЫХ
+            # Вызываем вашу гибкую функцию продления. Она прибавит 'result' дней сверху подписки.
+            await renew_vpn_subscription_flexible(
+                user_id=user_id, 
+                days=result, 
+                username=username
+            )
+            
+            # Отправляем пользователю красивое уведомление об успехе
+            await message.answer(
+                f"🎉 **Успешная активация!**\n\n"
+                f"Промокод **{promo_code}** успешно применен.\n"
+                f"Вам начислено **{result} дн.** к вашей подписке.\n"
+                f"Все сервера обновлены, данные синхронизированы! 🚀",
+                parse_mode="Markdown"
+            )
+            
+        else:
+            await message.answer("⚠️ Произошла непредвиденная ошибка базы данных при обработке промокода.")
+
+
 
 
 
