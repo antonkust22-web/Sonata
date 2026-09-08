@@ -34,6 +34,7 @@ import io
 import sys
 import qrcode
 
+
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
@@ -46,6 +47,7 @@ from datetime import datetime, timedelta
 from aiogram import types
 from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent
+from aiogram.enums.button_style import ButtonStyle
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import WebAppInfo, InlineKeyboardButton
@@ -2262,9 +2264,9 @@ async def start_promo_command(message: types.Message, bot: Bot):
 # --- Клавиатуры ---
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📲 Подключиться", callback_data="connect")], 
-        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet")],
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
+        [InlineKeyboardButton(text="📲 Подключиться", callback_data="connect", style=ButtonStyle.PRIMARY)], 
+        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
     ])
@@ -2773,7 +2775,7 @@ async def connect(callback: types.CallbackQuery):
         channel_url = f"https://t.me/{channel_username}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
-            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
+            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect", style=ButtonStyle.SUCCESS)]
         ])
         text = (
             "🔒 <b>Требуется подписка на канал</b>\n\n"
@@ -2797,12 +2799,24 @@ async def connect(callback: types.CallbackQuery):
             await callback.message.delete()
         except Exception:
             pass
-        await callback.message.answer("⏳ Формирование и синхронизация...")
+        
+        # 1. Сначала отправляем сообщение-заглушку
+        loading_msg = await callback.message.answer("⏳ Формирование и синхронизация...")
+        
+        # 2. Запускаем тяжелый процесс генерации контента
         await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
+        
+        # 3. Как только процесс завершился и основное сообщение улетело — удаляем лоадер
+        try:
+            await loading_msg.delete()
+        except Exception as e:
+            logging.warning(f"Не удалось удалить сообщение статуса загрузки: {e}")
+            
         return
 
+
     # 3. Если зашел впервые, запускаем генерацию конфигов и выводим выбор ОС
-    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
+    loading_text = "⏳ Формирование и синхронизация..."
     try:
         if callback.message.caption:
             await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
@@ -3016,7 +3030,7 @@ async def save_user_preferences(callback: types.CallbackQuery, state: FSMContext
             "1. Запустите <b>Happ</b> на вашем телевизоре или медиаплеере.\n"
             "2. Нажмите на вкладку <b>Web Import</b> в меню приложения.\n"
             "3. На ТВ сгенерируется <b>5-значный код сопряжения</b>.\n\n"
-            "✍️ <b>Просто напишите этот код сообщением в чат:</b>"
+            "✍️ <b>Напишите этот код сообщением в чат:</b>"
         )
         try:
             await callback.message.edit_text(text=text_antv, reply_markup=kb_cancel, parse_mode="HTML")
@@ -3090,7 +3104,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
 
     # Клавиатура
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⚡️ Импортировать в {selected_app.upper()}", url=auto_connect_url)],
+        [InlineKeyboardButton(text=f"⚡️ Импортировать в {selected_app.upper()}", url=auto_connect_url, style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🖼 Получить QR-код", callback_data=f"showqr_{sub_id}")], 
         [InlineKeyboardButton(text="🔄 Выбрать другое устройство", callback_data="reset_device")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
@@ -3118,10 +3132,6 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
 
 
 
-import aiohttp
-import base64
-import logging
-import asyncio
 
 # ------------------ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ВАЛИДАЦИИ И ОТПРАВКИ НА ТВ ------------------
 async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_name: str):
