@@ -108,10 +108,10 @@ DB_FILE = "bot_data.json"
 def load_startup_video_id() -> str:
     if not os.path.exists(DB_FILE):
         # Твой изначальный ID, пока файла еще нет на сервере
-        return "BAACAgIAAxkBAAIL9mp3hKvAcX29t0ufhL-Zddqeyps5AAIjqgACxWG4Sx4JI1ekkuC_PQQ"
+        return "BAACAgIAAxkBAAIOpWqgNjSsk8bIJe5cwxpzRMEnoQABbQACN6UAAuJaAAFJOmUXBuvE6gk9BA"
     with open(DB_FILE, "r") as f:
         data = json.load(f)
-        return data.get("video_main", "BAACAgIAAxkBAAPvaprQWoLjFs_GP9VXwQ2ytZuyKY8AAgqqAAIv-thIgn2mMJbKbEU9BA")
+        return data.get("video_main", "BAACAgIAAxkBAAIOpWqgNjSsk8bIJe5cwxpzRMEnoQABbQACN6UAAuJaAAFJOmUXBuvE6gk9BA")
 
 # ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ — теперь это ОБЫЧНАЯ строка str, Pydantic её примет везде
 VIDEO_MAIN = load_startup_video_id()
