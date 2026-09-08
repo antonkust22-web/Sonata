@@ -3656,23 +3656,38 @@ async def process_successful_payment(message: types.Message):
 
 
 
-from aiogram.types import LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
+
+from aiogram.types import LabeledPrice
 
 @dp.message(F.web_app_data)
 async def handle_miniapp_data(message: types.Message, bot: Bot):
-    # Получаем строку, которую отправил JavaScript (например, "pay_30_days" или "promo_X")
+    # Получаем строку от Mini App (работает, если запущено из Menu или Reply кнопок)
     incoming_data = message.web_app_data.data
     user_id = message.from_user.id
     username = message.from_user.username or ""
     
+    # Сначала запрашиваем свежие данные юзера из вашей локальной БД, чтобы передать их сайту
+    user_data = get_user_from_db(user_id)
+    # Предполагаем структуру вашей БД: [username, vless_configs, sub_id, expiry_seconds, ...]
+    current_expiry = user_data[4] if (user_data and len(user_data) > 4) else 0
+    current_config = user_data[2] if (user_data and len(user_data) > 2) else ""
+    current_sub_id = user_data[3] if (user_data and len(user_data) > 3) else ""
+
+    # СРАЗУ СИНХРОНИЗИРУЕМ ДАННЫЕ С САЙТОМ ПРИ ОТКРЫТИИ/ВЗАИМОДЕЙСТВИИ
+    await sync_user_to_miniapp(
+        user_id=user_id,
+        username=username,
+        vpn_config=current_config,
+        expiry_time=current_expiry,
+        github_raw_url=current_sub_id
+    )
+
     # -------------------------------------------------------------
-    # ЛОГИКА 1: ОБРАБОТКА ОПЛАТЫ ТАРИФОВ
+    # 💳 ЛОГИКА 1: ОБРАБОТКА ОПЛАТЫ ТАРИФОВ
     # -------------------------------------------------------------
     if incoming_data.startswith("pay_"):
-        # Перед генерацией инвойса очищаем/готовим конфиг (как в ваших хендлерах)
         await get_vpn_config_clean(user_id, username)
         
-        # Настраиваем параметры под выбранный тариф
         if incoming_data == "pay_30_days":
             title = "Подписка на VPN (30 дней)"
             description = "Продление доступа к подписке VPN Sonata на 1 месяц."
@@ -3699,12 +3714,10 @@ async def handle_miniapp_data(message: types.Message, bot: Bot):
         else:
             return
 
-        # Считаем скидку по вашей функции
         final_price_rub, is_promo = get_discount_price(base_price)
         if is_promo:
             title += " -30%"
 
-        # Создаем нативную ссылку инвойса ЮKassa
         try:
             invoice_link = await bot.create_invoice_link(
                 title=title,
@@ -3712,71 +3725,67 @@ async def handle_miniapp_data(message: types.Message, bot: Bot):
                 payload=payload,
                 provider_token=PROVIDER_TOKEN,
                 currency="RUB",
-                prices=[LabeledPrice(label=price_label, amount=final_price_rub * 100)],
+                prices=[LabeledPrice(label=price_label, amount=int(final_price_rub * 100))],
                 start_parameter=start_param
             )
             
-            # Отправляем пользователю красивую кнопку оплаты прямо в чат бота!
             await message.answer(
                 f"💰 Ссылка для оплаты тарифа **{title}** сформирована!\n"
-                f"Нажмите кнопку ниже, чтобы оплатить подписку через ЮKassa.",
+                f"Нажмите кнопку ниже, чтобы перети к оплате через ЮKassa.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", url=invoice_link)]
                 ]),
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await message.answer("⚠️ Ошибка при создании платежа. Попробуйте позже.")
-            logging.error(f"Ошибка MiniApp Invoice: {e}")
+            await message.answer("⚠️ Не удалось создать платежную сессию. Попробуйте позже.")
+            logging.error(f"Ошибка MiniApp Invoice link: {e}")
 
     # -------------------------------------------------------------
     # 🎁 ЛОГИКА 2: ОБРАБОТКА И АКТИВАЦИЯ ПРОМОКОДОВ
     # -------------------------------------------------------------
     elif incoming_data.startswith("promo_"):
-        # Извлекаем чистый код, убирая техническую приставку
         promo_code = incoming_data.replace("promo_", "").strip().upper()
         
-        # 1. Проверяем лимиты и логируем активацию промокода в БД купонов
+        # 1. Проверяем купон в БД
         result = activate_promo_in_db(promo_code, user_id)
         
         if result == "NOT_FOUND":
-            await message.answer(
-                f"❌ Промокод **{promo_code}** не существует.\n"
-                f"Проверьте правильность ввода символов и попробуйте снова."
-            )
-            
+            await message.answer(f"❌ Промокод **{promo_code}** не существует.")
         elif result == "YOU_ALREADY_USED":
-            await message.answer(
-                f"⚠️ Вы уже активировали промокод **{promo_code}** ранее.\n"
-                f"Повторная активация невозможна."
-            )
-            
+            await message.answer(f"⚠️ Вы уже активировали промокод **{promo_code}** ранее.")
         elif result == "ALREADY_USED":
-            await message.answer(
-                f"🚫 К сожалению, промокод **{promo_code}** больше недействителен.\n"
-                f"Он исчерпал максимальное количество общих активаций."
-            )
+            await message.answer(f"🚫 Промокод **{promo_code}** исчерпал лимиты.")
             
         elif isinstance(result, int):
-            # 2. НАСТОЯЩЕЕ НАЧИСЛЕНИЕ СРОКА НА ВСЕ СЕРВЕРЫ И В ЛОКАЛЬНУЮ БАЗУ ДАННЫХ
-            # Вызываем вашу гибкую функцию продления. Она прибавит 'result' дней сверху подписки.
-            await renew_vpn_subscription_flexible(
-                user_id=user_id, 
-                days=result, 
-                username=username
+            # 2. Начисляем дни на X-UI панели и пишем в локальную БД Amvera
+            await renew_vpn_subscription_flexible(user_id=user_id, days=result, username=username)
+            
+            # 3. Достаем ОБНОВЛЕННЫЕ данные из локальной БД после начисления дней
+            updated_user = get_user_from_db(user_id)
+            new_expiry = updated_user[4] if (updated_user and len(updated_user) > 4) else 0
+            new_config = updated_user[2] if (updated_user and len(updated_user) > 2) else ""
+            new_sub_id = updated_user[3] if (updated_user and len(updated_user) > 3) else ""
+            
+            # 🔥 ЖЕЛЕЗНАЯ СВЯЗЬ: Бот САМ отправляет обновленные данные по вашей ссылке!
+            await sync_user_to_miniapp(
+                user_id=user_id,
+                username=username,
+                vpn_config=new_config,
+                expiry_time=new_expiry,
+                github_raw_url=new_sub_id
             )
             
-            # Отправляем пользователю красивое уведомление об успехе
             await message.answer(
                 f"🎉 **Успешная активация!**\n\n"
                 f"Промокод **{promo_code}** успешно применен.\n"
                 f"Вам начислено **{result} дн.** к вашей подписке.\n"
-                f"Все сервера обновлены, данные синхронизированы! 🚀",
+                f"Данные на сайте `sonatavpn.ru` успешно обновлены! 🚀",
                 parse_mode="Markdown"
             )
-            
         else:
-            await message.answer("⚠️ Произошла непредвиденная ошибка базы данных при обработке промокода.")
+            await message.answer("⚠️ Ошибка базы данных при обработке промокода.")
+
 
 
 
