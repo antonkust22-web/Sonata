@@ -2289,8 +2289,6 @@ from aiogram.filters import CommandObject
 import logging
 import sqlite3  # Используем стандартный драйвер, который гарантированно есть в Python
 
-CONFETTI_EFFECT_ID = "5159385139981059251"
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
     uid = message.from_user.id
@@ -2344,8 +2342,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     username=username_str,
                     vpn_config=vpn_config_str,
                     expiry_time=expiry_time_int,
-                    github_raw_url=github_raw_url_str,
-                    message_effect_id=CONFETTI_EFFECT_ID
+                    github_raw_url=github_raw_url_str
                 )
             else:
                 logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
