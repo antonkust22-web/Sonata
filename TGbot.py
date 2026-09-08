@@ -2458,7 +2458,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         caption=final_caption,
         reply_markup=main_kb(), 
         parse_mode="HTML",
-        message_effect_id="5159385139981059251"
+        message_effect_id="5046509860389126442"
     )
 
 
@@ -3323,7 +3323,8 @@ async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext = N
             video=VIDEO_MAIN,  # Используется ваша переменная с file_id или URL видео
             caption=text,
             reply_markup=main_kb(),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            message_effect_id="5046509860389126442"
         )
     except Exception as e:
         logging.error(f"Ошибка отправки видео при возврате в меню: {e}")
@@ -3331,7 +3332,8 @@ async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext = N
         await callback.message.answer(
             text=text,
             reply_markup=main_kb(),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            message_effect_id="5046509860389126442"
         )
 
 
