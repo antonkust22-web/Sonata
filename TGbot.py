@@ -1000,7 +1000,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 elif srv["id"] == "ru_bridge_1":
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
-                    current_fp = "firefox"
+                    current_fp = "qq"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
                     safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
