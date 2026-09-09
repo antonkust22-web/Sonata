@@ -906,7 +906,7 @@ SERVERS = [
         "my_ip": "217.171.146.33",  # 158.160.233.149 айпи второго серва
         "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  
         "sid": "29a872b6",  
-        "sni": "sun6-20.userapi.com",  
+        "sni": "cloudflare.com",  
         "country_flag": "🇷🇺",
         "country_name": "Обход №1"
     }
