@@ -2740,9 +2740,14 @@ async def show_user_devices(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
     try:
-        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        pass
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+    except Exception as view_err:
+        # 🔥 Теперь если телеграм выдаст ошибку разметки или клавиатуры, вы сразу увидите её в Amvera!
+        logging.error(f"❌ [ИНТЕРФЕЙС] Ошибка обновления меню устройств: {view_err}", exc_info=True)
+
 
 # 2. КАРТОЧКА ДЕТАЛЬНОЙ ИНФОРМАЦИИ ОБ УСТРОЙСТВЕ И КНОПКА ОТКЛЮЧЕНИЯ
 @dp.callback_query(F.data.startswith("dev_view_"))
