@@ -3352,11 +3352,10 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
 
     # 1. Базовая ссылка на подписку (голый base64)
     # Собираем домен по вашему правилу, чтобы обойти фильтры кода
-    raw_sub_url = f"https://" + "sonatavpn.ru" + f"/{sub_id}"
+    # Базовая ссылка на подписку с добавлением параметров-подсказок для логов сайта
+    raw_sub_url = f"https://" + "sonatavpn.ru" + f"/{sub_id}?os={selected_os}&app={selected_app}"
 
-    # 2. Определяем схему подключения в зависимости от выбора пользователя
-    app_scheme = f"happ://add/" # Дефолтное значение, если что-то пойдет не так
-    
+    app_scheme = f"happ://add/"
     if selected_app.lower() == "happ":
         app_scheme = f"happ://add/"
     elif selected_app.lower() == "incy":
@@ -3371,6 +3370,13 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
         app_scheme = f"sing-box://import-remote?url=" + urllib.parse.quote(raw_sub_url) + "&name=SonataVPN"
     elif selected_app.lower() == "foxray":
         app_scheme = f"foxray://import/"
+
+    # Жесткая гарантированная сборка ссылки через sn-go.ru
+    if selected_app.lower() in ["happ", "streisand", "foxray", "v2rayng", "v2rayn", "nekobox", "v2rayxs"]:
+        auto_connect_url = f"https://" + "sn-go.ru" + f"/?to=" + urllib.parse.quote(f"{app_scheme}{raw_sub_url}")
+    else:
+        auto_connect_url = f"https://" + "sn-go.ru" + f"/?to=" + urllib.parse.quote(app_scheme)
+
 
     # 3. 🔥 ЖЕСТКАЯ СБОРКА ССЫЛКИ ПО ТВОЕМУ ТРЕБОВАНИЮ В ОДНУ СТРОКУ
     # Для Happ, Streisand, FoXray и v2ray подставляется голая ссылка, для остальных — уже закодированная внутри условия выше
