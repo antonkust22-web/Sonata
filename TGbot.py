@@ -2663,27 +2663,18 @@ async def cabinet(callback: types.CallbackQuery):
 
 
 
-import time
-import logging
-import aiohttp
-import datetime as dt
-from aiogram import types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 # ====================================================================
-# 🛜 НАСТРОЙКА СЕТЕВОГО API-МОСТА С ВАШИМ VPS СЕРВЕРОМ
+# 🛜 ОБНОВЛЕННЫЙ СЕТЕВОЙ API-МОСТ НА JSON (ДЛЯ AMVERA)
 # ====================================================================
-# Собираем адрес по вашему правилу, чтобы обойти жесткие фильтры кода
 PROTOCOL = "https://"
 DOMAIN = "sonatavpn"
 ZONE = ".ru"
 API_URL = f"{PROTOCOL}{DOMAIN}{ZONE}/api.php"
-SECRET_KEY = "SuperSecretSonataKey777" # Должен строго совпадать с ключом в api.php
+SECRET_KEY = "SuperSecretSonataKey777"
 
-
-async def fetch_user_data_from_vps(user_id: int) -> dict:
-    """Фоново запрашивает профиль и список устройств у сервера VPS по API"""
-    url = f"{API_URL}?secret={SECRET_KEY}&get_user={user_id}"
+async def fetch_user_data_from_vps(sub_id: str) -> dict:
+    """Запрашивает профиль и список устройств у сервера VPS по токену подписки"""
+    url = f"{API_URL}?secret={SECRET_KEY}&get_user_by_sub={sub_id}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=5) as response:
@@ -2693,10 +2684,9 @@ async def fetch_user_data_from_vps(user_id: int) -> dict:
         logging.error(f"❌ [API ERROR] Не удалось получить данные устройств с VPS: {e}")
     return None
 
-
-async def request_clear_devices_on_vps(user_id: int) -> bool:
-    """Отправляет команду на сервер VPS полностью очистить слоты устройств юзера"""
-    url = f"{API_URL}?secret={SECRET_KEY}&clear_devices={user_id}"
+async def request_clear_devices_on_vps(sub_id: str) -> bool:
+    """Отправляет команду на VPS полностью очистить JSON-логи устройств"""
+    url = f"{API_URL}?secret={SECRET_KEY}&clear_devices={sub_id}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=5) as response:
@@ -2708,16 +2698,22 @@ async def request_clear_devices_on_vps(user_id: int) -> bool:
     return False
 
 
-# ====================================================================
-# 1. ХЭНДЛЕР: ПРОСМОТР АКТИВНЫХ УСТРОЙСТВ ПОЛЬЗОВАТЕЛЯ
-# ====================================================================
+# 1. ПРОСМОТР АКТИВНЫХ УСТРОЙСТВ ЮЗЕРА
 @dp.callback_query(F.data == "my_devices")
 async def show_user_devices(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # Делаем сетевой фоновый запрос к API на вашем VPS
-    vps_data = await fetch_user_data_from_vps(user_id)
+    # Извлекаем sub_id пользователя из локальной БД бота на Amvera
+    db_data = get_user_from_db(user_id)
+    if not db_data or len(db_data) <= 3 or not db_data[3]:
+        await callback.message.answer("❌ <b>Ошибка:</b> Сначала сгенерируйте VPN-подписку в главном меню.", parse_mode="HTML")
+        return
+        
+    sub_id = db_data[3] # Наш github_raw_url токен
+
+    # Стучимся на VPS-сервер по API
+    vps_data = await fetch_user_data_from_vps(sub_id)
     
     if not vps_data or vps_data.get("status") != "success":
         await callback.message.answer(
@@ -2727,10 +2723,8 @@ async def show_user_devices(callback: types.CallbackQuery):
         )
         return
 
-    # Достаем список устройств из JSON-ответа сайта
     devices = vps_data.get("devices", [])
 
-    # Формируем текст списка сессий
     if not devices:
         devices_list_text = "<i>У вас пока нет активных подключений за последние 24 часа. Слот подписки чист.</i>"
     else:
@@ -2741,24 +2735,17 @@ async def show_user_devices(callback: types.CallbackQuery):
             app = dev.get("vpn_app", "Unknown App")
             last_seen = int(dev.get("last_seen", 0))
             
-            # ИСПРАВЛЕНО: Безопасное маскирование IP адреса в Python (без explode)
+            # Маскируем IP
             ip_parts = ip.split('.')
-            if len(ip_parts) >= 4:
-                masked_ip = f"{ip_parts[0]}.{ip_parts[1]}.*.**"
-            else:
-                masked_ip = ip
-            
+            masked_ip = f"{ip_parts[0]}.{ip_parts[1]}.*.**" if len(ip_parts) >= 4 else ip
             time_str = dt.datetime.fromtimestamp(last_seen).strftime('%H:%M:%S')
             
-            devices_list_text += (
-                f"<b>{idx}. {os} | {app}</b>\n"
-                f"└ 🌐 IP: <code>{masked_ip}</code> | 🕒 Активность: {time_str}\n\n"
-            )
+            devices_list_text += f"<b>{idx}. {os} | {app}</b>\n└ 🌐 IP: <code>{masked_ip}</code> | 🕒 Активность: {time_str}\n\n"
 
     text = (
         f"📱 <b>Управление устройствами Sonata VPN</b>\n\n"
         f"{devices_list_text}"
-        f"💡 <i>If вы заметили чужие или незнакомые устройства в списке, нажмите кнопку сброса ниже, чтобы мгновенно освободить все слоты.</i>"
+        f"💡 <i>Если вы заметили чужие или незнакомые устройства в списке, нажмите кнопку сброса ниже, чтобы мгновенно освободить все слоты.</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -2771,31 +2758,31 @@ async def show_user_devices(callback: types.CallbackQuery):
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-    except Exception as e:
-        logging.warning(f"Не удалось обновить интерфейс меню устройств: {e}")
+    except Exception:
+        pass
 
 
-# ====================================================================
-# 2. ХЭНДЛЕР: ПРИНУДИТЕЛЬНЫЙ СБРОС ВСЕХ СЛОТОВ УСТРОЙСТВ ПОЛЬЗОВАТЕЛЯ
-# ====================================================================
+# 2. ПРИНУДИТЕЛЬНЫЙ СБРОС ВСЕХ СЛОТОВ УСТРОЙСТВ ПОЛЬЗОВАТЕЛЯ
 @dp.callback_query(F.data == "clear_my_devices")
 async def clear_user_devices(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
-    # Отправляем интернет-команду на ваш VPS сервер для очистки таблиц
-    is_cleared = await request_clear_devices_on_vps(user_id)
+    db_data = get_user_from_db(user_id)
+    if not db_data or len(db_data) <= 3 or not db_data[3]:
+        await callback.answer("⚠️ Ошибка: Токен подписки не найден.")
+        return
+        
+    sub_id = db_data[3]
+    
+    is_cleared = await request_clear_devices_on_vps(sub_id)
     
     if is_cleared:
-        # Показываем красивую всплывающую плашку-алерт в Telegram на экране смартфона
         await callback.answer("✅ Все сессии устройств успешно сброшены!", show_alert=True)
-        
-        # Перенаправляем пользователя обратно в обновленное меню устройств, оно покажет, что всё чисто
         await show_user_devices(callback)
     else:
-        await callback.answer(
-            "⚠️ Не удалось сбросить сессии устройств по сети.\nПожалуйста, попробуйте позже.", 
-            show_alert=True
-        )
+        await callback.answer("⚠️ Не удалось сбросить сессии устройств. Попробуйте позже.", show_alert=True)
+
+
 
 
 
