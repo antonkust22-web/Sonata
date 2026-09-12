@@ -2774,53 +2774,51 @@ async def connect(callback: types.CallbackQuery):
             "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш official канал.\n\n"
             "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
         )
+        
+        # Гарантированный способ: отправляем новое, удаляем старое. Никаких зависаний edit_text!
         try:
-            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+            await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+            await callback.message.delete()
         except Exception as e: 
-            logging.debug(f"Сообщение подписки не изменено: {e}")
+            logging.warning(f"Ошибка обновления экрана подписки: {e}")
         return
 
+    # Если подписан — гасим часики на кнопке
     await callback.answer()
 
-    # 2. Получаем данные из БД и проверяем сохраненные настройки устройства
+    # 2. Получаем данные из БД
     db_data = get_user_from_db(user_id)
     saved_os = db_data[8] if (db_data and len(db_data) > 8) else None
     saved_app = db_data[9] if (db_data and len(db_data) > 9) else None
 
-    # Если пользователь УЖЕ выбирал устройство ранее — пускаем сразу на экран дебага
+    # --- СЦЕНАРИЙ А: Пользователь УЖЕ выбирал устройство ранее (Экран дебага) ---
     if saved_os and saved_app:
         try:
             await callback.message.delete()
         except Exception:
             pass
         
-        # 1. Сначала отправляем сообщение-заглушку
         loading_msg = await callback.message.answer("⏳ Формирование и синхронизация...")
-        
-        # 2. Запускаем тяжелый процесс генерации контента
         await process_final_screen(callback, user_id, username, db_data, saved_os, saved_app)
         
-        # 3. Как только процесс завершился и основное сообщение улетело — удаляем лоадер
         try:
             await loading_msg.delete()
         except Exception as e:
             logging.warning(f"Не удалось удалить сообщение статуса загрузки: {e}")
-            
         return
 
-
-    # 3. Если зашел впервые, запускаем генерацию конфигов и выводим выбор ОС
-    loading_text = "⏳ Формирование и синхронизация..."
+    # --- СЦЕНАРИЙ Б: Пользователь зашел ВПЕРВЫЕ (Выбор ОС) ---
+    # Чтобы edit_text не конфликтовал с удалением, мы просто отправляем НОВУЮ заглушку,
+    # а старое приветственное сообщение удаляем. Это полностью убирает баг.
     try:
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
-    except Exception as e:
-        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
+        await callback.message.delete()
+    except Exception:
+        pass
+        
+    loading_msg = await callback.message.answer("⏳ Формирование и синхронизация...")
 
     try:
-        # Восстановлен удаленный блок генерации VPN токенов
+        # Тяжелая генерация VPN токенов
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
         
@@ -2835,10 +2833,8 @@ async def connect(callback: types.CallbackQuery):
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
         if expiry_seconds == 0:
             expiry_seconds = int(time.time() + 2592000)
-            
-        expiry_date = dt.datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
 
-        # Отправляем синхронизацию на PHP домен
+        # Синхронизация с сайтом
         if expiry_seconds <= int(time.time()):
             asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
         else:
@@ -2846,13 +2842,12 @@ async def connect(callback: types.CallbackQuery):
             
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
-        # Удаляем приветственное сообщение
+        # Удаляем наш лоадер перед выводом клавиатуры выбора ОС
         try:
-            await callback.message.delete()
-        except Exception as e:
-            logging.warning(f"Не удалось удалить старое сообщение: {e}")
+            await loading_msg.delete()
+        except Exception:
+            pass
 
-        # Отправляем меню выбора операционной системы
         # Отправляем меню выбора операционной системы
         kb_os = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -2875,11 +2870,10 @@ async def connect(callback: types.CallbackQuery):
             ]
         ])
 
-
         text_os = (
             "💻 <b>Выберите ваше устройство</b>\n\n"
             "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
-            "Нажмите один раз для решения"
+            "Нажмите один раз для продолжения."
         )
 
         await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
@@ -2887,9 +2881,10 @@ async def connect(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
         try:
-            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
+            await loading_msg.edit_text("⚠️ Произошла внутренняя ошибка бота при генерации.")
         except Exception:
             pass
+
 
 
 
