@@ -1124,56 +1124,60 @@ import time
 async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, device_limit=None):
     """
     Отправляет рабочий Base64 или пустую строку при блокировке на PHP-сайт.
-    Передает актуальный лимит устройств пользователя для динамического контроля.
+    Передает актуальный лимит устройств и Telegram ID пользователя для пуш-уведомлений.
     """
-    url = "https://sonatavpn.ru" + "/" + "index.php?update_sub=1"
-    
+    url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
+    import time
+    import sqlite3
+    import aiohttp
 
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    # ЖЕЛЕЗНАЯ ПРОВЕРКА: Если передан флаг блокировки ИЛИ время реально вышло
     if is_blocked or expiry_int <= int(time.time()):
         content_to_send = ""
         logging.info(f"[МАРШРУТИЗАЦИЯ] Пользователь {token} заблокирован/истек. Отправляем пустоту.")
     else:
         content_to_send = b64_content
 
-    # 🔥 ДИНАМИЧЕСКИЙ ЛИМИТ: Если лимит не передан в аргументах,
-    # вытаскиваем его из БД, чтобы не затереть купленный тариф дефолтной пятеркой
-    if device_limit is None:
-        try:
-            # Ищем по github_raw_url (который равен token в этой функции)
-            conn = sqlite3.connect(DB_PATH, timeout=10.0)
-            cursor = conn.cursor()
-            cursor.execute("SELECT device_limit FROM users WHERE github_raw_url = ?", (token,))
-            row = cursor.fetchone()
-            conn.close()
-            
-            # Если нашли — берем значение, если нет — ставим базовый лимит 5
-            device_limit = row[0] if row else 5
-        except Exception as db_err:
-            logging.error(f"[БД ОШИБКА] Не удалось получить лимит для синхронизации: {db_err}")
-            device_limit = 5
+    # Получаем лимит устройств и реальный Telegram ID из БД по токену подписки (который равен аргументу token)
+    found_user_id = ""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, device_limit FROM users WHERE github_raw_url = ?", (token,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            found_user_id = str(row[0])
+            if device_limit is None:
+                device_limit = row[1]
+    except Exception as db_err:
+        logging.error(f"[БД ОШИБКА] Не удалось получить лимиты для синхронизации: {db_err}")
 
-    # Собираем все POST-данные для отправки на PHP
+    if device_limit is None:
+        device_limit = 5
+
+    # 🔥 ИСПРАВЛЕНО: Передаем точный found_user_id строкой, NameError больше не возникнет!
     data = {
         "token": token,
         "content": content_to_send,
         "expiry": str(expiry_int),
-        "device_limit": str(device_limit), # 🔥 Новое поле улетает на сайт
-        "user_id": str(user_id)
+        "device_limit": str(device_limit),
+        "user_id": found_user_id  
     }
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token} (Лимит: {device_limit}): {res_text}")
+                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token} (Лимит: {device_limit}, ID: {found_user_id}): {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА] Не удалось передать подписку: {ex}")
+
 
     
 
