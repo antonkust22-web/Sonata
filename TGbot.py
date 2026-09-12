@@ -2698,7 +2698,11 @@ async def request_clear_devices_on_vps(sub_id: str) -> bool:
     return False
 
 
+
+
+# ====================================================================
 # 1. МЕНЮ: СПИСОК УСТРОЙСТВ В ВИДЕ КНОПОК
+# ====================================================================
 @dp.callback_query(F.data == "my_devices")
 async def show_user_devices(callback: types.CallbackQuery):
     await callback.answer()
@@ -2722,19 +2726,19 @@ async def show_user_devices(callback: types.CallbackQuery):
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
         f"Занято слотов: <b>{len(devices)} из {device_limit}</b>\n"
-        "Ниже представлены все ваши подключенные устройства за все время. Нажмите на кнопку любого устройства для управления или удаления сессии:"
+        "Ниже представлены ваши подключенные устройства. Нажмите на любое из них для просмотра детальной информации или удаления сессии:"
     )
 
-    # Строим инлайн-клавиатуру, где каждое устройство — это отдельная кнопка
+    # Строим клавиатуру, где каждое устройство — это аккуратная кнопка без лишнего текста
     inline_keyboard = []
     for idx, dev in enumerate(devices, 1):
         os = dev.get("device_os", "Unknown OS")
         app = dev.get("vpn_app", "Unknown App")
         ip = dev.get("ip", "0.0.0.0")
         
-        # Зашиваем IP адрес в callback_data для детального просмотра
-        btn_text = f"⚙️ Устройство #{idx} ({os} | {app})"
-        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"dev_view_{idx}_{ip}")])
+        # 🔥 ИСПРАВЛЕНО: Убрана приписка "Устройство #", разделитель изменен на безопасный ":"
+        btn_text = f"📱 {os} ({app})"
+        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{idx}:{ip}")])
 
     inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
     kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
@@ -2745,20 +2749,21 @@ async def show_user_devices(callback: types.CallbackQuery):
         else:
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except Exception as view_err:
-        # 🔥 Теперь если телеграм выдаст ошибку разметки или клавиатуры, вы сразу увидите её в Amvera!
         logging.error(f"❌ [ИНТЕРФЕЙС] Ошибка обновления меню устройств: {view_err}", exc_info=True)
 
 
+# ====================================================================
 # 2. КАРТОЧКА ДЕТАЛЬНОЙ ИНФОРМАЦИИ ОБ УСТРОЙСТВЕ И КНОПКА ОТКЛЮЧЕНИЯ
-@dp.callback_query(F.data.startswith("dev_view_"))
+# ====================================================================
+@dp.callback_query(F.data.startswith("devview:"))
 async def view_single_device(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # Разбираем callback: dev_view_НОМЕР_IP
-    parts = callback.data.split("_")
-    dev_num = parts[2]
-    device_ip = parts[3]
+    # 🔥 ИСПРАВЛЕНО: Безопасный разбор строки по двоеточию без конфликтов с точками в IP
+    parts = callback.data.split(":")
+    dev_num = parts[1]
+    device_ip = parts[2]
 
     db_data = get_user_from_db(user_id)
     sub_id = db_data[3]
@@ -2792,14 +2797,20 @@ async def view_single_device(callback: types.CallbackQuery):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        # Зашиваем IP и sub_id в команду удаления
+        # Зашиваем IP в команду удаления
         [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
     ])
     
-    await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+    except Exception as err:
+        logging.error(f"❌ [ИНТЕРФЕЙС] Ошибка вывода карточки девайса: {err}", exc_info=True)
 
+
+# ====================================================================
 # 3. ОБРАБОТЧИК КНОПКИ ТОЧЕЧНОГО УДАЛЕНИЯ И ЗАПУСКА БАНА
+# ====================================================================
 @dp.callback_query(F.data.startswith("dev_del_"))
 async def delete_single_device(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2824,6 +2835,7 @@ async def delete_single_device(callback: types.CallbackQuery):
 
     # Возвращаем пользователя в обновленный список кнопок-устройств
     await show_user_devices(callback)
+
 
 
 
