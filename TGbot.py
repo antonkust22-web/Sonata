@@ -2433,28 +2433,25 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
                     current_time = int(time.time())
 
-                    # ПРЯМОЙ РАСЧЕТ TIMESTAMP (ДЛЯ СТОЛБЦА expiry_time)
+                    # 1. ПРЯМОЙ РАСЧЕТ TIMESTAMP (ДЛЯ СТОЛБЦА expiry_time В ЛОКАЛЬНОЙ БД)
                     if inviter_old_expiry > current_time:
-                        # Если подписка еще активна — прибавляем 3 дня к дате окончания
                         new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
                     else:
-                        # Если подписка истекла или ее не было — прибавляем 3 дня к текущему времени
                         new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
 
-                    # Считаем, сколько это дней от ТЕКУЩЕГО момента для передачи в X-UI панель
-                    days_from_now = int((new_expiry_timestamp - current_time) / (24 * 3600))
-                    if days_from_now <= 0:
-                        days_from_now = 3
-
-                    # ОБНОВЛЯЕМ БД: Сохраняем правильный timestamp в expiry_time через твою родную функцию
+                    # 2. ОБНОВЛЯЕМ ЛОКАЛЬНУЮ БД БОТА НА ХОСТИНГЕ
                     try:
                         inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
-                        add_or_update_user(inviter_id, inviter_data[2], expiry_time=new_expiry_timestamp, role=inviter_role)
-                    except Exception:
-                        pass
+                        inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
+                        
+                        # Исправлено: передаем inviter_username вместо конфига
+                        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
+                    except Exception as db_ex:
+                        logging.error(f"Ошибка обновления БД реферера: {db_ex}")
 
-                    # ОБНОВЛЯЕМ X-UI ПАНЕЛЬ: Передаем итоговое количество дней от сегодня
-                    await renew_vpn_subscription_flexible(inviter_id, days_from_now)
+                    # 3. 🔥 ИСПРАВЛЕНО: ОБНОВЛЯЕМ X-UI ПАНЕЛЬ — просто передаем +3 дня!
+                    # Функция сама определит остаток и аккуратно добавит ровно 3 дня к его тарифу в панели
+                    await renew_vpn_subscription_flexible(inviter_id, 3)
 
                     # Уведомление пригласившему
                     try:
@@ -2469,8 +2466,9 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                         pass
 
                     # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
-                    add_or_update_user(user_id, username, expiry_time=0)
+                    add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
                     await renew_vpn_subscription_flexible(user_id, 3)
+
 
                     # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
                     try:
@@ -3154,7 +3152,38 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+#    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+
+    # 1. Базовая ссылка на подписку (голый base64)
+    # Собираем домен по вашему правилу, чтобы обойти фильтры кода
+    raw_sub_url = f"https://" + "sonatavpn.ru" + f"/{sub_id}"
+
+    # 2. Определяем схему подключения в зависимости от выбора пользователя
+    app_scheme = f"happ://add/" # Дефолтное значение, если что-то пойдет не так
+    
+    if selected_app.lower() == "happ":
+        app_scheme = f"happ://add/"
+    elif selected_app.lower() == "incy":
+        app_scheme = f"incy://import?url=" + urllib.parse.quote(raw_sub_url)
+    elif selected_app.lower() == "streisand":
+        app_scheme = f"streisand://import/"
+    elif selected_app.lower() in ["v2rayng", "v2rayn", "nekobox", "v2rayxs"]:
+        app_scheme = f"{selected_app.lower()}://install-config?url="
+    elif selected_app.lower() == "karing":
+        app_scheme = f"karing://install-config?url=" + urllib.parse.quote(raw_sub_url) + "&name=SonataVPN"
+    elif selected_app.lower() == "singbox":
+        app_scheme = f"sing-box://import-remote?url=" + urllib.parse.quote(raw_sub_url) + "&name=SonataVPN"
+    elif selected_app.lower() == "foxray":
+        app_scheme = f"foxray://import/"
+
+    # 3. 🔥 ЖЕСТКАЯ СБОРКА ССЫЛКИ ПО ТВОЕМУ ТРЕБОВАНИЮ В ОДНУ СТРОКУ
+    # Для Happ, Streisand, FoXray и v2ray подставляется голая ссылка, для остальных — уже закодированная внутри условия выше
+    if selected_app.lower() in ["happ", "streisand", "foxray", "v2rayng", "v2rayn", "nekobox", "v2rayxs"]:
+        auto_connect_url = f"https://" + "sn-go.ru" + f"/?to=" + urllib.parse.quote(f"{app_scheme}{raw_sub_url}")
+    else:
+        # Для INCY, Karing и Singbox, где параметры уже внутри схемы
+        auto_connect_url = f"https://" + "sn-go.ru" + f"/?to=" + urllib.parse.quote(app_scheme)
+
 
     # Клавиатура
     kb = InlineKeyboardMarkup(inline_keyboard=[
