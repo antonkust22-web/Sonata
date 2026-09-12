@@ -1163,7 +1163,8 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
         "token": token,
         "content": content_to_send,
         "expiry": str(expiry_int),
-        "device_limit": str(device_limit) # 🔥 Новое поле улетает на сайт
+        "device_limit": str(device_limit), # 🔥 Новое поле улетает на сайт
+        "user_id": str(user_id)
     }
     
     try:
@@ -2788,6 +2789,7 @@ async def view_single_device(callback: types.CallbackQuery):
     os = target_dev.get("device_os", "Unknown OS")
     app = target_dev.get("vpn_app", "Unknown App")
     last_seen = int(target_dev.get("last_seen", 0))
+    raw_ua = target_dev.get("raw_ua", "Неизвестный User-Agent") # 🔥 Получаем сырую строку
     time_str = dt.datetime.fromtimestamp(last_seen).strftime('%d.%m.%Y в %H:%M:%S')
 
     text = (
@@ -2796,8 +2798,10 @@ async def view_single_device(callback: types.CallbackQuery):
         f"📥 <b>VPN Приложение:</b> <code>{app}</code>\n"
         f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
         f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
-        "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения перестанет работать.</i>"
+        f"🔍 <b>Сырой системный лог (Отладка):</b>\n<code>{raw_ua}</code>\n\n" # Выводим лог
+        "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
     )
+
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
