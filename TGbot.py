@@ -2297,59 +2297,59 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
-    try:
+#    try:
         # Формируем правильную ссылку с явным GET-параметром ?tg_id=
-        personal_miniapp_url = f"https://sonatavpn.ru/miniapp?tg_id={uid}"
+#        personal_miniapp_url = f"https://sonatavpn.ru/miniapp?tg_id={uid}"
 
-        await bot.set_chat_menu_button(
-            chat_id=message.chat.id,
-            menu_button=MenuButtonWebApp(
-                text="Open",  # Текст на синей кнопке в углу экрана
-                web_app=WebAppInfo(url=personal_miniapp_url)
-            )
-        )
-        logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
-    except Exception as e:
-        logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
+#        await bot.set_chat_menu_button(
+#            chat_id=message.chat.id,
+#            menu_button=MenuButtonWebApp(
+#                text="Open",  # Текст на синей кнопке в углу экрана
+#                web_app=WebAppInfo(url=personal_miniapp_url)
+#            )
+#        )
+#        logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
+#    except Exception as e:
+#        logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
 
     # === 🔥 ШАГ 0.2: ПРЯМАЯ И ПРИНУДИТЕЛЬНАЯ ВЫГРУЗКА ДАННЫХ ИЗ SQLITE НА САЙТ ===
-    try:
+#    try:
         # Подключаемся напрямую к локальному файлу базы вашего Docker-бота
         # Если в контейнере путь к базе другой, поменяйте '/app/users.db' на ваш рабочий путь
-        with sqlite3.connect('/app/users.db') as conn:
-            conn.row_factory = sqlite3.Row  # Позволяет обращаться к колонкам по их именам
-            cursor = conn.cursor()
+#        with sqlite3.connect('/app/users.db') as conn:
+#            conn.row_factory = sqlite3.Row  # Позволяет обращаться к колонкам по их именам
+#            cursor = conn.cursor()
             
             # Делаем точный запрос к вашей таблице users на основе вашего скриншота структуры
-            cursor.execute(
-                "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?", 
-                (uid,)
-            )
-            row = cursor.fetchone()
+#            cursor.execute(
+#                "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?", 
+#                (uid,)
+#            )
+#            row = cursor.fetchone()
             
-            if row:
-                username_str = row['username'] if row['username'] else f"User_{uid}"
-                vpn_config_str = row['vpn_config'] if row['vpn_config'] else ""
-                expiry_time_int = int(row['expiry_time']) if row['expiry_time'] else 0
-                github_raw_url_str = row['github_raw_url'] if row['github_raw_url'] else ""
+#            if row:
+#                username_str = row['username'] if row['username'] else f"User_{uid}"
+#                vpn_config_str = row['vpn_config'] if row['vpn_config'] else ""
+#                expiry_time_int = int(row['expiry_time']) if row['expiry_time'] else 0
+#                github_raw_url_str = row['github_raw_url'] if row['github_raw_url'] else ""
 
-                logging.info(f"🛰 [DB READ] Данные юзера {uid} успешно прочитаны из локального users.db. Отправляем POST на сайт...")
+#               logging.info(f"🛰 [DB READ] Данные юзера {uid} успешно прочитаны из локального users.db. Отправляем POST на сайт...")
 
                 # Вызываем вашу сетевую функцию aiohttp отправки данных на PHP-сайт
                 # ВНИМАНИЕ: Обязательно передаем github_raw_url пятым аргументом!
-                await sync_user_to_miniapp(
-                    user_id=uid,
-                    username=username_str,
-                    vpn_config=vpn_config_str,
-                    expiry_time=expiry_time_int,
-                    github_raw_url=github_raw_url_str
-                )
-            else:
-                logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
+#                await sync_user_to_miniapp(
+#                    user_id=uid,
+#                    username=username_str,
+#                    vpn_config=vpn_config_str,
+#                    expiry_time=expiry_time_int,
+#                    github_raw_url=github_raw_url_str
+#                )
+#            else:
+#                logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
                 
-    except Exception as sync_err:
+#    except Exception as sync_err:
         # Если база заблокирована или путь неверный — мы гарантированно увидим причину в логах!
-        logging.error(f"❌ [CRITICAL SYNC ERROR] Не удалось принудительно выгрузить данные юзера {uid}: {sync_err}")
+#       logging.error(f"❌ [CRITICAL SYNC ERROR] Не удалось принудительно выгрузить данные юзера {uid}: {sync_err}")
 
 
 
@@ -2754,7 +2754,7 @@ async def cabinet(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: types.CallbackQuery):
-    await callback.answer()
+    
     
     user_id = callback.from_user.id
     username = callback.from_user.username or ""    
@@ -2776,9 +2776,11 @@ async def connect(callback: types.CallbackQuery):
         )
         try:
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-        except Exception: 
-            pass
+        except Exception as e: 
+            logging.debug(f"Сообщение подписки не изменено: {e}")
         return
+
+    await callback.answer()
 
     # 2. Получаем данные из БД и проверяем сохраненные настройки устройства
     db_data = get_user_from_db(user_id)
