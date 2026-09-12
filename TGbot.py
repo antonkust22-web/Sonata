@@ -2760,12 +2760,15 @@ async def view_single_device(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # 🔥 ИСПРАВЛЕНО: Безопасный разбор строки по двоеточию без конфликтов с точками в IP
+    # Безопасный разбор строки по двоеточию
     parts = callback.data.split(":")
     dev_num = parts[1]
     device_ip = parts[2]
 
     db_data = get_user_from_db(user_id)
+    if not db_data or len(db_data) <= 3:
+        await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
+        return
     sub_id = db_data[3]
 
     vps_data = await fetch_user_data_from_vps(sub_id)
@@ -2793,19 +2796,22 @@ async def view_single_device(callback: types.CallbackQuery):
         f"📥 <b>VPN Приложение:</b> <code>{app}</code>\n"
         f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
         f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
-        "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
+        "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения перестанет работать.</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        # Зашиваем IP в команду удаления
         [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
     ])
     
     try:
-        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        # 🔥 ИСПРАВЛЕНО: Умное переключение экранов для медиа-сообщений (видео/фото) и обычного текста
+        if callback.message.caption or callback.message.video or callback.message.photo:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except Exception as err:
-        logging.error(f"❌ [ИНТЕРФЕЙС] Ошибка вывода карточки девайса: {err}", exc_info=True)
+        logging.error(f"❌ [ИНТЕРФЕЙС] Критическая ошибка вывода карточки девайса: {err}", exc_info=True)
 
 
 # ====================================================================
@@ -2817,6 +2823,9 @@ async def delete_single_device(callback: types.CallbackQuery):
     device_ip = callback.data.replace("dev_del_", "")
 
     db_data = get_user_from_db(user_id)
+    if not db_data or len(db_data) <= 3:
+        await callback.answer("⚠️ Ошибка: Токен подписки не найден.")
+        return
     sub_id = db_data[3]
 
     # Отправляем HTTP GET-запрос к api.php для удаления слота и занесения IP в черный список
@@ -2835,6 +2844,7 @@ async def delete_single_device(callback: types.CallbackQuery):
 
     # Возвращаем пользователя в обновленный список кнопок-устройств
     await show_user_devices(callback)
+
 
 
 
