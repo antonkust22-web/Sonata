@@ -2698,90 +2698,127 @@ async def request_clear_devices_on_vps(sub_id: str) -> bool:
     return False
 
 
-# 1. ПРОСМОТР АКТИВНЫХ УСТРОЙСТВ ЮЗЕРА
+# 1. МЕНЮ: СПИСОК УСТРОЙСТВ В ВИДЕ КНОПОК
 @dp.callback_query(F.data == "my_devices")
 async def show_user_devices(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # Извлекаем sub_id пользователя из локальной БД бота на Amvera
     db_data = get_user_from_db(user_id)
-    if not db_data or len(db_data) <= 3 or not db_data[3]:
-        await callback.message.answer("❌ <b>Ошибка:</b> Сначала сгенерируйте VPN-подписку в главном меню.", parse_mode="HTML")
+    if not db_data or len(db_data) <= 3:
+        await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
         return
-        
-    sub_id = db_data[3] # Наш github_raw_url токен
+    sub_id = db_data[3]
 
-    # Стучимся на VPS-сервер по API
     vps_data = await fetch_user_data_from_vps(sub_id)
-    
     if not vps_data or vps_data.get("status") != "success":
-        await callback.message.answer(
-            "⚠️ <b>Сервер синхронизации временно недоступен.</b>\n"
-            "Пожалуйста, попробуйте открыть это меню через пару минут.",
-            parse_mode="HTML"
-        )
+        await callback.message.answer("⚠️ Сервер синхронизации недоступен.")
         return
 
     devices = vps_data.get("devices", [])
-
-    if not devices:
-        devices_list_text = "<i>У вас пока нет активных подключений за последние 24 часа. Слот подписки чист.</i>"
-    else:
-        devices_list_text = "📋 <b>Список ваших активных сессий (за 24ч):</b>\n\n"
-        for idx, dev in enumerate(devices, 1):
-            ip = dev.get("ip", "0.0.0.0")
-            os = dev.get("device_os", "Unknown OS")
-            app = dev.get("vpn_app", "Unknown App")
-            last_seen = int(dev.get("last_seen", 0))
-            
-            # Маскируем IP
-            ip_parts = ip.split('.')
-            masked_ip = f"{ip_parts[0]}.{ip_parts[1]}.*.**" if len(ip_parts) >= 4 else ip
-            time_str = dt.datetime.fromtimestamp(last_seen).strftime('%H:%M:%S')
-            
-            devices_list_text += f"<b>{idx}. {os} | {app}</b>\n└ 🌐 IP: <code>{masked_ip}</code> | 🕒 Активность: {time_str}\n\n"
+    profile = vps_data.get("profile", {})
+    device_limit = profile.get("device_limit", 5)
 
     text = (
-        f"📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        f"{devices_list_text}"
-        f"💡 <i>Если вы заметили чужие или незнакомые устройства в списке, нажмите кнопку сброса ниже, чтобы мгновенно освободить все слоты.</i>"
+        "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
+        f"Занято слотов: <b>{len(devices)} из {device_limit}</b>\n"
+        "Ниже представлены все ваши подключенные устройства за все время. Нажмите на кнопку любого устройства для управления или удаления сессии:"
     )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Сбросить все устройства", callback_data="clear_my_devices")],
-        [InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")]
-    ])
+    # Строим инлайн-клавиатуру, где каждое устройство — это отдельная кнопка
+    inline_keyboard = []
+    for idx, dev in enumerate(devices, 1):
+        os = dev.get("device_os", "Unknown OS")
+        app = dev.get("vpn_app", "Unknown App")
+        ip = dev.get("ip", "0.0.0.0")
+        
+        # Зашиваем IP адрес в callback_data для детального просмотра
+        btn_text = f"⚙️ Устройство #{idx} ({os} | {app})"
+        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"dev_view_{idx}_{ip}")])
+
+    inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
+    kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
     try:
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         pass
 
-
-# 2. ПРИНУДИТЕЛЬНЫЙ СБРОС ВСЕХ СЛОТОВ УСТРОЙСТВ ПОЛЬЗОВАТЕЛЯ
-@dp.callback_query(F.data == "clear_my_devices")
-async def clear_user_devices(callback: types.CallbackQuery):
+# 2. КАРТОЧКА ДЕТАЛЬНОЙ ИНФОРМАЦИИ ОБ УСТРОЙСТВЕ И КНОПКА ОТКЛЮЧЕНИЯ
+@dp.callback_query(F.data.startswith("dev_view_"))
+async def view_single_device(callback: types.CallbackQuery):
+    await callback.answer()
     user_id = callback.from_user.id
     
-    db_data = get_user_from_db(user_id)
-    if not db_data or len(db_data) <= 3 or not db_data[3]:
-        await callback.answer("⚠️ Ошибка: Токен подписки не найден.")
-        return
-        
-    sub_id = db_data[3]
-    
-    is_cleared = await request_clear_devices_on_vps(sub_id)
-    
-    if is_cleared:
-        await callback.answer("✅ Все сессии устройств успешно сброшены!", show_alert=True)
-        await show_user_devices(callback)
-    else:
-        await callback.answer("⚠️ Не удалось сбросить сессии устройств. Попробуйте позже.", show_alert=True)
+    # Разбираем callback: dev_view_НОМЕР_IP
+    parts = callback.data.split("_")
+    dev_num = parts[2]
+    device_ip = parts[3]
 
+    db_data = get_user_from_db(user_id)
+    sub_id = db_data[3]
+
+    vps_data = await fetch_user_data_from_vps(sub_id)
+    devices = vps_data.get("devices", []) if vps_data else []
+    
+    # Ищем данные выбранного устройства
+    target_dev = None
+    for dev in devices:
+        if dev.get("ip") == device_ip:
+            target_dev = dev
+            break
+
+    if not target_dev:
+        await callback.message.answer("❌ Устройство не найдено или уже было удалено.")
+        return
+
+    os = target_dev.get("device_os", "Unknown OS")
+    app = target_dev.get("vpn_app", "Unknown App")
+    last_seen = int(target_dev.get("last_seen", 0))
+    time_str = dt.datetime.fromtimestamp(last_seen).strftime('%d.%m.%Y в %H:%M:%S')
+
+    text = (
+        f"<b>📋 Информация об устройстве #{dev_num}</b>\n\n"
+        f"💻 <b>Операционная система:</b> <code>{os}</code>\n"
+        f"📥 <b>VPN Приложение:</b> <code>{app}</code>\n"
+        f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
+        f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
+        "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        # Зашиваем IP и sub_id в команду удаления
+        [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
+    ])
+    
+    await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+
+# 3. ОБРАБОТЧИК КНОПКИ ТОЧЕЧНОГО УДАЛЕНИЯ И ЗАПУСКА БАНА
+@dp.callback_query(F.data.startswith("dev_del_"))
+async def delete_single_device(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    device_ip = callback.data.replace("dev_del_", "")
+
+    db_data = get_user_from_db(user_id)
+    sub_id = db_data[3]
+
+    # Отправляем HTTP GET-запрос к api.php для удаления слота и занесения IP в черный список
+    url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_ip={device_ip}"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=5) as response:
+                if response.status == 200:
+                    await callback.answer("✅ Устройство успешно отключено и удалено!", show_alert=True)
+                else:
+                    await callback.answer("⚠️ Сервер сайта отклонил запрос.")
+    except Exception as e:
+        logging.error(f"Ошибка удаления девайса: {e}")
+        await callback.answer("❌ Ошибка соединения с сервером.")
+
+    # Возвращаем пользователя в обновленный список кнопок-устройств
+    await show_user_devices(callback)
 
 
 
