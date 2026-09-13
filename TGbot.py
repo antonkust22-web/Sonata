@@ -2632,7 +2632,7 @@ async def cabinet(callback: types.CallbackQuery):
         else:
             devices_display = f"<b>{active_devices} из {device_limit}</b>"
 
-        devices_text_block = f"📱 <b>Устройства (за 24ч):</b> {devices_display}\n\n"
+        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
 
         # Сборка итогового сообщения
         text = (
@@ -2852,6 +2852,87 @@ async def delete_single_device(callback: types.CallbackQuery):
 
     # Возвращаем пользователя в обновленный список кнопок-устройств
     await show_user_devices(callback)
+
+
+
+
+import os
+import json
+import glob
+import asyncio
+from aiogram import Bot
+
+# Путь к папке с логами устройств на VPS (проверьте, совпадает ли с вашим)
+LOGS_DIR = "/var/www/sonatavpn.ru/subs_logs/"
+
+# Ваша существующая инициализация бота (используем вашу переменную API_TOKEN)
+# bot = Bot(token=API_TOKEN) 
+
+async def check_new_devices_loop(bot: Bot):
+    while True:
+        try:
+            # Сканируем все файлы устройств в папке логов PHP
+            for file_path in glob.glob(os.path.join(LOGS_DIR, "*_devices.json")):
+                # Вытаскиваем токен подписки из имени файла (например, ebaa8d862c7596a5)
+                sub_token = os.path.basename(file_path).replace("_devices.json", "")
+                
+                if not os.path.exists(file_path):
+                    continue
+                    
+                with open(file_path, "r", encoding="utf-8") as f:
+                    try:
+                        devices = json.load(f)
+                    except json.JSONDecodeError:
+                        continue
+                
+                updated = False
+                for dev in devices:
+                    # Если у устройства стоит флаг, что уведомление ещё НЕ отправлено
+                    if dev.get("notification_sent") is False:
+                        
+                        # -----------------------------------------------------------
+                        # 🔍 СВЯЗЫВАНИЕ С БАЗОЙ ДАННЫХ ВАШЕГО БОТА
+                        # -----------------------------------------------------------
+                        # По умолчанию мы проверяем, вдруг имя файла (sub_token) — это и есть chat_id (число).
+                        # Если у вас в БД токен подписки привязан к user_id, раскомментируйте и вставьте вашу функцию:
+                        # target_chat_id = your_db_function_get_user_id(sub_token)
+                        
+                        target_chat_id = sub_token  # Пока берем имя файла как ID чата
+                        
+                        if target_chat_id and (str(target_chat_id).isdigit() or isinstance(target_chat_id, int)):
+                            message = (
+                                "🔔 <b>Внимание! Подключено новое устройство</b>\n\n"
+                                "К вашей VPN-подписке Sonata только что привязалось новое устройство:\n"
+                                "<pre><code class="language-json">{\n"
+                                f"  \"status\": \"connected\",\n"
+                                f"  \"os\": \"{dev.get('device_os', 'Неизвестно')}\",\n"
+                                f"  \"app\": \"{dev.get('vpn_app', 'Неизвестно')}\",\n"
+                                f"  \"ip_address\": \"{dev.get('ip', 'Неизвестно')}\"\n"
+                                "}</code></pre>\n"
+                                "<i>ℹ️ Если это были не вы, отключите это устройство в Личном кабинете>Мои устройства!</i>"
+                            )
+
+                            try:
+                                # Отправляем через ваш экземпляр bot из aiogram
+                                await bot.send_message(chat_id=int(target_chat_id), text=message, parse_mode="HTML")
+                            except Exception as e:
+                                print(f"[Sonata Log] Ошибка отправки сообщения в Telegram: {e}")
+                        
+                        # Меняем флаг на True, чтобы не спамить при следующих проверках
+                        dev["notification_sent"] = True
+                        updated = True
+                
+                # Если нашли новые устройства и обновили флаги, сохраняем JSON обратно
+                if updated:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        json.dump(devices, f, ensure_ascii=False, indent=4)
+                        
+        except Exception as e:
+            print(f"[Sonata Log] Ошибка в фоновом логгере устройств: {e}")
+            
+        # Проверяем папку каждые 5 секунд
+        await asyncio.sleep(5)
+
 
 
 
