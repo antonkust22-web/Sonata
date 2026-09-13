@@ -2899,18 +2899,21 @@ async def check_new_devices_loop(bot: Bot):
                         
                         target_chat_id = sub_token  # Пока берем имя файла как ID чата
                         
-                        if target_chat_id and (str(target_chat_id).isdigit() or isinstance(target_chat_id, int)):
+                        if target_chat_id and (str(target_chat_id).isdigit() or isinstance(target_chat_id, int)):              
+                            # Исправлено: внешние кавычки изменены на одинарные, чтобы class="language-json" не ломал синтаксис
                             message = (
-                                "🔔 <b>Внимание! Подключено новое устройство</b>\n\n"
-                                "К вашей VPN-подписке Sonata только что привязалось новое устройство:\n"
-                                "<pre><code class="language-json">{\n"
-                                f"  \"status\": \"connected\",\n"
-                                f"  \"os\": \"{dev.get('device_os', 'Неизвестно')}\",\n"
-                                f"  \"app\": \"{dev.get('vpn_app', 'Неизвестно')}\",\n"
-                                f"  \"ip_address\": \"{dev.get('ip', 'Неизвестно')}\"\n"
-                                "}</code></pre>\n"
-                                "<i>ℹ️ Если это были не вы, отключите это устройство в Личном кабинете>Мои устройства!</i>"
+                                '🔔 <b>Внимание! Подключено новое устройство</b>\n\n'
+                                'К вашей VPN-подписке Sonata только что привязалось новое устройство:\n'
+                                '<pre><code class="language-json">{\n'
+                                f'  "status": "connected",\n'
+                                f'  "os": "{dev.get("device_os", "Неизвестно")}",\n'
+                                f'  "app": "{dev.get("vpn_app", "Неизвестно")}",\n'
+                                f'  "ip_address": "{dev.get("ip", "Неизвестно")}"\n'
+                                '}</code></pre>\n'
+                                '<i>ℹ️ Если это были не вы, немедленно обратитесь в поддержку для сброса токена подписки!</i>'
                             )
+
+
 
                             try:
                                 # Отправляем через ваш экземпляр bot из aiogram
