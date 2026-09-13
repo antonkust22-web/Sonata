@@ -2650,15 +2650,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Сборка итогового сообщения
         text = (
-            "<b>👤 Личный кабинет</b>\n\n"
-            '<pre><code class="language-json">{\n'
-            f'  "role": "{role_badge}",\n'
-            f'  "user_id": {user_id},\n'
-            f'  "subscription_status": "{status_text}"'
-            f"{devices_text_block}"  # Блок устройств должен сам начинаться с запятой и новой строки
-            f"{ref_text_block}\n"    # Блок рефералов тоже должен начинаться с запятой
-            "}</code></pre>"
+            f"<b>👤 Личный кабинет</b>\n\n"
+            f"<blockquote>"
+            f"{role_badge}\n"
+            f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
+            f"<b>Статус подписки:</b> {status_text}"
+            f"{devices_text_block}"  # Подключаем блок вывода устройств
+            f"</blockquote>\n"
+            f"{ref_text_block}"
         )
+
 
 
         if has_access:
@@ -2905,8 +2906,35 @@ async def handle_device_notification(request):
             except Exception as e:
                 logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка поиска chat_id в БД: {e}")
 
-        # Если chat_id теперь числовой — шлем сообщение в Telegram
+        # Если chat_id теперь числовой — пишем в БД и шлем сообщение в Telegram
         if chat_id and (str(chat_id).isdigit() or isinstance(chat_id, int)):
+            user_id_int = int(chat_id)
+            
+            # 🔥 1. ЗАПИСЫВАЕМ ДАННЫЕ В ТВОЮ БД SQLITE3
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=15.0)
+                cursor = conn.cursor()
+                
+                # Заносим устройство в логи user_devices (с защитой ON CONFLICT по твоей схеме)
+                cursor.execute('''
+                    INSERT INTO user_devices (user_id, ip, device_os, vpn_app, last_seen)
+                    VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+                    ON CONFLICT(user_id, ip) DO UPDATE SET
+                        device_os = excluded.device_os,
+                        vpn_app = excluded.vpn_app,
+                        last_seen = excluded.last_seen
+                ''', (user_id_int, ip, device_os, vpn_app))
+                
+                # Обновляем счетчик active_devices_count в основной таблице users
+                cursor.execute("UPDATE users SET active_devices_count = ? WHERE user_id = ?", (int(slots_used), user_id_int))
+                
+                conn.commit()
+                conn.close()
+                logging.info(f"[БД СИНХРОНИЗАЦИЯ] Устройство успешно сохранено для юзера {user_id_int}")
+            except Exception as db_ex:
+                logging.error(f"[БД СИНХРОНИЗАЦИЯ ОШИБКА] Не удалось обновить SQLite: {db_ex}")
+
+            # 2. ФОРМИРУЕМ И ОТПРАВЛЯЕМ КРАСИВОЕ СООБЩЕНИЕ
             message = (
                 '🔔 <b>Внимание! Подключено новое устройство</b>\n\n'
                 'К вашей VPN-подписке Sonata только что привязалось новое устройство:\n'
@@ -2920,9 +2948,9 @@ async def handle_device_notification(request):
                 '<i>ℹ️ Если это были не вы, немедленно обратитесь в поддержку для сброса токена подписки!</i>'
             )
             try:
-                await bot.send_message(chat_id=int(chat_id), text=message, parse_mode="HTML")
+                await bot.send_message(chat_id=user_id_int, text=message, parse_mode="HTML")
             except Exception as tg_err:
-                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка отправки сообщения пользователю {chat_id}: {tg_err}")
+                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка отправки сообщения пользователю {user_id_int}: {tg_err}")
 
         return web.Response(text="OK", status=200)
 
@@ -2930,21 +2958,19 @@ async def handle_device_notification(request):
         logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка шлюза уведомлений: {ex}")
         return web.Response(text="ERROR", status=500)
 
-# Функция для инициализации веб-сервера на хостинге бота
+# Функция для инициализации веб-сервера на хостинге бота (остается прежней)
 async def start_notification_server(bot_instance: Bot):
     app = web.Application()
     app['bot_instance'] = bot_instance
-    
-    # Веб-сервер будет ждать POST-запросы по пути /device_notify
     app.router.add_post('/device_notify', handle_device_notification)
     
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Запускаем на порту 8080 (убедитесь, что порт открыт в панели вашего хостинга, например Amvera)
+    # Слушаем порт 8080 (проверь, чтобы в Amvera этот порт был указан или проброшен в настройках проекта)
     site = web.TCPSite(runner, '0.0.0.0', 8080)
     await site.start()
-    logging.info("🚀 Асинхронный шлюз уведомлений успешно запущен на порту 8080!")
+    logging.info("🚀 Асинхронный шлюз уведомлений и БД успешно запущен на порту 8080!")
 
 
 
