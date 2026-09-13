@@ -1130,6 +1130,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     import time
     import sqlite3
     import aiohttp
+    import logging
 
     try:
         expiry_int = int(expiry)
@@ -1142,32 +1143,44 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     else:
         content_to_send = b64_content
 
-    # Получаем лимит устройств и реальный Telegram ID из БД по токену подписки (который равен аргументу token)
+    # Получаем лимит устройств и реальный Telegram ID из БД по токену подписки
     found_user_id = ""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         cursor = conn.cursor()
+        
+        # Шаг 1: Пробуем найти по github_raw_url (как в вашем коде)
         cursor.execute("SELECT user_id, device_limit FROM users WHERE github_raw_url = ?", (token,))
         row = cursor.fetchone()
+        
+        # Шаг 2: Резервная проверка (если токен подписки совпадает с числовым user_id)
+        if not row and str(token).isdigit():
+            cursor.execute("SELECT user_id, device_limit FROM users WHERE user_id = ?", (int(token),))
+            row = cursor.fetchone()
+            
         conn.close()
         
         if row:
             found_user_id = str(row[0])
             if device_limit is None:
                 device_limit = row[1]
+        else:
+            # Если в БД вообще нет такой записи, но токен числовой — используем его как ID чата
+            if str(token).isdigit():
+                found_user_id = str(token)
     except Exception as db_err:
         logging.error(f"[БД ОШИБКА] Не удалось получить лимиты для синхронизации: {db_err}")
 
     if device_limit is None:
         device_limit = 5
 
-    # 🔥 ИСПРАВЛЕНО: Передаем точный found_user_id строкой, NameError больше не возникнет!
+    # Данные для отправки на ваш PHP скрипт
     data = {
-        "token": token,
+        "token": str(token),
         "content": content_to_send,
         "expiry": str(expiry_int),
         "device_limit": str(device_limit),
-        "user_id": found_user_id  
+        "user_id": found_user_id  # Передаем реальный chat_id для отправки пушей
     }
     
     try:
@@ -1177,6 +1190,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
                 logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token} (Лимит: {device_limit}, ID: {found_user_id}): {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА] Не удалось передать подписку: {ex}")
+
 
 
     
@@ -2590,16 +2604,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Настройка текстовых плашек ролей
         if role == "creator":
-            role_badge = "<blockquote><b>Статус:</b> 🟢БОРЗ (Владелец)</blockquote>"
+            role_badge = "<b>Статус:</b> 🟢БОРЗ (Владелец)"
             is_premium_role = True
         elif role == "admin":
-            role_badge = "<blockquote><b>Статус:</b> 🔴Администратор (Staff)</blockquote>"
+            role_badge = "<b>Статус:</b> 🔴Администратор (Staff)"
             is_premium_role = True
         elif role == "ambassador":
-            role_badge = "<blockquote><b>Статус:</b> 🟠Амбассадор (Partner)</blockquote>"
+            role_badge = "<b>Статус:</b> 🟠Амбассадор (Partner)"
             is_premium_role = True
         else:
-            role_badge = "<blockquote><b>Статус:</b> 🔵Пользователь</blockquote>"
+            role_badge = "<b>Статус:</b> 🔵Пользователь"
             is_premium_role = False
 
         # Извлекаем время подписки по индексу 4
@@ -2636,13 +2650,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Сборка итогового сообщения
         text = (
-            f"<b>👤 Личный кабинет</b>\n\n"
-            f"{role_badge}\n"
-            f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
-            f"<b>Статус подписки:</b> {status_text}\n"
-            f"{devices_text_block}" # Подключаем блок вывода устройств
-            f"{ref_text_block}"
+            "<b>👤 Личный кабинет</b>\n\n"
+            '<pre><code class="language-json">{\n'
+            f'  "role": "{role_badge}",\n'
+            f'  "user_id": {user_id},\n'
+            f'  "subscription_status": "{status_text}"'
+            f"{devices_text_block}"  # Блок устройств должен сам начинаться с запятой и новой строки
+            f"{ref_text_block}\n"    # Блок рефералов тоже должен начинаться с запятой
+            "}</code></pre>"
         )
+
 
         if has_access:
             text += "✨ Ваша подписка активна! Чтобы подключить устройство или обновить настройки, перейдите в главное меню бота и нажмите кнопку <b>«Подключиться»</b>."
@@ -2742,7 +2759,7 @@ async def show_user_devices(callback: types.CallbackQuery):
         ip = dev.get("ip", "0.0.0.0")
         
         # 🔥 ИСПРАВЛЕНО: Убрана приписка "Устройство #", разделитель изменен на безопасный ":"
-        btn_text = f"📱 {os} ({app})"
+        btn_text = f"{os} ({app})"
         inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{idx}:{ip}")])
 
     inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
@@ -2802,7 +2819,6 @@ async def view_single_device(callback: types.CallbackQuery):
         f"📥 <b>VPN Приложение:</b> <code>{app}</code>\n"
         f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
         f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
-        f"🔍 <b>Сырой системный лог (Отладка):</b>\n<code>{raw_ua}</code>\n\n" # Выводим лог
         "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
     )
 
@@ -2856,85 +2872,80 @@ async def delete_single_device(callback: types.CallbackQuery):
 
 
 
-import os
 import json
-import glob
-import asyncio
+import logging
+import sqlite3
+from aiohttp import web
 from aiogram import Bot
 
-# Путь к папке с логами устройств на VPS (проверьте, совпадает ли с вашим)
-LOGS_DIR = "/var/www/sonatavpn.ru/subs_logs/"
+# Обработчик POST-запросов от PHP-скрипта с VPS
+async def handle_device_notification(request):
+    try:
+        data = await request.json()
+        chat_id = data.get('chat_id')
+        device_os = data.get('device_os', 'Неизвестно')
+        vpn_app = data.get('vpn_app', 'Неизвестно')
+        ip = data.get('ip', 'Неизвестно')
+        slots_used = data.get('slots_used', 1)
+        slots_max = data.get('slots_max', 5)
 
-# Ваша существующая инициализация бота (используем вашу переменную API_TOKEN)
-# bot = Bot(token=API_TOKEN) 
+        # Вытаскиваем экземпляр бота из приложения aiogram
+        bot: Bot = request.app['bot_instance']
 
-async def check_new_devices_loop(bot: Bot):
-    while True:
-        try:
-            # Сканируем все файлы устройств в папке логов PHP
-            for file_path in glob.glob(os.path.join(LOGS_DIR, "*_devices.json")):
-                # Вытаскиваем токен подписки из имени файла (например, ebaa8d862c7596a5)
-                sub_token = os.path.basename(file_path).replace("_devices.json", "")
-                
-                if not os.path.exists(file_path):
-                    continue
-                    
-                with open(file_path, "r", encoding="utf-8") as f:
-                    try:
-                        devices = json.load(f)
-                    except json.JSONDecodeError:
-                        continue
-                
-                updated = False
-                for dev in devices:
-                    # Если у устройства стоит флаг, что уведомление ещё НЕ отправлено
-                    if dev.get("notification_sent") is False:
-                        
-                        # -----------------------------------------------------------
-                        # 🔍 СВЯЗЫВАНИЕ С БАЗОЙ ДАННЫХ ВАШЕГО БОТА
-                        # -----------------------------------------------------------
-                        # По умолчанию мы проверяем, вдруг имя файла (sub_token) — это и есть chat_id (число).
-                        # Если у вас в БД токен подписки привязан к user_id, раскомментируйте и вставьте вашу функцию:
-                        # target_chat_id = your_db_function_get_user_id(sub_token)
-                        
-                        target_chat_id = sub_token  # Пока берем имя файла как ID чата
-                        
-                        if target_chat_id and (str(target_chat_id).isdigit() or isinstance(target_chat_id, int)):              
-                            # Исправлено: внешние кавычки изменены на одинарные, чтобы class="language-json" не ломал синтаксис
-                            message = (
-                                '🔔 <b>Внимание! Подключено новое устройство</b>\n\n'
-                                'К вашей VPN-подписке Sonata только что привязалось новое устройство:\n'
-                                '<pre><code class="language-json">{\n'
-                                f'  "status": "connected",\n'
-                                f'  "os": "{dev.get("device_os", "Неизвестно")}",\n'
-                                f'  "app": "{dev.get("vpn_app", "Неизвестно")}",\n'
-                                f'  "ip_address": "{dev.get("ip", "Неизвестно")}"\n'
-                                '}</code></pre>\n'
-                                '<i>ℹ️ Если это были не вы, немедленно обратитесь в поддержку для сброса токена подписки!</i>'
-                            )
+        # Если в chat_id прилетел буквенный токен подписки, ищем реальный user_id в SQLite
+        if chat_id and not str(chat_id).isdigit():
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=10.0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id FROM users WHERE github_raw_url = ?", (str(chat_id),))
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    chat_id = row[0]
+            except Exception as e:
+                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка поиска chat_id в БД: {e}")
 
+        # Если chat_id теперь числовой — шлем сообщение в Telegram
+        if chat_id and (str(chat_id).isdigit() or isinstance(chat_id, int)):
+            message = (
+                '🔔 <b>Внимание! Подключено новое устройство</b>\n\n'
+                'К вашей VPN-подписке Sonata только что привязалось новое устройство:\n'
+                '<pre><code class="language-json">{\n'
+                f'  "status": "connected",\n'
+                f'  "os": "{device_os}",\n'
+                f'  "app": "{vpn_app}",\n'
+                f'  "ip_address": "{ip}",\n'
+                f'  "slots": "{slots_used} из {slots_max}"\n'
+                '}</code></pre>\n'
+                '<i>ℹ️ Если это были не вы, немедленно обратитесь в поддержку для сброса токена подписки!</i>'
+            )
+            try:
+                await bot.send_message(chat_id=int(chat_id), text=message, parse_mode="HTML")
+            except Exception as tg_err:
+                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка отправки сообщения пользователю {chat_id}: {tg_err}")
 
+        return web.Response(text="OK", status=200)
 
-                            try:
-                                # Отправляем через ваш экземпляр bot из aiogram
-                                await bot.send_message(chat_id=int(target_chat_id), text=message, parse_mode="HTML")
-                            except Exception as e:
-                                print(f"[Sonata Log] Ошибка отправки сообщения в Telegram: {e}")
-                        
-                        # Меняем флаг на True, чтобы не спамить при следующих проверках
-                        dev["notification_sent"] = True
-                        updated = True
-                
-                # Если нашли новые устройства и обновили флаги, сохраняем JSON обратно
-                if updated:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        json.dump(devices, f, ensure_ascii=False, indent=4)
-                        
-        except Exception as e:
-            print(f"[Sonata Log] Ошибка в фоновом логгере устройств: {e}")
-            
-        # Проверяем папку каждые 5 секунд
-        await asyncio.sleep(5)
+    except Exception as ex:
+        logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка шлюза уведомлений: {ex}")
+        return web.Response(text="ERROR", status=500)
+
+# Функция для инициализации веб-сервера на хостинге бота
+async def start_notification_server(bot_instance: Bot):
+    app = web.Application()
+    app['bot_instance'] = bot_instance
+    
+    # Веб-сервер будет ждать POST-запросы по пути /device_notify
+    app.router.add_post('/device_notify', handle_device_notification)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Запускаем на порту 8080 (убедитесь, что порт открыт в панели вашего хостинга, например Amvera)
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    logging.info("🚀 Асинхронный шлюз уведомлений успешно запущен на порту 8080!")
+
 
 
 
