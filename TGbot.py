@@ -1121,75 +1121,64 @@ async def fetch_real_server_load(srv):
 import time
 
 
-import time
-import sqlite3
-import aiohttp
-import logging
-
 async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, device_limit=None):
     """
-    Отправляет рабочий Base64 или пустую строку при блокировке на PHP-сайт.
-    Передает актуальный лимит устройств (числом) и Telegram ID пользователя для пуш-уведомлений.
+    Синхронизирует данные подписки с VPS-сервером.
+    Передает лимит и ID пользователя в стандартном POST-формате.
     """
     url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
+    import time
+    import sqlite3
+    import aiohttp
+    import logging
 
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    if is_blocked or expiry_int <= int(time.time()):
-        content_to_send = ""
-        logging.info(f"[МАРШРУТИЗАЦИЯ] Пользователь {token} заблокирован/истек. Отправляем пустоту.")
-    else:
-        content_to_send = b64_content
+    content_to_send = "" if (is_blocked or expiry_int <= int(time.time())) else b64_content
 
-    # Получаем лимит устройств и реальный Telegram ID из БД по токену подписки
+    # Вытаскиваем user_id и лимит из БД
     found_user_id = ""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         cursor = conn.cursor()
-        
-        # Шаг 1: Пробуем найти по github_raw_url (как в вашем коде)
         cursor.execute("SELECT user_id, device_limit FROM users WHERE github_raw_url = ?", (token,))
         row = cursor.fetchone()
-        
-        # Шаг 2: Резервная проверка (если токен подписки совпадает с числовым user_id)
         if not row and str(token).isdigit():
             cursor.execute("SELECT user_id, device_limit FROM users WHERE user_id = ?", (int(token),))
             row = cursor.fetchone()
-            
         conn.close()
         
         if row:
             found_user_id = str(row[0])
             if device_limit is None:
                 device_limit = row[1]
-        else:
-            if str(token).isdigit():
-                found_user_id = str(token)
     except Exception as db_err:
-        logging.error(f"[БД ОШИБКА] Не удалось получить лимиты для синхронизации: {db_err}")
+        logging.error(f"[БД ОШИБКА] Не удалось получить лимиты: {db_err}")
 
-    if device_limit is None:
-        device_limit = 5
+    # Защита от нулевого лимита на стороне Python
+    final_limit = 5 if (device_limit is None or int(device_limit) <= 0) else int(device_limit)
 
-    # 🔥 ИСПРАВЛЕНО: Передаем device_limit и expiry как чистые INT, а не строки!
-    data = {
+    # 🔥 Передаем через обычный data=payload (симмулирует отправку HTML-формы)
+    payload = {
         "token": str(token),
         "content": str(content_to_send),
-        "expiry": int(expiry_int),
-        "device_limit": int(device_limit),  # Числовой формат для PHP index.php
-        "user_id": str(found_user_id)
+        "expiry": str(expiry_int),
+        "device_limit": str(final_limit), # Жесткая строка-число
+        "user_id": str(found_user_id) if found_user_id else str(token) # Защита: отправляем хоть какой-то ID
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data, timeout=5) as response:
+            async with session.post(url, data=payload, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token} (Лимит: {device_limit}, ID: {found_user_id}): {res_text}")
+                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token}: {res_text}")
     except Exception as ex:
-        logging.error(f"[ОШИБКА] Не удалось передать подписку: {ex}")
+        logging.error(f"[ОШИБКА СИНХРОНИЗАЦИИ] Не удалось связаться с VPS: {ex}")
+
+
 
  
 
@@ -2658,8 +2647,7 @@ async def cabinet(callback: types.CallbackQuery):
             f"{role_badge}\n"
             f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
             f"<b>Статус подписки:</b> {status_text}\n"
-            f"{devices_text_block}"  # Подключаем блок вывода устройств
-            f"</blockquote>"
+            f"{devices_text_block}</blockquote>"  # Подключаем блок вывода устройств
             f"{ref_text_block}"
         )
 
