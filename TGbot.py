@@ -2657,8 +2657,8 @@ async def cabinet(callback: types.CallbackQuery):
             f"<blockquote>"
             f"{role_badge}\n"
             f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
-            f"<b>Статус подписки:</b> {status_text}"
-            f"{devices_text_block}\n"  # Подключаем блок вывода устройств
+            f"<b>Статус подписки:</b> {status_text}\n"
+            f"{devices_text_block}"  # Подключаем блок вывода устройств
             f"</blockquote>"
             f"{ref_text_block}"
         )
@@ -2744,7 +2744,9 @@ async def show_user_devices(callback: types.CallbackQuery):
     if not db_data or len(db_data) <= 3:
         await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
         return
-    sub_id = db_data[3] # github_raw_url
+        
+    # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
+    sub_id = db_data[3]
 
     vps_data = await fetch_user_data_from_vps(sub_id)
     if not vps_data or vps_data.get("status") != "success":
@@ -2756,7 +2758,7 @@ async def show_user_devices(callback: types.CallbackQuery):
     device_limit = profile.get("device_limit", 5)
     real_active_count = len(devices)
 
-    # 🔥 АВТО-СИНХРОНИЗАЦИЯ: Записываем РЕАЛЬНОЕ количество устройств с VPS в твой 11-й столбец SQLite
+    # Авто-синхронизация локальной БД
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         cursor = conn.cursor()
@@ -2768,11 +2770,10 @@ async def show_user_devices(callback: types.CallbackQuery):
 
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        f"Занято slots: <b>{real_active_count} из {device_limit}</b>\n"
+        f"Занято слотов: <b>{real_active_count} из {device_limit}</b>\n"
         "Ниже представлены ваши подключенные устройства. Нажмите на любое из них для просмотра детальной информации или удаления сессии:"
     )
 
-    # Строим клавиатуру
     inline_keyboard = []
     for idx, dev in enumerate(devices, 1):
         os_type = dev.get("device_os", "Unknown OS")
@@ -2810,6 +2811,8 @@ async def view_single_device(callback: types.CallbackQuery):
     if not db_data or len(db_data) <= 3:
         await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
         return
+        
+    # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
     sub_id = db_data[3]
 
     vps_data = await fetch_user_data_from_vps(sub_id)
@@ -2827,7 +2830,7 @@ async def view_single_device(callback: types.CallbackQuery):
 
     os_type = target_dev.get("device_os", "Unknown OS")
     app_type = target_dev.get("vpn_app", "Unknown App")
-    last_seen = int(target_dev.get("last_seen", time.time()))
+    last_seen = int(target_dev.get("last_seen", dt.datetime.now().timestamp()))
     time_str = dt.datetime.fromtimestamp(last_seen).strftime('%d.%m.%Y в %H:%M:%S')
 
     text = (
@@ -2853,11 +2856,6 @@ async def view_single_device(callback: types.CallbackQuery):
         logging.error(f"❌ [ИНТЕРФЕЙС] Критическая ошибка вывода карточки девайса: {err}", exc_info=True)
 
 
-
-import aiohttp
-import logging
-from aiogram import types, F
-
 # ====================================================================
 # 3. ОБРАБОТКА КНОПКИ ТОЧЕЧНОГО УДАЛЕНИЯ И ЗАПУСКА БАНА
 # ====================================================================
@@ -2868,13 +2866,12 @@ async def delete_single_device(callback: types.CallbackQuery):
 
     db_data = get_user_from_db(user_id)
     if not db_data or len(db_data) <= 3:
-        await callback.answer("⚠️ Ошибка: Токен подписки не найден.")
+        await callback.message.answer("⚠️ Ошибка: Токен подписки не найден.")
         return
     
-    # Строго берем github_raw_url (3-й индекс твоего кортежа из БД)
+    # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
     sub_id = db_data[3]
 
-    # Отправляем HTTP GET-запрос к api.php для удаления слота и занесения IP в черный список
     url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_ip={device_ip}"
     
     try:
@@ -2888,8 +2885,8 @@ async def delete_single_device(callback: types.CallbackQuery):
         logging.error(f"Ошибка удаления девайса: {e}")
         await callback.answer("❌ Ошибка соединения с сервером.")
 
-    # Возвращаем пользователя в обновленный список кнопок-устройств (автоматически пересчитает новые лимиты)
     await show_user_devices(callback)
+
 
 
 
