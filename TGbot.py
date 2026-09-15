@@ -2865,12 +2865,12 @@ async def delete_single_device(callback: types.CallbackQuery):
     device_ip = callback.data.replace("dev_del_", "")
 
     db_data = get_user_from_db(user_id)
-    if not db_data or len(db_data) <= 3:
+    if not db_data or len(db_data) <= 4:
         await callback.message.answer("⚠️ Ошибка: Токен подписки не найден.")
         return
     
     # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
-    sub_id = db_data[3]
+    sub_id = db_data[4]
 
     url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_ip={device_ip}"
     
