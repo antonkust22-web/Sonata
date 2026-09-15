@@ -1121,23 +1121,50 @@ async def fetch_real_server_load(srv):
 import time
 
 
+import time
+import sqlite3
+import aiohttp
+import logging
+import base64
+
 async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, device_limit=None):
     """
     Синхронизирует данные подписки с VPS-сервером.
-    Передает лимит и ID пользователя в стандартном POST-формате.
+    Жестко защищает от отправки двойного Base64 на сайт.
     """
     url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
-    import time
-    import sqlite3
-    import aiohttp
-    import logging
 
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    content_to_send = "" if (is_blocked or expiry_int <= int(time.time())) else b64_content
+    # 🔥 ЖЕЛЕЗОБЕТОННЫЙ ФИКС ДВОЙНОГО ШИФРОВАНИЯ НА СТОРОНЕ PYTHON:
+    raw_content = str(b64_content).strip()
+    
+    # Шаг 1: Проверяем, не является ли строка СЫРЫМ текстом конфигурации
+    if "vless://" in raw_content or "ss://" in raw_content:
+        # Это сырой текст — кодируем ОДИН раз
+        content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
+    else:
+        # Строка уже зашифрована. Проверяем, не зашифровали ли её дважды?
+        try:
+            first_decode = base64.b64decode(raw_content, validate=True).decode('utf-8')
+            # Если расшифрованный текст тоже выглядит как Base64 (например, dmxlc3M6), 
+            # значит бот передал нам ДВОЙНОЙ Base64. Берем первый слой (raw_content) как финальный.
+            content_to_send = raw_content
+            
+            # Но если первый декод внезапно выдал чистый "vless://", значит все супер, 
+            # передана нормальная одинарная строка.
+            if "vless://" in first_decode or "ss://" in first_decode:
+                content_to_send = raw_content
+        except Exception:
+            # Если упало в ошибку при валидации — кодируем как сырую строку на всякий случай
+            content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
+
+    # Блокировка
+    if is_blocked or expiry_int <= int(time.time()):
+        content_to_send = ""
 
     # Вытаскиваем user_id и лимит из БД
     found_user_id = ""
@@ -1158,25 +1185,26 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     except Exception as db_err:
         logging.error(f"[БД ОШИБКА] Не удалось получить лимиты: {db_err}")
 
-    # Защита от нулевого лимита на стороне Python
     final_limit = 5 if (device_limit is None or int(device_limit) <= 0) else int(device_limit)
 
-    # 🔥 Передаем через обычный data=payload (симмулирует отправку HTML-формы)
     payload = {
         "token": str(token),
         "content": str(content_to_send),
         "expiry": str(expiry_int),
-        "device_limit": str(final_limit), # Жесткая строка-число
-        "user_id": str(found_user_id) if found_user_id else str(token) # Защита: отправляем хоть какой-то ID
+        "device_limit": str(final_limit),
+        "user_id": str(found_user_id) if found_user_id else str(token)
     }
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=payload, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token}: {res_text}")
+                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token} (Лимит: {final_limit}): {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА СИНХРОНИЗАЦИИ] Не удалось связаться с VPS: {ex}")
+
+
+
 
 
 
