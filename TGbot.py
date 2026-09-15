@@ -1121,16 +1121,17 @@ async def fetch_real_server_load(srv):
 import time
 
 
+import time
+import sqlite3
+import aiohttp
+import logging
+
 async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, device_limit=None):
     """
     Отправляет рабочий Base64 или пустую строку при блокировке на PHP-сайт.
-    Передает актуальный лимит устройств и Telegram ID пользователя для пуш-уведомлений.
+    Передает актуальный лимит устройств (числом) и Telegram ID пользователя для пуш-уведомлений.
     """
     url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
-    import time
-    import sqlite3
-    import aiohttp
-    import logging
 
     try:
         expiry_int = int(expiry)
@@ -1165,7 +1166,6 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
             if device_limit is None:
                 device_limit = row[1]
         else:
-            # Если в БД вообще нет такой записи, но токен числовой — используем его как ID чата
             if str(token).isdigit():
                 found_user_id = str(token)
     except Exception as db_err:
@@ -1174,13 +1174,13 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     if device_limit is None:
         device_limit = 5
 
-    # Данные для отправки на ваш PHP скрипт
+    # 🔥 ИСПРАВЛЕНО: Передаем device_limit и expiry как чистые INT, а не строки!
     data = {
         "token": str(token),
-        "content": content_to_send,
-        "expiry": str(expiry_int),
-        "device_limit": str(device_limit),
-        "user_id": found_user_id  # Передаем реальный chat_id для отправки пушей
+        "content": str(content_to_send),
+        "expiry": int(expiry_int),
+        "device_limit": int(device_limit),  # Числовой формат для PHP index.php
+        "user_id": str(found_user_id)
     }
     
     try:
@@ -1190,6 +1190,9 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
                 logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация токена {token} (Лимит: {device_limit}, ID: {found_user_id}): {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА] Не удалось передать подписку: {ex}")
+
+ 
+
 
 
 
@@ -2655,8 +2658,8 @@ async def cabinet(callback: types.CallbackQuery):
             f"{role_badge}\n"
             f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
             f"<b>Статус подписки:</b> {status_text}"
-            f"{devices_text_block}"  # Подключаем блок вывода устройств
-            f"</blockquote>\n"
+            f"{devices_text_block}\n"  # Подключаем блок вывода устройств
+            f"</blockquote>"
             f"{ref_text_block}"
         )
 
@@ -2685,6 +2688,14 @@ async def cabinet(callback: types.CallbackQuery):
         pass
 
 
+
+import os
+import logging
+import datetime as dt
+import aiohttp
+import sqlite3
+from aiogram import types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ====================================================================
 # 🛜 ОБНОВЛЕННЫЙ СЕТЕВОЙ API-МОСТ НА JSON (ДЛЯ AMVERA)
@@ -2721,8 +2732,6 @@ async def request_clear_devices_on_vps(sub_id: str) -> bool:
     return False
 
 
-
-
 # ====================================================================
 # 1. МЕНЮ: СПИСОК УСТРОЙСТВ В ВИДЕ КНОПОК
 # ====================================================================
@@ -2735,7 +2744,7 @@ async def show_user_devices(callback: types.CallbackQuery):
     if not db_data or len(db_data) <= 3:
         await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
         return
-    sub_id = db_data[3]
+    sub_id = db_data[3] # github_raw_url
 
     vps_data = await fetch_user_data_from_vps(sub_id)
     if not vps_data or vps_data.get("status") != "success":
@@ -2745,23 +2754,33 @@ async def show_user_devices(callback: types.CallbackQuery):
     devices = vps_data.get("devices", [])
     profile = vps_data.get("profile", {})
     device_limit = profile.get("device_limit", 5)
+    real_active_count = len(devices)
+
+    # 🔥 АВТО-СИНХРОНИЗАЦИЯ: Записываем РЕАЛЬНОЕ количество устройств с VPS в твой 11-й столбец SQLite
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET active_devices_count = ? WHERE user_id = ?", (real_active_count, user_id))
+        conn.commit()
+        conn.close()
+    except Exception as db_sync_err:
+        logging.error(f"❌ [БД СИНХРОНИЗАЦИЯ] Не удалось обновить active_devices_count в SQLite: {db_sync_err}")
 
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        f"Занято слотов: <b>{len(devices)} из {device_limit}</b>\n"
+        f"Занято slots: <b>{real_active_count} из {device_limit}</b>\n"
         "Ниже представлены ваши подключенные устройства. Нажмите на любое из них для просмотра детальной информации или удаления сессии:"
     )
 
-    # Строим клавиатуру, где каждое устройство — это аккуратная кнопка без лишнего текста
+    # Строим клавиатуру
     inline_keyboard = []
     for idx, dev in enumerate(devices, 1):
-        os = dev.get("device_os", "Unknown OS")
-        app = dev.get("vpn_app", "Unknown App")
-        ip = dev.get("ip", "0.0.0.0")
+        os_type = dev.get("device_os", "Unknown OS")
+        app_type = dev.get("vpn_app", "Unknown App")
+        ip_addr = dev.get("ip", "0.0.0.0")
         
-        # 🔥 ИСПРАВЛЕНО: Убрана приписка "Устройство #", разделитель изменен на безопасный ":"
-        btn_text = f"{os} ({app})"
-        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{idx}:{ip}")])
+        btn_text = f"{os_type} ({app_type})"
+        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{idx}:{ip_addr}")])
 
     inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
     kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
@@ -2783,7 +2802,6 @@ async def view_single_device(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    # Безопасный разбор строки по двоеточию
     parts = callback.data.split(":")
     dev_num = parts[1]
     device_ip = parts[2]
@@ -2797,7 +2815,6 @@ async def view_single_device(callback: types.CallbackQuery):
     vps_data = await fetch_user_data_from_vps(sub_id)
     devices = vps_data.get("devices", []) if vps_data else []
     
-    # Ищем данные выбранного устройства
     target_dev = None
     for dev in devices:
         if dev.get("ip") == device_ip:
@@ -2808,21 +2825,19 @@ async def view_single_device(callback: types.CallbackQuery):
         await callback.message.answer("❌ Устройство не найдено или уже было удалено.")
         return
 
-    os = target_dev.get("device_os", "Unknown OS")
-    app = target_dev.get("vpn_app", "Unknown App")
-    last_seen = int(target_dev.get("last_seen", 0))
-    raw_ua = target_dev.get("raw_ua", "Неизвестный User-Agent") # 🔥 Получаем сырую строку
+    os_type = target_dev.get("device_os", "Unknown OS")
+    app_type = target_dev.get("vpn_app", "Unknown App")
+    last_seen = int(target_dev.get("last_seen", time.time()))
     time_str = dt.datetime.fromtimestamp(last_seen).strftime('%d.%m.%Y в %H:%M:%S')
 
     text = (
         f"<b>📋 Информация об устройстве #{dev_num}</b>\n\n"
-        f"💻 <b>Операционная система:</b> <code>{os}</code>\n"
-        f"📥 <b>VPN Приложение:</b> <code>{app}</code>\n"
+        f"💻 <b>Операционная система:</b> <code>{os_type}</code>\n"
+        f"📥 <b>VPN Приложение:</b> <code>{app_type}</code>\n"
         f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
         f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
         "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
     )
-
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
@@ -2830,7 +2845,6 @@ async def view_single_device(callback: types.CallbackQuery):
     ])
     
     try:
-        # 🔥 ИСПРАВЛЕНО: Умное переключение экранов для медиа-сообщений (видео/фото) и обычного текста
         if callback.message.caption or callback.message.video or callback.message.photo:
             await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
         else:
@@ -2839,8 +2853,13 @@ async def view_single_device(callback: types.CallbackQuery):
         logging.error(f"❌ [ИНТЕРФЕЙС] Критическая ошибка вывода карточки девайса: {err}", exc_info=True)
 
 
+
+import aiohttp
+import logging
+from aiogram import types, F
+
 # ====================================================================
-# 3. ОБРАБОТЧИК КНОПКИ ТОЧЕЧНОГО УДАЛЕНИЯ И ЗАПУСКА БАНА
+# 3. ОБРАБОТКА КНОПКИ ТОЧЕЧНОГО УДАЛЕНИЯ И ЗАПУСКА БАНА
 # ====================================================================
 @dp.callback_query(F.data.startswith("dev_del_"))
 async def delete_single_device(callback: types.CallbackQuery):
@@ -2851,6 +2870,8 @@ async def delete_single_device(callback: types.CallbackQuery):
     if not db_data or len(db_data) <= 3:
         await callback.answer("⚠️ Ошибка: Токен подписки не найден.")
         return
+    
+    # Строго берем github_raw_url (3-й индекс твоего кортежа из БД)
     sub_id = db_data[3]
 
     # Отправляем HTTP GET-запрос к api.php для удаления слота и занесения IP в черный список
@@ -2867,110 +2888,9 @@ async def delete_single_device(callback: types.CallbackQuery):
         logging.error(f"Ошибка удаления девайса: {e}")
         await callback.answer("❌ Ошибка соединения с сервером.")
 
-    # Возвращаем пользователя в обновленный список кнопок-устройств
+    # Возвращаем пользователя в обновленный список кнопок-устройств (автоматически пересчитает новые лимиты)
     await show_user_devices(callback)
 
-
-
-
-import json
-import logging
-import sqlite3
-from aiohttp import web
-from aiogram import Bot
-
-# Обработчик POST-запросов от PHP-скрипта с VPS
-async def handle_device_notification(request):
-    try:
-        data = await request.json()
-        chat_id = data.get('chat_id')
-        device_os = data.get('device_os', 'Неизвестно')
-        vpn_app = data.get('vpn_app', 'Неизвестно')
-        ip = data.get('ip', 'Неизвестно')
-        slots_used = data.get('slots_used', 1)
-        slots_max = data.get('slots_max', 5)
-
-        # Вытаскиваем экземпляр бота из приложения aiogram
-        bot: Bot = request.app['bot_instance']
-
-        # Если в chat_id прилетел буквенный токен подписки, ищем реальный user_id в SQLite
-        if chat_id and not str(chat_id).isdigit():
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=10.0)
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id FROM users WHERE github_raw_url = ?", (str(chat_id),))
-                row = cursor.fetchone()
-                conn.close()
-                if row:
-                    chat_id = row[0]
-            except Exception as e:
-                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка поиска chat_id в БД: {e}")
-
-        # Если chat_id теперь числовой — пишем в БД и шлем сообщение в Telegram
-        if chat_id and (str(chat_id).isdigit() or isinstance(chat_id, int)):
-            user_id_int = int(chat_id)
-            
-            # 🔥 1. ЗАПИСЫВАЕМ ДАННЫЕ В ТВОЮ БД SQLITE3
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=15.0)
-                cursor = conn.cursor()
-                
-                # Заносим устройство в логи user_devices (с защитой ON CONFLICT по твоей схеме)
-                cursor.execute('''
-                    INSERT INTO user_devices (user_id, ip, device_os, vpn_app, last_seen)
-                    VALUES (?, ?, ?, ?, strftime('%s', 'now'))
-                    ON CONFLICT(user_id, ip) DO UPDATE SET
-                        device_os = excluded.device_os,
-                        vpn_app = excluded.vpn_app,
-                        last_seen = excluded.last_seen
-                ''', (user_id_int, ip, device_os, vpn_app))
-                
-                # Обновляем счетчик active_devices_count в основной таблице users
-                cursor.execute("UPDATE users SET active_devices_count = ? WHERE user_id = ?", (int(slots_used), user_id_int))
-                
-                conn.commit()
-                conn.close()
-                logging.info(f"[БД СИНХРОНИЗАЦИЯ] Устройство успешно сохранено для юзера {user_id_int}")
-            except Exception as db_ex:
-                logging.error(f"[БД СИНХРОНИЗАЦИЯ ОШИБКА] Не удалось обновить SQLite: {db_ex}")
-
-            # 2. ФОРМИРУЕМ И ОТПРАВЛЯЕМ КРАСИВОЕ СООБЩЕНИЕ
-            message = (
-                '🔔 <b>Внимание! Подключено новое устройство</b>\n\n'
-                'К вашей VPN-подписке Sonata только что привязалось новое устройство:\n'
-                '<pre><code class="language-json">{\n'
-                f'  "status": "connected",\n'
-                f'  "os": "{device_os}",\n'
-                f'  "app": "{vpn_app}",\n'
-                f'  "ip_address": "{ip}",\n'
-                f'  "slots": "{slots_used} из {slots_max}"\n'
-                '}</code></pre>\n'
-                '<i>ℹ️ Если это были не вы, немедленно обратитесь в поддержку для сброса токена подписки!</i>'
-            )
-            try:
-                await bot.send_message(chat_id=user_id_int, text=message, parse_mode="HTML")
-            except Exception as tg_err:
-                logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка отправки сообщения пользователю {user_id_int}: {tg_err}")
-
-        return web.Response(text="OK", status=200)
-
-    except Exception as ex:
-        logging.error(f"[УВЕДОМЛЕНИЕ] Ошибка шлюза уведомлений: {ex}")
-        return web.Response(text="ERROR", status=500)
-
-# Функция для инициализации веб-сервера на хостинге бота (остается прежней)
-async def start_notification_server(bot_instance: Bot):
-    app = web.Application()
-    app['bot_instance'] = bot_instance
-    app.router.add_post('/device_notify', handle_device_notification)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # Слушаем порт 8080 (проверь, чтобы в Amvera этот порт был указан или проброшен в настройках проекта)
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
-    await site.start()
-    logging.info("🚀 Асинхронный шлюз уведомлений и БД успешно запущен на порту 8080!")
 
 
 
