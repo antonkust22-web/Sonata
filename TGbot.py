@@ -1119,77 +1119,21 @@ async def fetch_real_server_load(srv):
 
 
 
-async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, device_limit=None):
+async def send_sub_to_website(token, raw_content, expiry, is_blocked=False, device_limit=None):
     """
-    Синхронизирует данные подписки с VPS-сервером.
-    Включает глубокое логирование для детекции двойного Base64.
-    [ИСПРАВЛЕНО]: Устранено ложное срабатывание двойного кодирования на сырых ссылках.
+    Отправляет СЫРЫЕ vless ссылки на сайт. Сайт сам закодирует их в Base64.
     """
     url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
     
-    logging.info("=" * 60)
-    logging.info(f"🔍 [ДЕТЕКТОР] СТАРТ СИНХРОНИЗАЦИИ ДЛЯ ТОКЕНА: {token}")
-
     try:
         expiry_int = int(expiry)
     except (ValueError, TypeError):
         expiry_int = 1893456000
 
-    raw_content = str(b64_content).strip()
-    
-    # 🕵️‍♂️ ШАГ 1: Логируем то, что РЕАЛЬНО прилетело в функцию из хэндлеров бота
-    logging.info(f"📥 [ДЕТЕКТОР] Длина входящего контента: {len(raw_content)} симв.")
-    logging.info(f"📥 [ДЕТЕКТОР] Первые 30 симв. входа: '{raw_content[:30]}'")
-    
-    # Пытаемся сделать тестовый декод, чтобы понять природу данных
-    is_input_raw_text = "vless://" in raw_content or "ss://" in raw_content
-    logging.info(f"📥 [ДЕТЕКТОР] Входящий контент содержит сырые ссылки? {'ДА' if is_input_raw_text else 'НЕТ'}")
+    content_to_send = str(raw_content).strip()
 
-    content_to_send = ""
-    source_type = "НЕИЗВЕСТНО"
-
-    if is_input_raw_text:
-        # Кейс 1: Прилетел сырой текст vless://
-        source_type = "Пайтон передал СЫРОЙ текст (vless://). Кодируем 1 раз."
-        content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
-    else:
-        # Кейс 2: Прилетел Base64. Аккуратно проверяем его.
-        try:
-            # Декодируем один раз
-            first_decode = base64.b64decode(raw_content, validate=True).decode('utf-8', errors='ignore')
-            
-            # 🔥 ИСПРАВЛЕНИЕ: Если после первого декода мы получили vless/ss — это чистый одинарный Base64!
-            if "vless://" in first_decode or "ss://" in first_decode:
-                source_type = "Пайтон передал ЧИСТЫЙ ОДИНАРНЫЙ Base64. Отправляем КАК ЕСТЬ."
-                content_to_send = raw_content
-            else:
-                # Если в первом декоде нет vless, возможно это двойной Base64
-                try:
-                    second_decode = base64.b64decode(first_decode, validate=True).decode('utf-8', errors='ignore')
-                    if "vless://" in second_decode or "ss://" in second_decode:
-                        source_type = "🚨 АЛАРМ! Пайтон передал ДВОЙНОЙ Base64! Срезаем 1 лишний слой."
-                        content_to_send = first_decode
-                    else:
-                        source_type = "Пайтон передал нечитаемый текст. Кодируем сырые данные."
-                        content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
-                except Exception:
-                    # Если второй декод упал, значит первый декод — это просто обычный текст (не b64), но без vless://
-                    source_type = "Пайтон передал обычный не-vless текст. Кодируем в Base64."
-                    content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
-        except Exception:
-            # Если даже первый декод не прошел, значит это 100% сырой текст без флага vless://
-            source_type = "Пайтон передал невалидный Base64. Вынужденно кодируем."
-            content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
-
-    # Блокировка
     if is_blocked or expiry_int <= int(time.time()):
-        logging.info("🔒 [ДЕТЕКТОР] Подписка заблокирована или истекла. Контент обнулен.")
         content_to_send = ""
-
-    # 🕵️‍♂️ ШАГ 2: Логируем то, что РЕАЛЬНО отправляется на PHP-сайт
-    logging.info(f"📤 [ДЕТЕКТОР] ВЕРДИКТ АНАЛИЗА: {source_type}")
-    logging.info(f"📤 [ДЕТЕКТОР] Первые 30 симв. отправки на VPS: '{content_to_send[:30]}'")
-    logging.info("=" * 60)
 
     # Вытаскиваем user_id и лимит из БД
     found_user_id = ""
@@ -1202,7 +1146,6 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
             cursor.execute("SELECT user_id, device_limit FROM users WHERE user_id = ?", (int(token),))
             row = cursor.fetchone()
         conn.close()
-        
         if row:
             found_user_id = str(row[0])
             if device_limit is None:
@@ -1214,7 +1157,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
 
     payload = {
         "token": str(token),
-        "content": str(content_to_send),
+        "content": content_to_send,  # Отправляем чистый текст vless://
         "expiry": str(expiry_int),
         "device_limit": str(final_limit),
         "user_id": str(found_user_id) if found_user_id else str(token)
@@ -1224,9 +1167,10 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=payload, timeout=5) as response:
                 res_text = await response.text()
-                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token} (Лимит: {final_limit}): {res_text}")
+                logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token}: {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА СИНХРОНИЗАЦИИ] Не удалось связаться с VPS: {ex}")
+
 
 
 
