@@ -1123,6 +1123,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     """
     Синхронизирует данные подписки с VPS-сервером.
     Включает глубокое логирование для детекции двойного Base64.
+    [ИСПРАВЛЕНО]: Устранено ложное срабатывание двойного кодирования на сырых ссылках.
     """
     url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
     
@@ -1148,32 +1149,36 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     source_type = "НЕИЗВЕСТНО"
 
     if is_input_raw_text:
-        # Кейс: Прилетел сырой текст vless://
+        # Кейс 1: Прилетел сырой текст vless://
         source_type = "Пайтон передал СЫРОЙ текст (vless://). Кодируем 1 раз."
         content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
     else:
-        # Кейс: Прилетел какой-то шифр (Base64)
+        # Кейс 2: Прилетел Base64. Аккуратно проверяем его.
         try:
+            # Декодируем один раз
             first_decode = base64.b64decode(raw_content, validate=True).decode('utf-8', errors='ignore')
             
+            # 🔥 ИСПРАВЛЕНИЕ: Если после первого декода мы получили vless/ss — это чистый одинарный Base64!
             if "vless://" in first_decode or "ss://" in first_decode:
                 source_type = "Пайтон передал ЧИСТЫЙ ОДИНАРНЫЙ Base64. Отправляем КАК ЕСТЬ."
                 content_to_send = raw_content
             else:
-                # Пробуем декодировать второй раз
+                # Если в первом декоде нет vless, возможно это двойной Base64
                 try:
                     second_decode = base64.b64decode(first_decode, validate=True).decode('utf-8', errors='ignore')
                     if "vless://" in second_decode or "ss://" in second_decode:
                         source_type = "🚨 АЛАРМ! Пайтон передал ДВОЙНОЙ Base64! Срезаем 1 лишний слой."
                         content_to_send = first_decode
                     else:
-                        source_type = "Пайтон передал непонятный бинарный Base64. Кодируем заново."
+                        source_type = "Пайтон передал нечитаемый текст. Кодируем сырые данные."
                         content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
                 except Exception:
-                    source_type = "Пайтон передал нормальный Base64 (второй декод не прошел). Отправляем КАК ЕСТЬ."
-                    content_to_send = raw_content
+                    # Если второй декод упал, значит первый декод — это просто обычный текст (не b64), но без vless://
+                    source_type = "Пайтон передал обычный не-vless текст. Кодируем в Base64."
+                    content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
         except Exception:
-            source_type = "Пайтон передал невалидный Base64/Текст. Вынужденно кодируем."
+            # Если даже первый декод не прошел, значит это 100% сырой текст без флага vless://
+            source_type = "Пайтон передал невалидный Base64. Вынужденно кодируем."
             content_to_send = base64.b64encode(raw_content.encode('utf-8')).decode('utf-8')
 
     # Блокировка
@@ -1222,6 +1227,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
                 logging.info(f"[МАРШРУТИЗАЦИЯ] Синхронизация подписки {token} (Лимит: {final_limit}): {res_text}")
     except Exception as ex:
         logging.error(f"[ОШИБКА СИНХРОНИЗАЦИИ] Не удалось связаться с VPS: {ex}")
+
 
 
 
