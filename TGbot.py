@@ -2688,11 +2688,11 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Если лимит равен 999 (наш годовой безлимитный тариф), красиво выводим бесконечность
         if device_limit >= 999 or is_premium_role:
-            devices_display = f"<b>{active_devices_count} из ∞ (Безлимит)</b>"
+            devices_display = f"<b>{active_devices} из ∞ (Безлимит)</b>"
         else:
-            devices_display = f"<b>{active_devices_count} из {device_limit}</b>" #{real_active_count}
+            devices_display = f"<b>{active_devices} из {device_limit}</b>"
 
-        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}"
+        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
 
         # Сборка итогового сообщения
         text = (
@@ -2701,14 +2701,9 @@ async def cabinet(callback: types.CallbackQuery):
             f"{role_badge}\n"
             f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
             f"<b>Статус подписки:</b> {status_text}\n"
-            f"{devices_text_block}"  # Теперь тут нет лишних переносов строк!
-            f"</blockquote>\n"       # Перенос строки делаем ВНЕ цитаты, чтобы отделить рефералку
+            f"{devices_text_block}</blockquote>"  # Подключаем блок вывода устройств
             f"{ref_text_block}"
         )
-
-
-
-
 
 
 
