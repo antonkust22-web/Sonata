@@ -2696,15 +2696,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Сборка итогового сообщения
         text = (
-            f'<a href="https://t.me"><b>👤 Личный кабинет</b></a>\n\n' # Этот заголовок станет синим и кликабельным
-            f"<blockquote>"
+            f"<b>👤 Личный кабинет</b>\n\n" # Синяя кликабельная команда
+            f"<pre>"
             f"{role_badge}\n"
             f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
             f"<b>Статус подписки:</b> {status_text}\n"
-            f"{devices_text_block.strip()}" # .strip() убирает ту самую лишнюю пустую строку снизу!
-            f"</blockquote>"
+            f"{devices_text_block.strip()}" # Фикс лишней строки
+            f"</pre>"
             f"{ref_text_block}"
         )
+
 
 
 
