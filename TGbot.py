@@ -2696,15 +2696,16 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Сборка итогового сообщения
         text = (
-            f"<b>👤 Личный кабинет</b>\n\n"
-            f'<pre language="docker">'  # Указываем язык для синей подсветки
+            f'<a href="https://t.me"><b>👤 Личный кабинет</b></a>\n\n' # Этот заголовок станет синим и кликабельным
+            f"<blockquote>"
             f"{role_badge}\n"
-            f"ID пользователя: {user_id}\n"
-            f"Статус подписки: {status_text}\n"
-            f"{devices_text_block.strip()}"  # Убирает скрытый перенос строки
-            f"</pre>"
+            f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
+            f"<b>Статус подписки:</b> {status_text}\n"
+            f"{devices_text_block.strip()}" # .strip() убирает ту самую лишнюю пустую строку снизу!
+            f"</blockquote>"
             f"{ref_text_block}"
         )
+
 
 
 
