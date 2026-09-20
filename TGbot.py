@@ -2688,9 +2688,9 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Если лимит равен 999 (наш годовой безлимитный тариф), красиво выводим бесконечность
         if device_limit >= 999 or is_premium_role:
-            devices_display = f"<b>{real_active_count} из ∞ (Безлимит)</b>"
+            devices_display = f"<b>{active_devices_count} из ∞ (Безлимит)</b>"
         else:
-            devices_display = f"<b>{real_active_count} из {device_limit}</b>"
+            devices_display = f"<b>{active_devices_count} из {device_limit}</b>" #{real_active_count}
 
         devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
 
