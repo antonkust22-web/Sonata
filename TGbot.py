@@ -1417,6 +1417,7 @@ async def creator_panel_help(message: types.Message):
         "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
         "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>\n\n"
         "Рассылка: <code>/send</code>\n"
+        "Установка лимита: <code>/set_limit</code>"
         "<code>/start_promo</code> начало акции\n\n"
         "<code>/team</code> cписок админов и амбассодоров\n"
         "<code>/find_user_name [username]</code> узнать ТГ АЙДИ по юзеру\n\n"
@@ -2687,22 +2688,24 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Если лимит равен 999 (наш годовой безлимитный тариф), красиво выводим бесконечность
         if device_limit >= 999 or is_premium_role:
-            devices_display = f"<b>{active_devices} из ∞ (Безлимит)</b>"
+            devices_display = f"<b>{real_active_count} из ∞ (Безлимит)</b>"
         else:
-            devices_display = f"<b>{active_devices} из {device_limit}</b>"
+            devices_display = f"<b>{real_active_count} из {device_limit}</b>"
 
         devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
 
         # Сборка итогового сообщения
         text = (
             f"<b>👤 Личный кабинет</b>\n\n"
-            f"<blockquote>"
+            f'<pre language="docker">'  # Указываем язык для синей подсветки
             f"{role_badge}\n"
-            f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
-            f"<b>Статус подписки:</b> {status_text}\n"
-            f"{devices_text_block}</blockquote>"  # Подключаем блок вывода устройств
+            f"ID пользователя: {user_id}\n"
+            f"Статус подписки: {status_text}\n"
+            f"{devices_text_block.strip()}"  # Убирает скрытый перенос строки
+            f"</pre>"
             f"{ref_text_block}"
         )
+
 
 
 
@@ -2811,9 +2814,13 @@ async def show_user_devices(callback: types.CallbackQuery):
 
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        f"Занято слотов: <b>{real_active_count} из {device_limit}</b>\n"
-        "Ниже представлены ваши подключенные устройства. Нажмите на любое из них для просмотра детальной информации или удаления сессии:"
+        '<pre language="docker">'
+        f"Занято слотов: {real_active_count} из {device_limit}"
+        "</pre>\n"
+        "🔹 Ниже представлены ваши подключенные устройства.\n"
+        "🔹 Нажмите на любое из них для просмотра детальной информации или удаления сессии."
     )
+
 
     inline_keyboard = []
     for idx, dev in enumerate(devices, 1):
@@ -3210,8 +3217,8 @@ async def connect(callback: types.CallbackQuery):
 
         text_os = (
             "💻 <b>Выберите ваше устройство</b>\n\n"
-            "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN. "
-            "Нажмите один раз для продолжения."
+            "Пожалуйста, выберите операционную систему, на которую вы хотите установить VPN.\n\n "
+            "<b>Нажмите один раз для продолжения.</b>"
         )
 
         await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
@@ -3274,8 +3281,8 @@ async def process_os_choice(callback: types.CallbackQuery):
         
         text_apps = (
             f"📥 <b>Вы выбрали систему: {selected_os.upper()}</b>\n\n"
-            "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве.\n"
-            "Нажмите один раз для решения"
+            "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве.\n\n"
+            "<b>Нажмите один раз для решения</b>"
         )
         
         try:
@@ -3377,7 +3384,6 @@ import qrcode
 import urllib.parse
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 
-# Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
 # Выносим генерацию экрана в отдельную функцию, чтобы вызывать её и при повторном входе
 async def process_final_screen(callback: types.CallbackQuery, user_id, username, db_data, selected_os, selected_app):
     # Generation config (оригинальный рабочий код)
@@ -3828,7 +3834,7 @@ async def subscription(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=f"{prefix}1 месяц (5 устр.) — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца (10 устр.) — {p90} руб.", callback_data="pay_90_days")],
         [InlineKeyboardButton(text=f"{prefix}5 месяцев (20 устр.) — {p150} руб.", callback_data="pay_150_days")],
-        [InlineKeyboardButton(text=f"🚀 1 год (БЕЗЛИМИТ устр.) — {p365} руб.", callback_data="pay_365_days")],
+        [InlineKeyboardButton(text=f"{prefix}1 год (БЕЗЛИМИТ устр.) — {p365} руб.", callback_data="pay_365_days")],
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
     ])
     
@@ -3836,7 +3842,7 @@ async def subscription(callback: types.CallbackQuery):
         "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
     ) + (
         "Выбор тарифа:\n\n"
-        "Оплатите подписку, чтобы снять ограничения по времени работы и лимитам устройств ваших VPN-ключей.\n\n"
+        "Оплатите подписку, чтобы снять ограничения по времени работы и лимита.\n\n"
         "📖 Доступные варианты подписки:"
     )
     
@@ -4173,7 +4179,7 @@ async def handle_miniapp_data(message: types.Message, bot: Bot):
                 f"🎉 **Успешная активация!**\n\n"
                 f"Промокод **{promo_code}** успешно применен.\n"
                 f"Вам начислено **{result} дн.** к вашей подписке.\n"
-                f"Данные на сайте `sonatavpn.ru` успешно обновлены! 🚀",
+                f"Данные на сайте успешно обновлены! 🚀",
                 parse_mode="Markdown"
             )
         else:
@@ -4252,7 +4258,7 @@ async def admin_gift_sub(message: types.Message):
         try:
             await message.bot.send_message(
                 chat_id=target_user_id,
-                text=f"🎁 <b>Вам подарок от администратора!</b>\n"
+                text=f"✚<b>Внесены изменения от администратора!</b>\n"
                      f"Ваша подписка успешно активирована на {days_to_add} дней. Проверьте ваш Личный кабинет!",
                 parse_mode="HTML"
             )
@@ -4421,6 +4427,10 @@ async def successful_payment_handler(message: types.Message):
     elif payload == "vpn_150_days_subscription":
         days_to_add = 150
         tariff_name = "5 месяцев"
+    elif payload = "vpn_365_days_subscription":
+        days_to_add = 365
+        tariff_name = "Год"
+    
 
     if days_to_add == 0:
         logging.error(f"Неизвестный payload платежа: {payload} от пользователя {user_id}")
@@ -4529,37 +4539,68 @@ async def check_and_notify_expiring_subscriptions(bot):
         logging.error(f"❌ Ошибка при чтении БД для уведомлений: {e}")
         return
 
-    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
-    for row in expiring_rows:
-        user_id = row[0]  # Первый столбец из выборки
-        try:
-            text = (
-                "⚠️ <b>Внимание!</b>\n\n"
-                "Ваша VPN-подписка заканчивается через <b>3 дня</b>.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
-            )
-            await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
-            logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05)  # Защита от лимитов Telegram API
-            
-        except Exception as err:
-            logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
+        # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
+        for row in expiring_rows:
+            user_id = row[0]
+            try:
+                text = (
+                    "⚠️ <b>Внимание!</b>\n\n"
+                    "Ваша VPN-подписка заканчивается через <b>3 дня</b>.\n"
+                    "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
+                )
+                
+                # Инициализируем пустую клавиатуру (класс InlineKeyboardMarkup должен быть импортирован выше в вашем файле)
+                kb = InlineKeyboardMarkup()
+                
+                # Добавляем вашу кнопку в структуру инлайн-клавиатуры
+                kb.inline_keyboard.append([
+                    InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)
+                ])
+                
+                # Отправляем сообщение вместе с созданной кнопкой
+                await bot.send_message(
+                    chat_id=user_id, 
+                    text=text, 
+                    parse_mode="HTML",
+                    reply_markup=kb  # <-- Передаем готовую кнопку пользователю
+                )
+                
+                logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
+                await asyncio.sleep(0.05)  # Защита от лимитов Telegram API
+                
+            except Exception as err:
+                logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
 
-    # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
-    for row in expired_rows:
-        user_id = row[0]  # Первый столбец из выборки
-        try:
-            text = (
-                "🛑 <b>Срок действия подписки истек!</b>\n\n"
-                "Ваш VPN-доступ временно отключен.\n"
-                "Чтобы восстановить безопасное подключение, перейдите в главное меню и оплатите продление."
-            )
-            await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
-            logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05)
-            
-        except Exception as err:
-            logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
+
+        # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
+        for row in expired_rows:
+            user_id = row[0]
+            try:
+                text = (
+                    "🛑 <b>Срок действия подписки истек!</b>\n\n"
+                    "Ваш VPN-доступ временно отключен.\n"
+                    "Чтобы восстановить подключение, оплатите продление."
+                )
+                
+                # Создаем кнопку для тех, у кого подписка уже отключена
+                kb_expired = InlineKeyboardMarkup()
+                kb_expired.inline_keyboard.append([
+                    InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)
+                ])
+                
+                await bot.send_message(
+                    chat_id=user_id, 
+                    text=text, 
+                    parse_mode="HTML",
+                    reply_markup=kb_expired  # <-- Передаем кнопку активации
+                )
+                
+                logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
+                await asyncio.sleep(0.05)
+                
+            except Exception as err:
+                logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
+
 
 
 async def scheduler(bot):
