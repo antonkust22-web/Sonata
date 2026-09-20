@@ -4427,7 +4427,7 @@ async def successful_payment_handler(message: types.Message):
     elif payload == "vpn_150_days_subscription":
         days_to_add = 150
         tariff_name = "5 месяцев"
-    elif payload = "vpn_365_days_subscription":
+    elif payload == "vpn_365_days_subscription":
         days_to_add = 365
         tariff_name = "Год"
     
