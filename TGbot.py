@@ -2692,7 +2692,7 @@ async def cabinet(callback: types.CallbackQuery):
         else:
             devices_display = f"<b>{active_devices} из {device_limit}</b>"
 
-        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
+        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n"
 
         # Сборка итогового сообщения
         text = (
@@ -2813,9 +2813,9 @@ async def show_user_devices(callback: types.CallbackQuery):
 
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        '<pre language="docker">'
+        '<blockquote>'
         f"Занято слотов: {real_active_count} из {device_limit}"
-        "</pre>\n"
+        "</blockquote>\n"
         "🔹 Ниже представлены ваши подключенные устройства.\n"
         "🔹 Нажмите на любое из них для просмотра детальной информации или удаления сессии."
     )
