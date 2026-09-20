@@ -2692,17 +2692,17 @@ async def cabinet(callback: types.CallbackQuery):
         else:
             devices_display = f"<b>{active_devices_count} из {device_limit}</b>" #{real_active_count}
 
-        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}\n\n"
+        devices_text_block = f"📱 <b>Устройства:</b> {devices_display}"
 
         # Сборка итогового сообщения
         text = (
             f"<b>👤 Личный кабинет</b>\n\n"
             f"<blockquote>"
             f"{role_badge}\n"
-            f"ID пользователя: {user_id}\n"
-            f"Статус подписки: {status_text}\n"
-            f"{devices_text_block}"  # Без .strip(), чтобы не ломать логику
-            f"</blockquote>"
+            f"<b>ID пользователя:</b> <code>{user_id}</code>\n"
+            f"<b>Статус подписки:</b> {status_text}\n"
+            f"{devices_text_block}"  # Теперь тут нет лишних переносов строк!
+            f"</blockquote>\n"       # Перенос строки делаем ВНЕ цитаты, чтобы отделить рефералку
             f"{ref_text_block}"
         )
 
