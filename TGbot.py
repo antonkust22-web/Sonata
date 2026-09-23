@@ -1124,7 +1124,7 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
     Синхронизирует данные подписки с VPS-сервером.
     Включает глубокое логирование для детекции двойного Base64.
     """
-    url = "https://" + "sonatavpn.ru" + "/index.php?update_sub=1"
+    url = "https://" + "sn-go.ru" + "/index.php?update_sub=1"
     
     logging.info("=" * 60)
     logging.info(f"🔍 [ДЕТЕКТОР] СТАРТ СИНХРОНИЗАЦИИ ДЛЯ ТОКЕНА: {token}")
@@ -1253,7 +1253,7 @@ async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, exp
     Данные сохраняются в локальный текстовый JSON-кэш сайта.
     """
     # 🔥 ИСПРАВЛЕНО: Строка адреса точно в формате
-    url = "https://sonatavpn.ru/miniapp/index.php?bot_sync=1" 
+    url = "https://sn-go.ru/miniapp/index.php?bot_sync=1" 
     
     # Собираем все POST-данные для передачи на PHP-сервер
     data = {
@@ -2417,7 +2417,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
 #    try:
         # Формируем правильную ссылку с явным GET-параметром ?tg_id=
-#        personal_miniapp_url = f"https://sonatavpn.ru/miniapp?tg_id={uid}"
+#        personal_miniapp_url = f"https://sn-go.ru/miniapp?tg_id={uid}"
 
 #        await bot.set_chat_menu_button(
 #            chat_id=message.chat.id,
@@ -2744,7 +2744,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # 🛜 ОБНОВЛЕННЫЙ СЕТЕВОЙ API-МОСТ НА JSON (ДЛЯ AMVERA)
 # ====================================================================
 PROTOCOL = "https://"
-DOMAIN = "sonatavpn"
+DOMAIN = "sn-go"
 ZONE = ".ru"
 API_URL = f"{PROTOCOL}{DOMAIN}{ZONE}/api.php"
 SECRET_KEY = "SuperSecretSonataKey777"
@@ -3429,12 +3429,12 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if not vless_links:
         debug_servers_info = "❌ <b>Ни одна нода не ответила!</b>\n"
 
-#    auto_connect_url = f"https://sonatavpn.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
+#    auto_connect_url = f"https://sn-go.ru/{sub_id}?auto=1&os={selected_os}&app={selected_app}"
 
     # 1. Базовая ссылка на подписку (голый base64)
     # Собираем домен по вашему правилу, чтобы обойти фильтры кода
     # Базовая ссылка на подписку с добавлением параметров-подсказок для логов сайта
-    raw_sub_url = f"https://" + "sonatavpn.ru" + f"/{sub_id}?os={selected_os}&app={selected_app}"
+    raw_sub_url = f"https://" + "sn-go.ru" + f"/{sub_id}?os={selected_os}&app={selected_app}"
 
     app_scheme = f"happ://add/"
     if selected_app.lower() == "happ":
@@ -3594,7 +3594,7 @@ async def send_sub_qr_callback(callback: types.CallbackQuery):
     sub_id = callback.data.split("_")[1]
     
     # Формируем чистую ссылку на сайт, которую распознают VPN-клиенты
-    qr_link = f"https://sonatavpn.ru/{sub_id}"
+    qr_link = f"https://sn-go.ru/{sub_id}"
     
     try:
         # Конфигурируем и создаем QR-код
@@ -3721,8 +3721,8 @@ async def info(callback: types.CallbackQuery):
     text = (
         "⚙️ <b><a href=\"https://t.me/SonataSupport_bot\">Основная поддержка</a></b>\n"
         "📢 <b>Канал:</b> <a href=\"https://t.me/Sonata_Information\">Sonata | INFO</a>\n\n"
-        "📋 <a href=\"https://sonatavpn.ru/terms\">Пользовательское соглашение</a>\n"
-        "🔒 <a href=\"https://sonatavpn.ru/privacy\">Политика конфиденциальности</a>\n\n"
+        "📋 <a href=\"https://sn-go.ru/terms\">Пользовательское соглашение</a>\n"
+        "🔒 <a href=\"https://sn-go.ru/privacy\">Политика конфиденциальности</a>\n\n"
         "<i>Информация будет обновляться</i>"
     )
 
@@ -3730,7 +3730,7 @@ async def info(callback: types.CallbackQuery):
     # Создаем клавиатуру с кнопкой Инструкции (ссылка), Нагрузки и Назад
     info_kb = InlineKeyboardMarkup(inline_keyboard=[
         # Новая кнопка-ссылка на ваш HTML-сайт с инструкциями
-        [InlineKeyboardButton(text="📖 Инструкция", url="https://sonatavpn.ru/Instruktion")],
+        [InlineKeyboardButton(text="📖 Инструкция", url="https://sn-go.ru/Instruktion")],
         [InlineKeyboardButton(text="📊 Нагрузка серверов", callback_data="server_status")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
@@ -4190,29 +4190,55 @@ async def handle_miniapp_data(message: types.Message, bot: Bot):
 # --- АДМИН-ПАНЕЛЬ: РАССЫЛКА, ПОДАРКИ С ССЫЛКАМИ И ОТЗЫВ ---
 
 @dp.message(Command("send"))
-async def admin_broadcast(message: types.Message):
+async def admin_send_handler(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    text_to_send = message.text.replace("/send", "").strip()
+    # Очищаем текст от самой команды /send
+    raw_text = message.text.replace("/send", "").strip()
     
-    if not text_to_send:
-        await message.answer("⚠️ <b>Ошибка:</b> Вы ввели пустую команду. Пишите так: <code>/send Ваш текст</code>")
+    if not raw_text:
+        await message.answer(
+            "⚠️ <b>Ошибка:</b> Пустая команда.\n\n"
+            "• Для личного сообщения: <code>/send ID Текст</code>\n"
+            "• Для общей рассылки: <code>/send Текст для всех</code>"
+        )
         return
 
+    # Разбиваем текст по первому пробелу, чтобы проверить, указан ли ID
+    parts = raw_text.split(maxsplit=1)
+    first_word = parts[0]
+
+    # КЕЙС 1: Если первое слово состоит только из цифр, отправляем ЛИЧНОЕ сообщение
+    if first_word.isdigit() and len(first_word) >= 5: 
+        if len(parts) < 2:
+            await message.answer("⚠️ <b>Ошибка:</b> Вы указали ID, но забыли написать текст сообщения.")
+            return
+            
+        target_user_id = int(first_word)
+        text_to_send = parts[1].strip()
+
+        try:
+            await bot.send_message(chat_id=target_user_id, text=text_to_send, parse_mode="HTML")
+            await message.answer(f"✅ <b>Личное сообщение доставлено</b> пользователю <code>{target_user_id}</code>")
+        except Exception as e:
+            await message.answer(f"❌ <b>Ошибка доставки:</b> Пользователь заблокировал бота или ID не существует.\n<i>({e})</i>")
+        return
+
+    # КЕЙС 2: Если первого слова-цифры нет, запускаем МАССОВУЮ рассылку (ваш оригинальный код)
     all_users = get_all_users_from_db()
-    await message.answer(f"⏳ <b>Начата рассылка</b> для {len(all_users)} пользователей...")
+    await message.answer(f"⏳ <b>Начата массовая рассылка</b> для {len(all_users)} пользователей...")
     
     success_count = 0
     for user_id in all_users:
         try:
-            await bot.send_message(chat_id=user_id, text=text_to_send, parse_mode="HTML")
+            await bot.send_message(chat_id=user_id, text=raw_text, parse_mode="HTML")
             success_count += 1
             await asyncio.sleep(0.05)
         except Exception:
             pass
 
-    await message.answer(f"✅ <b>Рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
+    await message.answer(f"✅ <b>Массовая рассылка завершена успешно!</b>\nДоставлено сообщений: {success_count} из {len(all_users)}")
 
 
 from aiogram import types
