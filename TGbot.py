@@ -4102,6 +4102,10 @@ async def send_invoice_device_limit(callback: types.CallbackQuery, bot: Bot):
 
 
 
+class CustomDaysPayment(StatesGroup):
+    waiting_for_days = State()
+
+
 # Пользователь нажал кнопку подневной оплаты
 @dp.callback_query(F.data == "pay_custom_days")
 async def start_custom_days_process(callback: types.CallbackQuery, state: FSMContext):
@@ -4123,6 +4127,11 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
+
+
+
+
+
 
 # Принимаем текстовый ответ пользователя с числом дней
 @dp.message(CustomDaysPayment.waiting_for_days)
@@ -4226,8 +4235,7 @@ async def subscription(callback: types.CallbackQuery):
 
 
 
-class CustomDaysPayment(StatesGroup):
-    waiting_for_days = State()
+
 
 
 
