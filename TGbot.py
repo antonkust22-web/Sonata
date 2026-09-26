@@ -4416,7 +4416,16 @@ async def process_successful_payment(message: types.Message):
     # ==========================================================
     # КЕЙС А: ПОЛЬЗОВАТЕЛЬ КУПИЛ РАСШИРЕНИЕ ЛИМИТА УСТРОЙСТВ
     # ==========================================================
-    if payload == "add_1_device_slot":
+    if payload.startswith("addslots_") or payload == "add_1_device_slot":
+        # Извлекаем количество купленных устройств (если старый payload "add_1_device_slot", то ставим 1)
+        if payload == "add_1_device_slot":
+            slots_bought = 1
+        else:
+            try:
+                slots_bought = int(payload.split("_")[1])
+            except (IndexError, ValueError):
+                slots_bought = 1
+
         user_data = get_user_from_db(user_id)
         if not user_data:
             await message.answer("❌ Произошла ошибка: профиль не найден. Обратитесь в поддержку.")
@@ -4427,31 +4436,42 @@ async def process_successful_payment(message: types.Message):
         expiry_timestamp = user_data[4] if user_data[4] is not None else 0
         current_limit = user_data[10] if (len(user_data) > 10 and user_data[10] is not None) else 5
         
-        new_limit = current_limit + 1
+        # Прибавляем именно то количество устройств, которое оплатил пользователь
+        new_limit = current_limit + slots_bought
 
         try:
+            # 1. Записываем новый суммарный лимит в локальную SQLite
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET device_limit = ? WHERE user_id = ?", (new_limit, user_id))
             conn.commit()
             conn.close()
 
+            # 2. Подготавливаем base64
             base64_payload = base64.b64encode(current_config.strip().encode('utf-8')).decode('utf-8')
 
-            await send_sub_to_website(token=sub_id, b64_content=base64_payload, expiry=expiry_timestamp, device_limit=new_limit)
+            # 3. Мгновенно синхронизируем новые лимиты устройств с вашим сайтом sn-go.ru
+            await send_sub_to_website(
+                token=sub_id, 
+                b64_content=base64_payload, 
+                expiry=expiry_timestamp, 
+                device_limit=new_limit
+            )
 
+            # 4. Радуем пользователя
             await message.answer(
-                f"🎉 <b>Слот успешно добавлен!</b>\n\n"
+                f"🎉 <b>Слоты успешно добавлены! Спасибо за покупку!</b>\n\n"
                 f"<blockquote>📱 Ваш лимит одновременных устройств увеличен.\n"
+                f"📥 Куплено дополнительных слотов: <b>+{slots_bought} шт.</b>\n"
                 f"🔄 Прежний лимит: <code>{current_limit} устр.</code>\n"
-                f"🚀 Новый лимит: <b>{new_limit} устр.</b> (по тарифу 20 руб.)\n\n"
+                f"🚀 Новый суммарный лимит: <b>{new_limit} устр.</b>\n\n"
                 f"Настройки применились автоматически. Приятного пользования Sonata VPN! 😉</blockquote>",
                 parse_mode="HTML"
             )
-            return
+            return  # Завершаем выполнение, на сервер X-UI лишний раз не ходим!
         except Exception as limit_err:
             logging.error(f"Ошибка начисления слота устройств для {user_id}: {limit_err}", exc_info=True)
-            await message.answer("⚠️ Оплата прошла, но возникла ошибка обновления лимита. Напишите в тех. поддержку.")
+            await message.answer("⚠️ Оплата прошла, но возникла ошибка обновления лимита. Напишите администратору.")
             return
 
     # ==========================================================
