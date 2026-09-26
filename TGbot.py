@@ -4047,7 +4047,7 @@ async def show_buy_options(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🛒 Купить подписку", callback_data="buy")], 
         # Новая кнопка для покупки дополнительного слота
         [InlineKeyboardButton(text="📱 Расширить лимит устройств", callback_data="buy_device_limit")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
     
     text = (
@@ -4065,37 +4065,76 @@ async def show_buy_options(callback: types.CallbackQuery):
 
 
 
-# Изменяем цену за 1 устройство на 20 рублей в хендлере инвойса слотов
+class CustomDevicesPayment(StatesGroup):
+    waiting_for_devices = State()
+
+
+# 1. Изменяем поведение кнопки: переводим человека в режим ожидания ввода количества устройств
 @dp.callback_query(F.data == "buy_device_limit")
-async def send_invoice_device_limit(callback: types.CallbackQuery, bot: Bot):
+async def start_custom_devices_process(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    try: await callback.message.delete()
-    except Exception: pass
-        
-    user_id = callback.from_user.id
-    username = callback.from_user.username or ""
-    await get_vpn_config_clean(user_id, username)
     
-    # 🔥 НОВАЯ ЦЕНА: 20 рублей за слот устройства
-    PRICE_PER_DEVICE = 20 
-    final_price_rub, is_promo = get_discount_price(PRICE_PER_DEVICE)
-    
-    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"💳 Оплатить слот — {final_price_rub} руб.", pay=True)],
+    kb_back = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="buy_menu")]
     ])
     
+    text = (
+        "📱 <b>Покупка дополнительных слотов устройств</b>\n\n"
+        "Стоимость одного дополнительного устройства составляет <b>20 рублей</b>.\n\n"
+        "✍️ <b>Введите числом в чат, сколько устройств вы хотите докупить:</b>"
+    )
+    
+    await state.set_state(CustomDevicesPayment.waiting_for_devices)
+    try:
+        await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
+
+
+# 2. Обрабатываем введенное пользователем текстовое число устройств
+@dp.message(CustomDevicesPayment.waiting_for_devices)
+async def process_custom_devices_entered(message: types.Message, state: FSMContext, bot: Bot):
+    kb_back = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="buy_menu")]
+    ])
+
+    text_input = message.text.strip()
+    
+    # Проверяем, что введено именно целое число
+    if not text_input.isdigit():
+        await message.answer("⚠️ <b>Пожалуйста, введите корректное число устройств (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
+        return
+        
+    slots_to_buy = int(text_input)
+    if slots_to_buy < 1:
+        await message.answer("❌ Количество докупаемых устройств должно быть не менее 1.", reply_markup=kb_back)
+        return
+
+    # Динамический расчет цены: количество устройств * 20 рублей
+    total_price = slots_to_buy * 20
+    final_price_rub, is_promo = get_discount_price(total_price)
+    
+    # Сбрасываем состояние FSM перед выставлением счета
+    await state.clear()
+
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить {slots_to_buy} устр. — {final_price_rub} руб.", pay=True)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_menu")]
+    ])
+
+    # Выставляем счет. В payload зашиваем точное количество устройств: "addslots_3"
     await bot.send_invoice(
-        chat_id=user_id,
-        title=f"Слот для устройства {'-30%' if is_promo else ''}",
-        description="Добавление +1 устройства к вашему лимиту одновременных сессий в Sonata VPN.",
-        payload="add_1_device_slot",
+        chat_id=message.from_user.id,
+        title=f"Слоты устройств (+{slots_to_buy} шт.) {'-30%' if is_promo else ''}",
+        description=f"Расширение лимита на {slots_to_buy} дополнительных устройств.",
+        payload=f"addslots_{slots_to_buy}", 
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label="Слот устройства (+1 устр.)", amount=final_price_rub * 100)],
-        start_parameter="vpn-add-device-slot",
+        prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=final_price_rub * 100)],
+        start_parameter=f"vpn-add-{slots_to_buy}-slots",
         reply_markup=invoice_kb
     )
+
 
 
 
@@ -4117,8 +4156,7 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
     
     text = (
         "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
-        "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n"
-        "Вы можете приобрести абсолютно любое количество дней.\n\n"
+        "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n\n"
         "✍️ <b>Введите числом в чат, сколько дней подписки вы хотите купить:</b>"
     )
     
