@@ -899,6 +899,47 @@ async def cmd_migrate_db(message: types.Message):
 
 
 
+def optimize_database_speed():
+    """
+    Качественно ускоряет работу SQLite без изменения структуры таблиц.
+    Переводит БД в WAL-режим, кэширует данные в ОЗУ и убирает зависания.
+    """
+    try:
+        import sqlite3
+        import logging
+        
+        # Подключаемся с увеличенным таймаутом, чтобы пробиться через любые блокировки
+        conn = sqlite3.connect(DB_PATH, timeout=60.0)
+        cursor = conn.cursor()
+        
+        # 1. Включаем WAL (Write-Ahead Logging) — чтение больше не блокируется записью!
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        
+        # 2. Ускоряем транзакции (снижаем нагрузку на диск сервера)
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        
+        # 3. Переносим временные таблицы и индексы в оперативную память
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        
+        # 4. Выделяем ~40 МБ оперативной памяти под кэш базы данных
+        cursor.execute("PRAGMA cache_size=-10000;")
+        
+        conn.commit()
+        conn.close()
+        logging.info("🚀 [БАЗА ДАННЫХ] Режим максимальной скорости успешно активирован!")
+    except Exception as e:
+        import logging
+        logging.error(f"❌ [БАЗА ДАННЫХ] Не удалось оптимизировать скорость: {e}")
+
+# 🔥 АВТОЗАПУСК: Эта строчка сама запустит оптимизацию при включении бота.
+# Вам больше НЕ нужно вызывать её в main.py или где-либо еще!
+optimize_database_speed()
+
+
+
+
+
+
 
 SERVERS = [
     {
@@ -1810,6 +1851,141 @@ async def handle_delete_promo(message: types.Message):
 
 
 
+@dp.message(Command("update_servers"))
+async def admin_night_mass_update(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    bot = message.bot
+    users_to_update = []
+    
+    # 1. Выгружаем данные строго по структуре вашей таблицы users
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=20.0) # Увеличили таймаут ожидания БД
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                user_id, 
+                username, 
+                expiry_time, 
+                saved_os, 
+                saved_app,
+                github_raw_url
+            FROM users 
+            WHERE is_blocked = 0 OR is_blocked IS NULL
+        """)
+        users_to_update = cursor.fetchall()
+        conn.close()
+    except Exception as db_err:
+        await message.answer(f"❌ Ошибка чтения БД: {db_err}")
+        return
+
+    if not users_to_update:
+        await message.answer("ℹ️ В таблице users нет пользователей для обновления.")
+        return
+
+    # Информируем админа о старте
+    progress_msg = await message.answer(f"🚀 Запущено безопасное обновление {len(users_to_update)} подписок...")
+    success_count = 0
+    current_time = int(time.time())
+
+    # НАСТРОЙКИ БЕЗОПАСНОСТИ И ТАЙМИНГОВ
+    DISPLAY_DELAY = 2.0  # Сколько секунд сообщение висит у юзера перед удалением
+    FLOOD_DELAY = 1.5    # Пауза между пользователями для защиты от перегрузки Telegram API
+
+    # 2. Цикл скрытого обновления с «мягкими» таймингами
+    for row in users_to_update:
+        user_id, username, expiry_time, saved_os, saved_app, github_raw_url = row
+        
+        if not user_id or not str(user_id).isdigit():
+            continue
+            
+        user_id = int(user_id)
+        username = username or ""
+
+        # Выводим аккуратное ночное уведомление
+        notice_msg = None
+        try:
+            notice_msg = await bot.send_message(
+                chat_id=user_id,
+                text="🔄 **Проводится плановое обновление серверов...**\nПожалуйста, подождите.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            # Игнорируем ошибку, если пользователь заблокировал бота
+            pass
+
+        try:
+            # === СТЕК ОПЕРАЦИЙ (Имитация кнопки "connect") ===
+            
+            # А. Запрос свежих ключей из панели (X-UI)
+            vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
+            
+            # Б. Сборка или чтение sub_id
+            sub_id = github_raw_url if github_raw_url else ("e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15])
+            
+            combined_configs = "\n".join(vless_links) if vless_links else ""
+            base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+
+            # В. Расчет времени действия подписки
+            try:
+                expiry_in_db = int(expiry_time) if expiry_time is not None else 0
+            except (ValueError, TypeError):
+                expiry_in_db = 0
+
+            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else expiry_in_db
+            if expiry_seconds <= current_time:
+                expiry_seconds = current_time
+
+            # Г. Асинхронная отправка данных на PHP-сайт (sn-go.ru)
+            if expiry_seconds <= current_time:
+                asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+            else:
+                asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+                
+            # Д. Запись конфигурации в локальную БД бота
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=15.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users 
+                    SET vpn_config = ?, expiry_time = ?, github_raw_url = ? 
+                    WHERE user_id = ?
+                """, (combined_configs, expiry_seconds, sub_id, user_id))
+                conn.commit()
+                conn.close()
+            except Exception as db_up_err:
+                logging.error(f"Ошибка записи в БД для {user_id}: {db_up_err}")
+
+            success_count += 1
+
+        except Exception as proc_err:
+            logging.error(f"Ошибка обработки аккаунта {user_id}: {proc_err}")
+
+        # Е. Даем сообщению «повисеть», чтобы Telegram успел корректно зафиксировать его ID
+        await asyncio.sleep(DISPLAY_DELAY)
+
+        # Ж. Удаляем сообщение у пользователя
+        if notice_msg:
+            try:
+                await bot.delete_message(chat_id=user_id, message_id=notice_msg.message_id)
+            except TelegramBadRequest:
+                pass
+
+        # З. Финальная разгрузочная пауза перед переходом к следующему юзеру
+        await asyncio.sleep(FLOOD_DELAY)
+
+    # Итоговый отчет для вас
+    await progress_msg.edit_text(
+        f"✅ Безопасное обновление завершено!\n"
+        f"Успешно обработано: {success_count} из {len(users_to_update)} подписок."
+    )
+
+
+
+
+
+
 
 
 
@@ -2384,7 +2560,7 @@ def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📲 Подключиться", callback_data="connect", style=ButtonStyle.PRIMARY)], 
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="cabinet", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_menu", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
         [InlineKeyboardButton(text="📖 Информация и поддержка", callback_data="info")]
     ])
@@ -2778,17 +2954,20 @@ async def request_clear_devices_on_vps(sub_id: str) -> bool:
 # ====================================================================
 # 1. МЕНЮ: СПИСОК УСТРОЙСТВ В ВИДЕ КНОПОК
 # ====================================================================
-@dp.callback_query(F.data == "my_devices")
+@dp.callback_query(F.data.startswith("my_devices"))
 async def show_user_devices(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
+    
+    # Разбираем номер текущей страницы (по умолчанию 0 — первая страница)
+    data_parts = callback.data.split(":")
+    current_page = int(data_parts[1]) if len(data_parts) > 1 else 0
     
     db_data = get_user_from_db(user_id)
     if not db_data or len(db_data) <= 3:
         await callback.message.answer("❌ Сначала сгенерируйте VPN подписку.")
         return
         
-    # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
     sub_id = db_data[3]
 
     vps_data = await fetch_user_data_from_vps(sub_id)
@@ -2811,23 +2990,52 @@ async def show_user_devices(callback: types.CallbackQuery):
     except Exception as db_sync_err:
         logging.error(f"❌ [БД СИНХРОНИЗАЦИЯ] Не удалось обновить active_devices_count в SQLite: {db_sync_err}")
 
+    limit_text = "Безлимит" if int(device_limit) >= 999 else f"{device_limit}"
+
+    
     text = (
         "📱 <b>Управление устройствами Sonata VPN</b>\n\n"
-        f"Занято слотов: <b>{real_active_count} из {device_limit}</b>\n"
+        f"Занято слотов: <b>{real_active_count} из {limit_text}</b>\n"
         "Ниже представлены ваши подключенные устройства. Нажмите на любое из них для просмотра детальной информации или удаления сессии:"
     )
 
-
+    # === НАСТРОЙКА ПАГИНАЦИИ ===
+    ITEMS_PER_PAGE = 5  # Сколько устройств показывать на одной странице
+    
+    # Вычисляем индексы среза для текущей страницы
+    start_idx = current_page * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_devices = devices[start_idx:end_idx]
+    
     inline_keyboard = []
-    for idx, dev in enumerate(devices, 1):
+    
+    # Выводим устройства ТОЛЬКО для текущей страницы (начиная с правильного порядкового номера)
+    for index, dev in enumerate(page_devices, start=start_idx + 1):
         os_type = dev.get("device_os", "Unknown OS")
         app_type = dev.get("vpn_app", "Unknown App")
         ip_addr = dev.get("ip", "0.0.0.0")
         
-        btn_text = f"{os_type} ({app_type})"
-        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{idx}:{ip_addr}")])
+        btn_text = f"{index}. {os_type} ({app_type})"
+        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{index}:{ip_addr}")])
 
+    # Строка управления страницами (Пагинация)
+    navigation_row = []
+    
+    # Если мы НЕ на первой странице, показываем кнопку "Назад"
+    if current_page > 0:
+        navigation_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"my_devices:{current_page - 1}"))
+        
+    # Если впереди есть еще устройства, показываем кнопку "Вперед"
+    if end_idx < len(devices):
+        navigation_row.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"my_devices:{current_page + 1}"))
+        
+    # Если строка навигации не пустая (кнопки появились), добавляем её в клавиатуру
+    if navigation_row:
+        inline_keyboard.append(navigation_row)
+
+    # Системная кнопка возврата в кабинет
     inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
+    inline_keyboard.append([InlineKeyboardButton(text="📱 Докупить устройства", callback_data="buy_device_limit")])
     kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
     try:
@@ -2837,6 +3045,7 @@ async def show_user_devices(callback: types.CallbackQuery):
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
     except Exception as view_err:
         logging.error(f"❌ [ИНТЕРФЕЙС] Ошибка обновления меню устройств: {view_err}", exc_info=True)
+
 
 
 # ====================================================================
@@ -2914,7 +3123,7 @@ async def delete_single_device(callback: types.CallbackQuery):
         return
     
     # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
-    sub_id = db_data[4]
+    sub_id = db_data[3]
 
     url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_ip={device_ip}"
     
@@ -3175,13 +3384,32 @@ async def connect(callback: types.CallbackQuery):
         if expiry_seconds == 0:
             expiry_seconds = int(time.time() + 2592000)
 
-        # Синхронизация с сайтом
-        if expiry_seconds <= int(time.time()):
-            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
+        # 🔥 УМНЫЙ РАСЧЕТ ЛИМИТА УСТРОЙСТВ (Проверка на БЕЗЛИМИТ)
+        current_time_now = int(time.time())
+        
+        # Если до конца подписки осталось больше 360 дней — принудительно ставим Безлимит (999)
+        if (expiry_seconds - current_time_now) > (360 * 24 * 60 * 60):
+            calculated_device_limit = 999
         else:
-            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
+            # Иначе берем из БД лимит устройств (индекс 10 по вашей структуре), чтобы не сбросить купленные слоты
+            calculated_device_limit = db_data[10] if (db_data and len(db_data) > 10 and db_data[10] is not None) else 5
+
+        # Синхронизация с сайтом (передаем вычисленный calculated_device_limit)
+        if expiry_seconds <= current_time_now:
+            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds, device_limit=calculated_device_limit))
+        else:
+            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds, device_limit=calculated_device_limit))
             
-        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
+        # Обновляем локальную БД бота, сохраняя Безлимит или текущую квоту устройств
+        add_or_update_user(
+            user_id=user_id, 
+            username=username, 
+            vpn_config=combined_configs, 
+            github_raw_url=sub_id, 
+            expiry_time=expiry_seconds,
+            device_limit=calculated_device_limit
+        )
+
 
         # Удаляем наш лоадер перед выводом клавиатуры выбора ОС
         try:
@@ -3521,7 +3749,7 @@ async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_
 
     # Формируем точно такую же ссылку, которую генерирует ваш PHP-скрипт
     clean_token = sub_id.strip()
-    clean_sub_url = f"https://sonatavpn.ru/{clean_token}"
+    clean_sub_url = f"https://sn-go.ru/{clean_token}"
     
     # Кодируем ССЫЛКУ подписки в Base64 (требование Happ API для удаленного Web Import)
     encoded_url_payload = base64.b64encode(clean_sub_url.encode('utf-8')).decode('utf-8')
@@ -3806,6 +4034,147 @@ def get_discount_price(base_price_rub: int) -> tuple[int, bool]:
 
 
 
+
+
+
+# Хендлер главного меню покупок (подставьте ваш триггер, например callback_data или команду)
+@dp.callback_query(F.data == "buy_menu")
+async def show_buy_options(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    kb_buy = InlineKeyboardMarkup(inline_keyboard=[
+        # Кнопка ведет на ваш текущий хендлер выбора тарифов (30, 90 дней и т.д.)
+        [InlineKeyboardButton(text="🛒 Купить подписку", callback_data="buy")], 
+        # Новая кнопка для покупки дополнительного слота
+        [InlineKeyboardButton(text="📱 Расширить лимит устройств", callback_data="buy_device_limit")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+    ])
+    
+    text = (
+        "💳 <b>Магазин Sonata VPN</b>\n\n"
+        "Выберите, что вы хотите приобрести:\n\n"
+        "• <b>Купить подписку</b> — оформление или продление времени доступа к VPN.\n"
+        "• <b>Расширить лимит</b> — покупка дополнительных слотов для одновременного подключения новых устройств."
+    )
+    
+    try:
+        await callback.message.edit_text(text=text, reply_markup=kb_buy, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=kb_buy, parse_mode="HTML")
+
+
+
+
+# Изменяем цену за 1 устройство на 20 рублей в хендлере инвойса слотов
+@dp.callback_query(F.data == "buy_device_limit")
+async def send_invoice_device_limit(callback: types.CallbackQuery, bot: Bot):
+    await callback.answer()
+    try: await callback.message.delete()
+    except Exception: pass
+        
+    user_id = callback.from_user.id
+    username = callback.from_user.username or ""
+    await get_vpn_config_clean(user_id, username)
+    
+    # 🔥 НОВАЯ ЦЕНА: 20 рублей за слот устройства
+    PRICE_PER_DEVICE = 20 
+    final_price_rub, is_promo = get_discount_price(PRICE_PER_DEVICE)
+    
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить слот — {final_price_rub} руб.", pay=True)],
+        [InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="buy_menu")]
+    ])
+    
+    await bot.send_invoice(
+        chat_id=user_id,
+        title=f"Слот для устройства {'-30%' if is_promo else ''}",
+        description="Добавление +1 устройства к вашему лимиту одновременных сессий в Sonata VPN.",
+        payload="add_1_device_slot",
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label="Слот устройства (+1 устр.)", amount=final_price_rub * 100)],
+        start_parameter="vpn-add-device-slot",
+        reply_markup=invoice_kb
+    )
+
+
+
+
+
+
+# Пользователь нажал кнопку подневной оплаты
+@dp.callback_query(F.data == "pay_custom_days")
+async def start_custom_days_process(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    
+    kb_back = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
+    ])
+    
+    text = (
+        "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
+        "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n"
+        "Вы можете приобрести абсолютно любое количество дней.\n\n"
+        "✍️ <b>Введите числом в чат, сколько дней подписки вы хотите купить:</b>"
+    )
+    
+    await state.set_state(CustomDaysPayment.waiting_for_days)
+    try:
+        await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
+
+# Принимаем текстовый ответ пользователя с числом дней
+@dp.message(CustomDaysPayment.waiting_for_days)
+async def process_custom_days_entered(message: types.Message, state: FSMContext, bot: Bot):
+    kb_back = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
+    ])
+
+    text_input = message.text.strip()
+    
+    # Проверяем, что введено корректное целое число
+    if not text_input.isdigit():
+        await message.answer("⚠️ <b>Пожалуйста, введите корректное число дней (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
+        return
+        
+    days = int(text_input)
+    if days < 1:
+        await message.answer("❌ Количество дней подписки должно быть не менее 1.", reply_markup=kb_back)
+        return
+
+    # Считаем итоговую стоимость (10 рублей за день)
+    total_price = days * 10
+    final_price_rub, is_promo = get_discount_price(total_price)
+    
+    # Сбрасываем состояние FSM перед выставлением счета
+    await state.clear()
+
+    invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💳 Оплатить {days} дн. — {final_price_rub} руб.", pay=True)],
+        [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
+    ])
+
+    # Выставляем индивидуальный инвойс
+    await bot.send_invoice(
+        chat_id=message.from_user.id,
+        title=f"Подписка на {days} дней {'-30%' if is_promo else ''}",
+        description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней. Лимит: 5 устройств.",
+        # Зашиваем количество дней прямо в payload: "customdays_3" или "customdays_15"
+        payload=f"customdays_{days}", 
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=final_price_rub * 100)],
+        start_parameter=f"vpn-custom-{days}-days",
+        reply_markup=invoice_kb
+    )
+
+
+
+
+
+
+
 # ВЫБОР ТАРИФА (Вызывается по кнопке "buy" или "back" из инвойса)
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
@@ -3826,19 +4195,21 @@ async def subscription(callback: types.CallbackQuery):
     
     prefix = "🔥 " if is_promo else "💳 "
     
+    
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{prefix}1 месяц (5 устр.) — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца (10 устр.) — {p90} руб.", callback_data="pay_90_days")],
         [InlineKeyboardButton(text=f"{prefix}5 месяцев (20 устр.) — {p150} руб.", callback_data="pay_150_days")],
-        [InlineKeyboardButton(text=f"{prefix}1 год (БЕЗЛИМИТ устр.) — {p365} руб.", callback_data="pay_365_days")],
-        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back")]
+        [InlineKeyboardButton(text=f"{prefix}1 год (Безлимит устр.) — {p365} руб.", callback_data="pay_365_days")],
+        [InlineKeyboardButton(text="📆 Свой тариф (10 руб/день)", callback_data="pay_custom_days")],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="buy_menu")]
     ])
     
     caption_text = (
         "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
     ) + (
         "Выбор тарифа:\n\n"
-        "Оплатите подписку, чтобы снять ограничения по времени работы и лимита.\n\n"
+        "Также вы можете выбрать подневную оплату\n\n"
         "📖 Доступные варианты подписки:"
     )
     
@@ -3850,6 +4221,15 @@ async def subscription(callback: types.CallbackQuery):
             logging.error(f"Не удалось отправить старое видео: {e}")
             
     await callback.message.answer(text=caption_text, reply_markup=buy_kb, parse_mode="HTML")
+
+
+
+
+
+class CustomDaysPayment(StatesGroup):
+    waiting_for_days = State()
+
+
 
 
 # КНОПКА «НАЗАД» ВНУТРИ ИНВОЙСОВ
@@ -3984,7 +4364,65 @@ async def process_successful_payment(message: types.Message):
     days_to_add = 0
     device_limit = 5  # Дефолтное значение
     tariff_name = ""
-    
+
+
+
+    # ==========================================================
+    # КЕЙС А: ПОЛЬЗОВАТЕЛЬ КУПИЛ РАСШИРЕНИЕ ЛИМИТА УСТРОЙСТВ
+    # ==========================================================
+    if payload == "add_1_device_slot":
+        user_data = get_user_from_db(user_id)
+        if not user_data:
+            await message.answer("❌ Произошла ошибка: профиль не найден. Обратитесь в поддержку.")
+            return
+
+        current_config = user_data[2] if user_data[2] is not None else ""
+        sub_id = user_data[3] if user_data[3] is not None else ""
+        expiry_timestamp = user_data[4] if user_data[4] is not None else 0
+        current_limit = user_data[10] if (len(user_data) > 10 and user_data[10] is not None) else 5
+        
+        new_limit = current_limit + 1
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET device_limit = ? WHERE user_id = ?", (new_limit, user_id))
+            conn.commit()
+            conn.close()
+
+            base64_payload = base64.b64encode(current_config.strip().encode('utf-8')).decode('utf-8')
+
+            await send_sub_to_website(token=sub_id, b64_content=base64_payload, expiry=expiry_timestamp, device_limit=new_limit)
+
+            await message.answer(
+                f"🎉 <b>Слот успешно добавлен!</b>\n\n"
+                f"<blockquote>📱 Ваш лимит одновременных устройств увеличен.\n"
+                f"🔄 Прежний лимит: <code>{current_limit} устр.</code>\n"
+                f"🚀 Новый лимит: <b>{new_limit} устр.</b> (по тарифу 20 руб.)\n\n"
+                f"Настройки применились автоматически. Приятного пользования Sonata VPN! 😉</blockquote>",
+                parse_mode="HTML"
+            )
+            return
+        except Exception as limit_err:
+            logging.error(f"Ошибка начисления слота устройств для {user_id}: {limit_err}", exc_info=True)
+            await message.answer("⚠️ Оплата прошла, но возникла ошибка обновления лимита. Напишите в тех. поддержку.")
+            return
+
+    # ==========================================================
+    # КЕЙС Б: ПОЛЬЗОВАТЕЛЬ ВЫБРАЛ ПОДНЕВНОЙ ТАРИФ (ПРОИЗВОЛЬНЫЕ ДНИ)
+    # ==========================================================
+    elif payload.startswith("customdays_"):
+        try:
+            days_to_add = int(payload.split("_")[1])
+            tariff_name = f"{days_to_add} дн."
+        except (IndexError, ValueError):
+            logging.error(f"Ошибка разбора подневного payload: {payload}")
+            await message.answer("⚠️ Ошибка обработки тарифа. Обратитесь в техподдержку.")
+            return
+
+    # ==========================================================
+    # КЕЙС В: ВАШИ СТАНДАРТНЫЕ ФИКСИРОВАННЫЕ ТАРИФЫ
+    # ==========================================================
     if payload == "vpn_30_days_subscription":
         days_to_add = 30
         device_limit = 5
@@ -3997,17 +4435,26 @@ async def process_successful_payment(message: types.Message):
         days_to_add = 150
         device_limit = 20
         tariff_name = "5 месяцев (до 20 устройств)"
-    elif payload == "vpn_365_days_subscription":  # 🔥 НОВЫЙ ТАРИФ НА ГОД
+    elif payload == "vpn_365_days_subscription":  # 🔥 ТАРИФ НА ГОД
         days_to_add = 365
-        device_limit = 999  # 999 означает БЕЗЛИМИТ устройств для PHP скрипта
-        tariff_name = "1 год (🚀 БЕЗЛИМИТ устройств)"
+        device_limit = 999  # БЕЗЛИМИТ устройств
+        tariff_name = "1 год (🚀 Безлимит устройств)"
         
     if days_to_add > 0:
         try:
+            # 1. Сначала проверяем текущий лимит в БД, чтобы не ухудшить условия пользователя
+            user_data_before = get_user_from_db(user_id)
+            # Извлекаем текущий лимит из 10-й колонки SQLite
+            current_db_limit = user_data_before[10] if (user_data_before and len(user_data_before) > 10 and user_data_before[10] is not None) else 5
+            
+            # 🔥 ЗАЩИТА: Если у пользователя уже безлимит (999) или лимит выше, оставляем его!
+            if current_db_limit >= 999 or current_db_limit > device_limit:
+                device_limit = current_db_limit
+
             # Начисляем дни на ВСЕ сервера и синхронизируем с локальной БД
             await renew_vpn_subscription_flexible(user_id=user_id, days=days_to_add, username=username)
             
-            # Достаем обновленные данные из вашей БД Amvera / Docker
+            # Достаем обновленные данные из вашей БД
             user_data = get_user_from_db(user_id)
             updated_expiry = user_data[4] if (user_data and len(user_data) > 4) else 0
             current_config = user_data[2] if (user_data and len(user_data) > 2) else ""
@@ -4017,22 +4464,38 @@ async def process_successful_payment(message: types.Message):
             base64_payload = base64.b64encode(current_config.strip().encode('utf-8')).decode('utf-8')
             expiry_date = dt.datetime.fromtimestamp(updated_expiry).strftime('%d.%m.%Y в %H:%M')
             
-            # 🔥 МГНОВЕННАЯ СИНХРОНИЗАЦИЯ С САЙТОМ: Передаем обновленный конфиг и НОВЫЙ лимит устройств!
+            # 2. Сохраняем итоговый защищенный лимит устройств в локальную базу данных бота
+            add_or_update_user(
+                user_id=user_id,
+                username=username,
+                vpn_config=current_config,
+                github_raw_url=sub_id,
+                expiry_time=updated_expiry,
+                device_limit=device_limit
+            )
+            
+            # 3. 🔥 МГНОВЕННАЯ СИНХРОНИЗАЦИЯ С САЙТОМ (sn-go.ru)
+            # Передаем обновленный конфиг и финальный лимит устройств.
+            # Названия аргументов приведены строго в соответствие с вашей функцией send_sub_to_website!
             try:
                 await send_sub_to_website(
-                    sub_id=sub_id, 
-                    base64_payload=base64_payload, 
-                    expiry_seconds=updated_expiry, 
+                    token=sub_id, 
+                    b64_content=base64_payload, 
+                    expiry=updated_expiry, 
                     device_limit=device_limit
                 )
                 logging.info(f"🔄 [СИНХРОНИЗАЦИЯ] На сайт успешно передан лимит {device_limit} для {user_id}")
             except Exception as site_err:
                 logging.error(f"Не удалось отправить новый лимит на сайт: {site_err}")
             
+            # Формируем красивый вывод лимита для сообщения
+            limit_display_text = "🚀 БЕЗЛИМИТ" if device_limit >= 999 else f"{device_limit} устр."
+            
             await message.answer(
                 f"🎉 <b>Оплата прошла успешно! Спасибо за покупку!</b>\n\n"
                 f"📦 Тариф: <b>{tariff_name} (+{days_to_add} дн.)</b>\n"
-                f"📅 Подписка продлена до: <b>{expiry_date}</b>\n\n"
+                f"📅 Подписка продлена до: <b>{expiry_date}</b>\n"
+                f"📱 Доступный лимит устройств: <b>{limit_display_text}</b>\n\n"
                 f"<i>✨ Лимиты устройств и сервера успешно обновлены! Вы можете зайти в меню «Подключиться», выбрать свое устройство и импортировать обновленный ключ подписки.</i>",
                 parse_mode="HTML"
             )
@@ -4046,6 +4509,7 @@ async def process_successful_payment(message: types.Message):
     else:
         logging.error(f"Неизвестный payload платежа: {payload}")
         await message.answer("⚠️ Произошла ошибка: неизвестный тип подписки.")
+
 
 
 
@@ -4280,7 +4744,7 @@ async def admin_gift_sub(message: types.Message):
         try:
             await message.bot.send_message(
                 chat_id=target_user_id,
-                text=f"✚<b>Внесены изменения от администратора!</b>\n"
+                text=f"✚ <b>Внесены изменения от администратора!</b>\n"
                      f"Ваша подписка успешно активирована на {days_to_add} дней. Проверьте ваш Личный кабинет!",
                 parse_mode="HTML"
             )
@@ -4475,8 +4939,8 @@ async def successful_payment_handler(message: types.Message):
         vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
         
         sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        sub_web_url = "https://sonatavpn.ru" + "/" + str(sub_id)
-        auto_connect_url = "https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
+        sub_web_url = "https://sn-go.ru" + "/" + str(sub_id)
+        auto_connect_url = "https://sn-go.ru" + "/" + str(sub_id) + "?auto=1"
 
         combined_configs = "\n".join(vless_links) if vless_links else ""
         base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
@@ -4484,7 +4948,7 @@ async def successful_payment_handler(message: types.Message):
 
         # Кнопка по вашему запросу
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Импорт в Happ", url=auto_connect_url)]
+            [InlineKeyboardButton(text="Подключиться", callback_data="connect")]
         ])
 
         if success:
