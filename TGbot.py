@@ -572,6 +572,54 @@ def add_referral_connection(inviter_id: int, referral_id: int):
     finally:
         conn.close()
 
+
+def reward_referrer_in_db(inviter_id: int) -> int or None:
+    """
+    Находит инвайтера в SQLite базе данных, прибавляет к его 
+    подписке 7 дней и сохраняет изменения.
+    Возвращает новый expiry_seconds в случае успеха, иначе None.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    new_expiry = None
+    try:
+        # 1. Получаем текущее время окончания подписки из таблицы пользователей (предполагаем таблицу users)
+        cursor.execute('SELECT expiry_time FROM users WHERE user_id = ?', (inviter_id,))
+        row = cursor.fetchone()
+        
+        current_expiry = 0
+        if row and row[0] is not None:
+            try:
+                current_expiry = int(row[0])
+            except (ValueError, TypeError):
+                current_expiry = 0
+                
+        current_time = int(time.time())
+        # Если подписка уже кончилась — считаем от сейчас, если активна — накидываем сверху
+        base_time = current_expiry if current_expiry > current_time else current_time
+        new_expiry = base_time + 604800 # +7 дней в секундах
+        
+        # 2. Обновляем значение expiry_time для инвайтера в базе данных
+        cursor.execute(
+            'UPDATE users SET expiry_time = ? WHERE user_id = ?',
+            (new_expiry, inviter_id)
+        )
+        conn.commit()
+        
+    except Exception as e:
+        logging.error(f"Ошибка при начислении реферальных дней в SQLite для {inviter_id}: {e}")
+        new_expiry = None
+    finally:
+        conn.close()
+        
+    return new_expiry
+
+
+
+
+
+
+
 def get_monthly_top_inviters(limit: int = 10):
     """Возвращает ТОП пользователей по приглашениям за последние 30 дней"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
@@ -2805,7 +2853,7 @@ async def cabinet(callback: types.CallbackQuery):
     # Блок реферальной программы
     ref_text_block = (
         f"🤝 <b>Партнерская программа:</b>\n"
-        f"Приглашайте друзей по ссылке и получайте бонусы!\n"
+        f"Приглашайте друзей по ссылке и <a href=\"https://sn-go.ru/bonuses\">получайте бонусы</a>!\n"
         f"🔗 Ссылка: <code>{ref_url}</code>\n"
         f"👥 Приглашено друзей: <b>{invite_count}</b> чел.\n\n"
     )
@@ -4961,7 +5009,7 @@ async def pre_checkout_query_handler(pre_checkout_query: types.PreCheckoutQuery,
 
 # --- Обработка успешного платежа ---
 @dp.message(F.successful_payment)
-async def successful_payment_handler(message: types.Message):
+async def successful_payment_handler(message: types.Message, bot: Bot): # bot: Bot в аргументах для отправки пуша
     user_id = message.from_user.id
     username = message.from_user.username or ""
     payload = message.successful_payment.invoice_payload
@@ -4983,7 +5031,6 @@ async def successful_payment_handler(message: types.Message):
         days_to_add = 365
         tariff_name = "Год"
     
-
     if days_to_add == 0:
         logging.error(f"Неизвестный payload платежа: {payload} от пользователя {user_id}")
         return
@@ -5038,6 +5085,57 @@ async def successful_payment_handler(message: types.Message):
         add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
 
         await message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+
+        # ====================================================================
+        # 🎁 РЕФЕРАЛЬНАЯ СИСТЕМА: НАЧИСЛЕНИЕ ДНЕЙ ЧЕРЕЗ SQLITE3 И СИНХРОНИЗАЦИЯ
+        # ====================================================================
+        inviter_id = get_inviter_id(user_id)
+        
+        if inviter_id:
+            # 1. Запрашиваем данные инвайтера (User 1) из твоей SQLite3 базы данных
+            inviter_data = get_user_from_db(inviter_id)
+            
+            if inviter_data:
+                try:
+                    # Извлекаем текущий таймштамп подписки инвайтера (по аналогии с кодом старта рефа)
+                    inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
+                except (ValueError, TypeError):
+                    inviter_old_expiry = 0
+
+                current_time = int(time.time())
+
+                # Рассчитываем новое время окончания подписки (+7 дней = 604800 секунд)
+                if inviter_old_expiry > current_time:
+                    new_inviter_expiry = inviter_old_expiry + 604800
+                else:
+                    new_inviter_expiry = current_time + 604800
+
+                # 2. Обновляем локальную sqlite3 базу бота на хостинге через твою функцию
+                try:
+                    inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
+                    inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
+                    inviter_sub_id = "e" + hashlib.md5(str(inviter_id).encode()).hexdigest()[:15]
+                    
+                    # Продлеваем подписку инвайтера в базе sqlite3
+                    add_or_update_user(inviter_id, inviter_username, expiry_time=new_inviter_expiry, role=inviter_role)
+                    
+                    # 3. Синхронизируем новые данные с сайтом, чтобы обновить JSON-файл инвайтера
+                    # Передаем base64_payload=None, чтобы обновился только срок действия, не ломая ключи
+                    asyncio.create_task(send_sub_to_website(inviter_sub_id, base64_payload=None, expiry_seconds=new_inviter_expiry))
+                    
+                    # 4. Отправляем короткое пуш-уведомление пригласившему (User 1) в Telegram
+                    await bot.send_message(
+                        chat_id=inviter_id,
+                        text=(
+                            f"🎁 <b>Реферальный бонус +7 дней!</b>\n\n"
+                            f"Пользователь, которого вы пригласили, успешно оплатил подписку.\n"
+                            f"К вашей подписке добавлена <b>1 неделя</b> бесплатного VPN. Спасибо за рекомендацию! 🚀"
+                        ),
+                        parse_mode="HTML"
+                    )
+                    logging.info(f"Инвайтер {inviter_id} успешно получил 7 дней в SQLite и уведомлен в ТГ.")
+                except Exception as db_ex:
+                    logging.error(f"Ошибка обновления реферера при оплате: {db_ex}")
 
     except Exception as e:
         logging.error(f"Критическая ошибка в обработчике успешного платежа: {e}", exc_info=True)
