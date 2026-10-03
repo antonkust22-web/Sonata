@@ -5144,129 +5144,180 @@ async def successful_payment_handler(message: types.Message, bot: Bot): # bot: B
 
 
 
+import sqlite3
 import time
 import asyncio
-import sqlite3
 import logging
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 async def check_and_notify_expiring_subscriptions(bot):
     """
-    Фоновая задача: запускается раз в день.
-    Проверяет пользователей строго по индексам вашей БД: row[0] - user_id, row[1] - expiry_time
+    Фоновая задача: запускается раз в сутки.
+    Использует отдельную таблицу-журнал, создаваемую автоматически.
+    Основная таблица users при этом остается нетронутой.
     """
     logging.info("⏳ Запуск проверки статусов и истекающих подписок...")
     
     current_time = int(time.time())
+    one_day = 24 * 3600
     
-    # Интервал для уведомления за 3 дня (от 48 до 72 часов до конца подписки)
-    three_days_min = current_time + (2 * 24 * 3600)
-    three_days_max = current_time + (3 * 24 * 3600)
-    
-    # Интервал для уведомления об окончании (истекла за последние 24 часа)
-    expired_min = current_time - (24 * 3600)
-    expired_max = current_time
-    
+    expiring_rows = []
+    expired_rows = []
+
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0) 
         cursor = conn.cursor()
         
-        # Выбираем ID и время окончания для проверки за 3 дня
-        cursor.execute(
-            "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?", 
-            (three_days_min, three_days_max)
-        )
-        expiring_rows = cursor.fetchall()  # Получаем список строк вида [(8679920181, 1787652280), ...]
+        # Автоматически создаем таблицу-журнал прямо на хостинге, если её ещё нет
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notification_log (
+                user_id INTEGER,
+                notified_expiry INTEGER,
+                type TEXT,
+                PRIMARY KEY (user_id, notified_expiry, type)
+            )
+        """)
+        conn.commit()
         
-        # Выбираем ID и время окончания для тех, у кого закончилась
+        # 1. Выбираем пользователей, у которых подписка заканчивается в пределах 3 дней,
+        # и которым еще НЕ отправлялось уведомление типа '3days' для их текущего expiry_time
         cursor.execute(
-            "SELECT user_id, expiry_time FROM users WHERE expiry_time >= ? AND expiry_time <= ?",
-            (expired_min, expired_max)
+            """
+            SELECT u.user_id, u.expiry_time 
+            FROM users u
+            LEFT JOIN notification_log nl 
+              ON u.user_id = nl.user_id 
+             AND u.expiry_time = nl.notified_expiry 
+             AND nl.type = '3days'
+            WHERE u.expiry_time > ? 
+              AND u.expiry_time <= (? + (3 * ?))
+              AND nl.user_id IS NULL
+            """, 
+            (current_time, current_time, one_day)
+        )
+        expiring_rows = cursor.fetchall()
+        
+        # 2. Выбираем пользователей, у которых подписка полностью закончилась,
+        # и которым еще НЕ отправлялось уведомление типа 'expired' для их текущего expiry_time
+        cursor.execute(
+            """
+            SELECT u.user_id, u.expiry_time 
+            FROM users u
+            LEFT JOIN notification_log nl 
+              ON u.user_id = nl.user_id 
+             AND u.expiry_time = nl.notified_expiry 
+             AND nl.type = 'expired'
+            WHERE u.expiry_time <= ? 
+              AND u.expiry_time > 0
+              AND nl.user_id IS NULL
+            """, 
+            (current_time,)
         )
         expired_rows = cursor.fetchall()
         
-        conn.close()
     except Exception as e:
-        logging.error(f"❌ Ошибка при чтении БД для уведомлений: {e}")
+        logging.error(f"❌ Ошибка при работе с БД в блоке выборки: {e}")
+        if 'conn' in locals():
+            conn.close()
         return
 
-        # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
-        for row in expiring_rows:
-            user_id = row[0]
-            try:
-                text = (
-                    "⚠️ <b>Внимание!</b>\n\n"
-                    "Ваша VPN-подписка заканчивается через <b>3 дня</b>.\n"
-                    "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
-                )
-                
-                # Инициализируем пустую клавиатуру (класс InlineKeyboardMarkup должен быть импортирован выше в вашем файле)
-                kb = InlineKeyboardMarkup()
-                
-                # Добавляем вашу кнопку в структуру инлайн-клавиатуры
-                kb.inline_keyboard.append([
-                    InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)
-                ])
-                
-                # Отправляем сообщение вместе с созданной кнопкой
-                await bot.send_message(
-                    chat_id=user_id, 
-                    text=text, 
-                    parse_mode="HTML",
-                    reply_markup=kb  # <-- Передаем готовую кнопку пользователю
-                )
-                
-                logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
-                await asyncio.sleep(0.05)  # Защита от лимитов Telegram API
-                
-            except Exception as err:
-                logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
+    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
+    for row in expiring_rows:
+        user_id = row[0]
+        expiry_time = row[1]
+        try:
+            text = (
+                "⚠️ <b>Внимание!</b>\n\n"
+                "Ваша VPN-подписка заканчивается менее чем через <b>3 дня</b>.\n"
+                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
+            )
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)]
+            ])
+            
+            await bot.send_message(
+                chat_id=user_id, 
+                text=text, 
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+            # Записываем факт отправки в журнал
+            cursor.execute(
+                "INSERT OR IGNORE INTO notification_log (user_id, notified_expiry, type) VALUES (?, ?, '3days')",
+                (user_id, expiry_time)
+            )
+            conn.commit()
+            
+            logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
+            await asyncio.sleep(0.05)
+            
+        except Exception as err:
+            logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
 
+    # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
+    for row in expired_rows:
+        user_id = row[0]
+        expiry_time = row[1]
+        try:
+            text = (
+                "🛑 <b>Срок действия подписки истек!</b>\n\n"
+                "Ваш VPN-доступ временно отключен.\n"
+                "Чтобы восстановить подключение, оплатите продление."
+            )
+            
+            kb_expired = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)]
+            ])
+            
+            await bot.send_message(
+                chat_id=user_id, 
+                text=text, 
+                parse_mode="HTML",
+                reply_markup=kb_expired
+            )
+            
+            # Записываем факт отправки в журнал
+            cursor.execute(
+                "INSERT OR IGNORE INTO notification_log (user_id, notified_expiry, type) VALUES (?, ?, 'expired')",
+                (user_id, expiry_time)
+            )
+            conn.commit()
+            
+            logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
+            await asyncio.sleep(0.05)
+            
+        except Exception as err:
+            logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
 
-        # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
-        for row in expired_rows:
-            user_id = row[0]
-            try:
-                text = (
-                    "🛑 <b>Срок действия подписки истек!</b>\n\n"
-                    "Ваш VPN-доступ временно отключен.\n"
-                    "Чтобы восстановить подключение, оплатите продление."
-                )
-                
-                # Создаем кнопку для тех, у кого подписка уже отключена
-                kb_expired = InlineKeyboardMarkup()
-                kb_expired.inline_keyboard.append([
-                    InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)
-                ])
-                
-                await bot.send_message(
-                    chat_id=user_id, 
-                    text=text, 
-                    parse_mode="HTML",
-                    reply_markup=kb_expired  # <-- Передаем кнопку активации
-                )
-                
-                logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
-                await asyncio.sleep(0.05)
-                
-            except Exception as err:
-                logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
+    # Очищаем старые логи, чтобы база данных на хостинге не раздувалась со временем
+    try:
+        # Удаляем записи логов для подписок, которые закончились более месяца назад
+        one_month_ago = current_time - (30 * one_day)
+        cursor.execute("DELETE FROM notification_log WHERE notified_expiry < ?", (one_month_ago,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Ошибка при закрытии или очистке логов БД: {e}")
 
 
 
 async def scheduler(bot):
     """Цикл, который запускает проверку раз в сутки под именем scheduler."""
-    # Даем боту 10 секунд на полную инициализацию после старта скрипта
     await asyncio.sleep(10)
     
     while True:
         try:
-            # Вызываем нашу обновленную функцию проверки подписок
             await check_and_notify_expiring_subscriptions(bot)
         except Exception as e:
             logging.error(f"Критическая ошибка в планировщике подписок: {e}")
         
-        # Засыпаем ровно на 24 часа до следующей проверки
+        # Твой стандартный таймер на 24 часа. Благодаря левому соединению (LEFT JOIN) 
+        # и сверке с журналом, смещение времени выполнения кода больше ни на что не влияет.
         await asyncio.sleep(24 * 60 * 60)
+
+
 
 
 
