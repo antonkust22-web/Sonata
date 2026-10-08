@@ -1702,9 +1702,11 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
         "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
         "└ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n\n"
-        
-        "───────────────────────────────\n"
-        "<i>💡 ID пользователя можно узнать в его Личном кабинете или скопировать из логов транзакций платежей.</i>"
+
+        "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
+        "├ <code>/panel_partner</code> — Открыть бизнес-панель (просмотр баланса, ссылок и квестов)\n"
+        "├ <code>/setbalance [ID] [сумма]</code> — 🔥 Изменить (начислить/списать) баланс партнера вручную\n"
+        "└ <i>💡 Заявки на партнерство и запросы выплат (на карты/CryptoBot) приходят интерактивными плашками прямо вам в ЛС с кнопками мгновенного аппрува.</i>\n\n"
     )
 
     await message.answer(help_text, parse_mode="HTML")
@@ -5296,6 +5298,44 @@ async def admin_set_device_limit(message: types.Message):
 
 
 
+def update_partner_balance_manually(partner_id: int, amount: float):
+    """
+    Прибавляет или вычитает рубли из баланса партнера.
+    amount может быть положительным (начисление) или отрицательным (списание).
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Гарантируем, что у партнера есть запись в статистике
+        cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_id,))
+        
+        # Обновляем баланс и общую сумму дохода (если идет начисление)
+        if amount > 0:
+            cursor.execute("""
+                UPDATE partner_stats 
+                SET balance_rub = balance_rub + ?, total_earned = total_earned + ? 
+                WHERE partner_id = ?
+            """, (amount, amount, partner_id))
+        else:
+            # При списании общую историю заработка (total_earned) не уменьшаем
+            cursor.execute("""
+                UPDATE partner_stats 
+                SET balance_rub = balance_rub + ? 
+                WHERE partner_id = ?
+            """, (amount, partner_id))
+            
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"Ошибка ручного изменения баланса партнера {partner_id}: {e}")
+        return False
+
+
+
+
+
 
 from aiogram.filters import Command
 
@@ -5463,31 +5503,90 @@ async def admin_decision_callback(callback: types.CallbackQuery, bot: Bot):
         except Exception:
             pass
 
-# Интеграция с твоей системой генерации QR-кодов
+import io
+import logging
+import qrcode
+from aiogram import types, F, Bot
+from aiogram.types import BufferedInputFile
+
 @dp.callback_query(F.data.startswith("get_qr_"))
 async def send_partner_qr(callback: types.CallbackQuery, bot: Bot):
-    await callback.answer()
+    await callback.answer("Генерирую QR-код...")
+    
     data_parts = callback.data.split("_")
-    qr_type = data_parts[2] # "partner" или "client"
+    qr_type = data_parts[2]    # "partner" или "client"
     partner_id = int(data_parts[3])
     
-    bot_username = (await bot.get_me()).username
+    # 1. Защита: Проверяем, что партнер запрашивает QR именно для себя
+    if callback.from_user.id != partner_id:
+        await callback.answer("❌ Вы не можете запрашивать чужие QR-коды.", show_alert=True)
+        return
+
+    # Получаем юзернейм бота динамически для формирования tg-ссылки
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    
+    # 2. Формируем ссылки и маркетинговый текст под тип кнопки
     if qr_type == "partner":
         target_link = f"https://t.me/{bot_username}?start=p{partner_id}"
-        caption_text = "🟣 Твой бизнес-QR для привлечения рефералов."
+        caption_text = (
+            f"🟣 <b>Ваш QR-код для привлечения Партнеров!</b>\n\n"
+            f"🔗 <b>Бизнес-ссылка:</b>\n<code>{target_link}</code>\n\n"
+            f"💵 <b>Ваш заработок:</b>\n"
+            f"├ <b>28%</b> от трат личных рефералов\n"
+            f"└ <b>9%</b> от трафика ваших субпартнеров\n\n"
+            f"<i>📢 Перешлите это фото или скопируйте ссылку для размещения в своих соцсетях и каналах!</i>"
+        )
     else:
         target_link = f"https://t.me/{bot_username}?start=ref{partner_id}"
-        caption_text = "🎁 Твой клиентский QR-код."
+        caption_text = (
+            f"🎁 <b>Ваш QR-код для привлечения Клиентов!</b>\n\n"
+            f"🔗 <b>Реферальная ссылка:</b>\n<code>{target_link}</code>\n\n"
+            f"🎉 <b>Условия для пользователей:</b>\n"
+            f"├ Пришедший по ней пользователь гарантированно получает <b>+3 дня бесплатного теста</b> при старте!\n"
+            f"💵 <b>Ваш доход:</b>\n"
+            f"└ Вы получаете <b>28%</b> от всех его последующих оплат подписок наличными на баланс вывода.\n\n"
+            f"<i>(Напоминаем: так как вы партнер, бесплатные реф-дни за этот тип ссылок вам не начисляются — вы зарабатываете реальные деньги!)</i>"
+        )
 
-    # ТУТ ВЫЗОВ ТВОЕЙ СУЩЕСТВУЮЩЕЙ СИСТЕМЫ QR
-    # Передаем ссылку `target_link` в твой генератор и отправляем фото
-    # Пример (замени на свою функцию генерации/отправки):
+    # 3. ГЕНЕРАЦИЯ И РЕНДЕРИНГ КАРТИНКИ QR-КОДА В ОЗУ
     try:
-        # qr_photo = await твоя_функция_генерации(target_link)
-        # await callback.message.answer_photo(photo=qr_photo, caption=caption_text)
-        await callback.message.answer(f"📲 Сгенерированная ссылка для твоего QR-кода:\n<code>{target_link}</code>\n\n<i>(Передай эту ссылку в свою функцию генерации QR-фото)</i>", parse_mode="HTML")
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(target_link)
+        qr.make(fit=True)
+
+        # Рендерим изображение (черно-белый классический QR)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Сохраняем картинку прямо в оперативную память сервера
+        img_io = io.BytesIO()
+        img.save(img_io, format='PNG')
+        img_io.seek(0)
+        
+        # Подготавливаем файл для отправки в aiogram 3.x
+        photo_file = BufferedInputFile(img_io.getvalue(), filename=f"partner_{partner_id}_qr.png")
+        
+        # Отправляем фото с красивым описанием прямо в чат партнеру
+        await callback.message.answer_photo(
+            photo=photo_file,
+            caption=caption_text,
+            parse_mode="HTML"
+        )
+        
     except Exception as qr_err:
-        logging.error(f"Ошибка вызова QR: {qr_err}")
+        logging.error(f"❌ Ошибка при генерации или отправке фото QR-кода для партнера {partner_id}: {qr_err}", exc_info=True)
+        # Если картинка сломалась (например, не установлена библиотека), бот выдаст хотя бы текст и ссылку
+        await callback.message.answer(
+            f"⚠️ <b>Не удалось сгенерировать QR-картинку, но ваша ссылка готова:</b>\n\n"
+            f"📌 Ссылка: <code>{target_link}</code>",
+            parse_mode="HTML"
+        )
+
 
 
 
@@ -5501,15 +5600,22 @@ class WithdrawStates(StatesGroup):
     entering_details = State()
 
 
-# 🛠 Начало процесса вывода
+
+# 🛠 Начало процесса вывода с лимитом от 2500 рублей
 @dp.callback_query(F.data == "partner_withdraw_start")
 async def withdraw_start(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     balance_rub, _, _, _ = get_partner_profile(user_id)
     
-    # Защита от вывода нулевого баланса (минималку можешь поставить любую, например 100 руб)
-    if balance_rub <= 0:
-        await callback.answer("❌ У вас нет доступных средств для вывода.", show_alert=True)
+    # 🔥 ЖЕСТКИЙ ЛИМИТ: Минимальная сумма вывода — 2500 рублей
+    MIN_WITHDRAW = 2500.0
+    
+    if balance_rub < MIN_WITHDRAW:
+        await callback.answer(
+            f"❌ Минимальная сумма для вывода составляет {int(MIN_WITHDRAW)} руб.\n"
+            f"Ваш текущий баланс: {balance_rub} руб.", 
+            show_alert=True
+        )
         return
         
     await callback.answer()
@@ -5521,12 +5627,14 @@ async def withdraw_start(callback: types.CallbackQuery, state: FSMContext):
     ])
     
     await callback.message.edit_text(
-        f"💰 Ваш текущий баланс: <b>{balance_rub} руб.</b>\n\n"
+        f"💰 Ваш текущий фоновый баланс: <b>{balance_rub} руб.</b>\n"
+        f"⚠️ <i>Минимальный порог выплаты в 2500 руб. успешно пройден!</i>\n\n"
         f"Выберите удобный способ получения выплаты:",
         reply_markup=kb,
         parse_mode="HTML"
     )
     await state.set_state(WithdrawStates.choosing_method)
+
 
 # 🛠 Выбор метода выплаты
 @dp.callback_query(WithdrawStates.choosing_method, F.data.startswith("method_"))
@@ -5663,6 +5771,70 @@ async def admin_withdrawal_decision(callback: types.CallbackQuery, bot: Bot):
 
 
 
+from aiogram.filters import Command
+
+@dp.message(Command("setbalance"))
+async def set_balance_command(message: types.Message, bot: Bot):
+    # Защита: только для Создателя (Владельца)
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            "❌ <b>Недостаточно аргументов!</b>\n"
+            "Format: <code>/setbalance [ID_ЮЗЕРА] [СУММА]</code>\n\n"
+            "<i>💡 Пример начисления: /setbalance 8840224964 2500\n"
+            "💡 Пример списания: /setbalance 8840224964 -500</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    target_id = args[1]
+    amount_str = args[2]
+
+    # Валидация ID
+    if not target_id.isdigit():
+        await message.answer("❌ Telegram ID должен состоять только из цифр.")
+        return
+    
+    target_id = int(target_id)
+
+    # Валидация суммы (поддерживаем и отрицательные, и дробные числа)
+    try:
+        amount = float(amount_str)
+    except ValueError:
+        await message.answer("❌ Сумма должна быть числом (например: 2500 или -150.50).")
+        return
+
+    # Выполняем изменение в базе данных
+    success = update_partner_balance_manually(target_id, amount)
+    
+    if success:
+        action_word = "начислено" if amount > 0 else "списано"
+        abs_amount = abs(amount)
+        
+        # Получаем новый итоговый баланс для вывода админу
+        balance_rub, _, _, _ = get_partner_profile(target_id)
+        
+        await message.answer(
+            f"✅ Пользователю <code>{target_id}</code> успешно <b>{action_word} {abs_amount} руб.</b>\n"
+            f"💰 Новый фоновый баланс партнера: <b>{balance_rub} руб.</b>",
+            parse_mode="HTML"
+        )
+        
+        # Отправляем уведомление самому партнеру в фоновом режиме
+        try:
+            if amount > 0:
+                notification_text = f"💰 <b>Баланс пополнен администратором!</b>\n\nВам начислено: <b>+{abs_amount} руб.</b>\nТекущий баланс партнерской панели: <b>{balance_rub} руб.</b>"
+            else:
+                notification_text = f"⚠️ <b>Баланс изменен администратором!</b>\n\nС вашего счета списано: <b>-{abs_amount} руб.</b>\nТекущий баланс партнерской панели: <b>{balance_rub} руб.</b>"
+                
+            await bot.send_message(chat_id=target_id, text=notification_text, parse_mode="HTML")
+        except Exception:
+            pass  # Игнорируем, если пользователь заблокировал бота
+    else:
+        await message.answer("❌ Произошла ошибка при обновлении таблицы в базе данных.")
 
 
 
@@ -5990,6 +6162,10 @@ async def scheduler(bot):
 
 
 
+from db_partners import init_partner_db
+
+# Вызывать строго ПЕРЕД запуском бота (перед start_polling)
+init_partner_db()
 
 
 
