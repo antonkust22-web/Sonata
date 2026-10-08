@@ -781,6 +781,183 @@ def get_id_by_username(username: str):
 
 
 
+
+
+
+def init_partner_db():
+    """Инициализация таблиц партнерской программы"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # 1. Таблица связей (кто кого пригласил)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS partner_refs (
+            user_id INTEGER PRIMARY KEY,           -- ID пришедшего покупателя
+            partner_id INTEGER,                     -- ID партнера 1-го уровня (28%)
+            sub_partner_id INTEGER,                 -- ID партнера 2-го уровня (9%)
+            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        
+        # 2. Таблица статистики и балансов партнеров (работает в фоне)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS partner_stats (
+            partner_id INTEGER PRIMARY KEY,
+            balance_rub REAL DEFAULT 0.0,           -- Текущий фоновый баланс в рублях
+            total_earned REAL DEFAULT 0.0,          -- Сколько всего заработал за всё время
+            referrals_count INTEGER DEFAULT 0,      -- Сколько лично пригласил пользователей
+            sub_partners_count INTEGER DEFAULT 0,   -- Сколько субпартнеров пригласил
+            quest_claimed INTEGER DEFAULT 0         -- 0 - квест на 10 человек не выполнен, 1 - выполнен и награда выдана
+        );
+        """)
+
+        # 3. 🔥 НОВАЯ ЧАСТЬ: Таблица контроля заявок на вывод средств
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS partner_withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner_id INTEGER,
+            amount REAL,
+            method TEXT,                            -- 'card' или 'cryptobot'
+            credentials TEXT,                       -- Номер карты или юзернейм/кошелек
+            status TEXT DEFAULT 'pending',          -- 'pending', 'paid', 'rejected'
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Ошибка инициализации БД партнерки: {e}")
+
+# Запускаем создание таблиц при импорте модуля
+init_partner_db()
+
+def get_partners_for_user(user_id: int):
+    """Возвращает (partner_id, sub_partner_id) для конкретного пользователя или None"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT partner_id, sub_partner_id FROM partner_refs WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result if result else (None, None)
+    except Exception as e:
+        logging.error(f"Ошибка получения партнеров для {user_id}: {e}")
+        return None, None
+
+def get_partner_profile(partner_id: int):
+    """Возвращает статистику партнера. Если записи нет — создает дефолтную."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance_rub, total_earned, referrals_count, quest_claimed FROM partner_stats WHERE partner_id = ?", (partner_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_id,))
+            conn.commit()
+            cursor.execute("SELECT balance_rub, total_earned, referrals_count, quest_claimed FROM partner_stats WHERE partner_id = ?", (partner_id,))
+            row = cursor.fetchone()
+            
+        conn.close()
+        return row # (balance_rub, total_earned, referrals_count, quest_claimed)
+    except Exception as e:
+        logging.error(f"Ошибка получения профиля партнера {partner_id}: {e}")
+        return 0.0, 0.0, 0, 0
+
+async def add_partner_balance(partner_id: int, amount_coins: float, level: int, from_user_id: int, bot):
+    """Фоновое начисление баланса партнерам и отправка логов/уведомлений"""
+    amount_in_rub = amount_coins / 100
+    percent = 28 if level == 1 else 9
+    bonus_rub = round(amount_in_rub * (percent / 100), 2)
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Гарантируем наличие строчки в статистике
+        cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_id,))
+        # Начисляем рубли на баланс
+        cursor.execute("""
+            UPDATE partner_stats 
+            SET balance_rub = balance_rub + ?, total_earned = total_earned + ? 
+            WHERE partner_id = ?
+        """, (bonus_rub, bonus_rub, partner_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"💰 [ПАРТНЕРКА ФОН] Партнеру {partner_id} ({level}-й ур.) начислено +{bonus_rub} руб. за платеж юзера {from_user_id}")
+        
+        # ТЕСТИРОВАНИЕ: Отправляем уведомление, если партнер — Владелец (ADMIN_ID)
+        if partner_id == ADMIN_ID:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🧪 <b>[ТЕСТ ПАРТНЕРКИ] Начисление!</b>\n"
+                    f"👤 Покупатель: <code>{from_user_id}</code>\n"
+                    f"📊 Уровень начисления: <b>{level}-й</b> ({percent}%)\n"
+                    f"💵 Сумма платежа: <code>{amount_in_rub} руб.</code>\n"
+                    f"🎉 Фоновый баланс увеличен на: <b>+{bonus_rub} руб.</b>"
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error(f"Ошибка фонового обновления баланса партнера {partner_id}: {e}")
+
+# =========================================================================
+# 🔥 НОВЫЕ ФУНКЦИИ ДЛЯ УПРАВЛЕНИЯ ВЫВОДОМ СРЕДСТВ
+# =========================================================================
+
+def create_withdrawal_request(partner_id: int, amount: float, method: str, credentials: str):
+    """Создает заявку на вывод средств в таблице логов"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO partner_withdrawals (partner_id, amount, method, credentials) VALUES (?, ?, ?, ?)",
+            (partner_id, amount, method, credentials)
+        )
+        req_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return req_id
+    except Exception as e:
+        logging.error(f"Ошибка создания заявки на вывод для {partner_id}: {e}")
+        return None
+
+def confirm_withdrawal_db(req_id: int):
+    """Списывает доступный баланс у партнера и переводит статус заявки в 'paid'"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Получаем данные текущей заявки
+        cursor.execute("SELECT partner_id, amount, status FROM partner_withdrawals WHERE id = ?", (req_id,))
+        row = cursor.fetchone()
+        
+        if row and row[2] == 'pending':
+            partner_id, amount = row[0], row[1]
+            
+            # Списываем деньги только с текущего баланса (balance_rub), total_earned не трогаем для статистики
+            cursor.execute("UPDATE partner_stats SET balance_rub = balance_rub - ? WHERE partner_id = ?", (amount, partner_id))
+            cursor.execute("UPDATE partner_withdrawals SET status = 'paid' WHERE id = ?", (req_id,))
+            
+            conn.commit()
+            conn.close()
+            return partner_id, amount
+        
+        conn.close()
+        return None
+    except Exception as e:
+        logging.error(f"Ошибка подтверждения выплаты в БД по заявке №{req_id}: {e}")
+        return None
+
+
+
+
+
 #-------миграция бд ------------------
   
 
@@ -1491,28 +1668,47 @@ ROLE_NAMES = {
     "user": "👤 Обычный пользователь"
 }
 
+from aiogram import types
+from aiogram.filters import Command
+
 @dp.message(F.text.startswith("/panel"), IsCreator())
 async def creator_panel_help(message: types.Message):
-    """Справка по управлению ролями для Создателя"""
-    await message.answer(
-        "👑 <b>Панель управления ролями (Доступно только Создателю)</b>\n\n"
-        "Вы можете выдавать и забирать права у пользователей по их Telegram ID:\n\n"
-        "• <b>Назначить роль:</b>\n"
-        "<code>/setrole [ID] admin</code> — назначить администратора\n"
-        "<code>/setrole [ID] ambassador</code> — назначить амбассадора\n\n"
-        "• <b>Разжаловать до юзера:</b>\n"
-        "<code>/demote [ID]</code> — вернуть статус обычного пользователя\n\n"
-        "• Одноразовый: <code>/gen [дни] [код]</code>\n"
-        "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
-        "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>\n\n"
-        "Рассылка: <code>/send</code>\n"
-        "Установка лимита: <code>/set_limit</code>"
-        "<code>/start_promo</code> начало акции\n\n"
-        "<code>/team</code> cписок админов и амбассодоров\n"
-        "<code>/find_user_name [username]</code> узнать ТГ АЙДИ по юзеру\n\n"
-        "<i>💡 ID пользователя можно узнать в его Личном кабинете или скопировать из логов.</i>",
-        parse_mode="HTML"
+    """Справка по управлению ботом и партнерской программой для Создателя"""
+    
+    help_text = (
+        "👑 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ВЛАДЕЛЬЦА (CREATOR)</b>\n"
+        "───────────────────────────────\n\n"
+        
+        "ℹ️ <i>Используйте команды ниже для полного контроля над ролями, промокодами, лимитами и партнерской системой бота. All операции выполняются по Telegram ID.</i>\n\n"
+        
+        "👥 <b>УПРАВЛЕНИЕ РОЛЯМИ И КОМАНДОЙ</b>\n"
+        "├ <code>/setrole [ID] admin</code> — Назначить Администратора (Staff)\n"
+        "├ <code>/setrole [ID] ambassador</code> — Назначить Амбассадора\n"
+        "├ <code>/setpartner [ID]</code> — 🟣 Назначить <b>Партнера</b> (Бизнес-программа)\n"
+        "├ <code>/demote [ID]</code> — Разжаловать до статуса обычного Пользователя\n"
+        "└ <code>/team</code> — Посмотреть актуальный список Админов, Амбассадоров и Партнеров\n\n"
+        
+        "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
+        "├ <code>/panel_partner</code> — Открыть бизнес-панель (просмотр баланса, ссылок и квестов)\n"
+        "└ <i>💡 Заявки на партнерство и запросы выплат (на карты/CryptoBot) приходят интерактивными плашками прямо вам в ЛС с кнопками мгновенного аппрува.</i>\n\n"
+        
+        "🎫 <b>ГЕНЕРАЦИЯ ПРОМОКОДОВ (/gen)</b>\n"
+        "├ <code>/gen [дни] [код]</code> — Одноразовый промокод\n"
+        "├ <code>/gen [дни] [код] 0</code> — Бесконечный по использованиям промокод\n"
+        "└ <code>/gen [дни] [код] [лимит]</code> — Ограниченный на X человек промокод\n\n"
+        
+        "⚙️ <b>СЕРВИСНЫЕ И МАРКЕТИНГОВЫЕ КОМАНДЫ</b>\n"
+        "├ <code>/send</code> — Запустить массовую рассылку сообщений пользователям\n"
+        "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
+        "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
+        "└ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n\n"
+        
+        "───────────────────────────────\n"
+        "<i>💡 ID пользователя можно узнать в его Личном кабинете или скопировать из логов транзакций платежей.</i>"
     )
+
+    await message.answer(help_text, parse_mode="HTML")
+
 
 
 
@@ -2633,10 +2829,12 @@ import sqlite3  # Используем стандартный драйвер, к
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
-    uid = message.from_user.id
+    user_id = message.from_user.id
+    username = message.from_user.username or f"user_{user_id}"
 
     # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
+
 
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
 #    try:
@@ -2695,8 +2893,6 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
 
 
-    user_id = message.from_user.id
-    username = message.from_user.username or f"user_{user_id}"
     
     # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
     existing_user = get_user_from_db(user_id)
@@ -2704,95 +2900,153 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     
     ref_bonus_text = ""
     
-    # 2. Реферальная система (строго для новых пользователей)
-    if command and command.args and command.args.startswith("ref") and is_new_user:
+    # =========================================================================
+    # 🔥 МОДЕРНИЗИРОВАННАЯ ДЕНЕЖНАЯ ПАРТНЕРСКАЯ ПРОГРАММА (28% / 9%)
+    # =========================================================================
+    if command and command.args and command.args.startswith("p") and is_new_user:
+        try:
+            partner_1st = int(command.args[1:])  # Отрезаем букву "p", получаем ID партнера 1-го уровня
+            
+            if partner_1st != user_id:
+                # Проверяем, существует ли такой партнер в основной базе данных
+                partner_data = get_user_from_db(partner_1st)
+                if partner_data:
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    
+                    # 🔥 Ищем партнера 2-го уровня (кто пригласил нашего партнера 1-го уровня)
+                    cursor.execute("SELECT partner_id FROM partner_refs WHERE user_id = ?", (partner_1st,))
+                    parent_row = cursor.fetchone()
+                    partner_2nd = parent_row[0] if parent_row else None
+                    
+                    # Жестко фиксируем денежную связку: Новичок -> Партнер 1 (28%) -> Партнер 2 (9%)
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO partner_refs (user_id, partner_id, sub_partner_id) VALUES (?, ?, ?)",
+                        (user_id, partner_1st, partner_2nd)
+                    )
+                    
+                    # В фоне увеличиваем счетчик приглашенных пользователей у партнера 1-го уровня
+                    cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_1st,))
+                    cursor.execute("UPDATE partner_stats SET referrals_count = referrals_count + 1 WHERE partner_id = ?", (partner_1st,))
+                    
+                    # Если есть партнер 2-го уровня, увеличиваем ему счетчик субпартнеров в фоне
+                    if partner_2nd:
+                        cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_2nd,))
+                        cursor.execute("UPDATE partner_stats SET sub_partners_count = sub_partners_count + 1 WHERE partner_id = ?", (partner_2nd,))
+                    
+                    # 💥 КВЕСТ НА БЕЗЛИМИТ: Проверяем, набрал ли партнер 10 приглашенных
+                    cursor.execute("SELECT referrals_count, quest_claimed FROM partner_stats WHERE partner_id = ?", (partner_1st,))
+                    quest_row = cursor.fetchone()
+                    
+                    if quest_row and quest_row[0] >= 10 and quest_row[1] == 0:
+                        # Помечаем квест как выполненный
+                        cursor.execute("UPDATE partner_stats SET quest_claimed = 1 WHERE partner_id = ?", (partner_1st,))
+                        conn.commit()
+                        
+                        # Начисляем вечный безлимит партнеру (Ставим expiry до 2060 года и 999 устройств)
+                        eternal_timestamp = 2840000000
+                        p_role = partner_data[5] if len(partner_data) > 5 else "user"
+                        p_username = partner_data[1] if len(partner_data) > 1 else f"user_{partner_1st}"
+                        
+                        add_or_update_user(partner_1st, p_username, expiry_time=eternal_timestamp, role=p_role, device_limit=999)
+                        await renew_vpn_subscription_flexible(partner_1st, 99999)
+                        
+                        try:
+                            await message.bot.send_message(
+                                chat_id=partner_1st,
+                                text="🔥 <b>Цель достигнута!</b>\n\n"
+                                     "<blockquote>Вы привели 10 платящих пользователей!\n"
+                                     "🎁 Вам автоматически активирована <b>БЕЗЛИМИТНАЯ подписка на VPN</b> без ограничения по устройствам! Спасибо за работу! 🚀</blockquote>",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        conn.commit()
+                    
+                    conn.close()
+                    logging.info(f"🔗 [ПАРТНЕРКА ФОН] Новый пользователь {user_id} привязан к денежному партнеру {partner_1st}")
+        except Exception as p_err:
+            logging.error(f"Ошибка в фоновом партнерском блоке /start: {p_err}")
+
+    # =========================================================================
+    # 🎁 КЛИЕНТСКАЯ РЕФЕРАЛКА НА ДНИ (ref123) С ЗАЩИТОЙ ОТ НАЧИСЛЕНИЯ ПАРТНЕРАМ
+    # =========================================================================
+    elif command and command.args and command.args.startswith("ref") and is_new_user:
         try:
             inviter_id = int(command.args.replace("ref", ""))
-            
-            # Защита: нельзя пригласить самого себя
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
-                
                 if inviter_data:
-                    # === НАЧИСЛЕНИЕ ПРИГЛАСИВШЕМУ (РЕФЕРЕРУ) ===
-                    try:
-                        inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
-                    except (ValueError, TypeError):
-                        inviter_old_expiry = 0
-
-                    current_time = int(time.time())
-
-                    # 1. ПРЯМОЙ РАСЧЕТ TIMESTAMP (ДЛЯ СТОЛБЦА expiry_time В ЛОКАЛЬНОЙ БД)
-                    if inviter_old_expiry > current_time:
-                        new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
-                    else:
-                        new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
-
-                    # 2. ОБНОВЛЯЕМ ЛОКАЛЬНУЮ БД БОТА НА ХОСТИНГЕ
-                    try:
-                        inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
-                        inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
-                        
-                        # Исправлено: передаем inviter_username вместо конфига
-                        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
-                    except Exception as db_ex:
-                        logging.error(f"Ошибка обновления БД реферера: {db_ex}")
-
-                    # 3. 🔥 ИСПРАВЛЕНО: ОБНОВЛЯЕМ X-UI ПАНЕЛЬ — просто передаем +3 дня!
-                    # Функция сама определит остаток и аккуратно добавит ровно 3 дня к его тарифу в панели
-                    await renew_vpn_subscription_flexible(inviter_id, 3)
-
-                    # Уведомление пригласившему
-                    try:
-                        await message.bot.send_message(
-                            chat_id=inviter_id,
-                            text=f"🤝 <b>Новый реферал!</b>\n\n"
-                                 f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
-                                 f"🎁 Вам начислено: <b>+3 дня подписки</b>!</blockquote>",
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-
-                    # НАЧИСЛЯЕМ 3 ДНЯ НОВОМУ ПОЛЬЗОВАТЕЛЮ (РЕФЕРАЛУ)
-                    add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
-                    await renew_vpn_subscription_flexible(user_id, 3)
-
-
-                    # ФИКСИРУЕМ СВЯЗЬ В БД ДЛЯ СЧЕТЧИКА В ЛИЧНОМ КАБИНЕТЕ
-                    try:
-                        add_referral_connection(inviter_id, user_id)
-                    except Exception:
-                        pass 
+                    # Узнаем роль пригласившего
+                    inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
+                    inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
                     
-                    ref_bonus_text = (
-                        f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
-                        f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
-                    )
+                    # 🔥 ПРОВЕРКА: Если пригласивший — партнер или админ, ДНИ ЕМУ НЕ ДАЕМ
+                    if inviter_role in ["partner", "ambassador", "admin", "creator"]:
+                        logging.info(f"🚫 [РЕФ СИСТЕМА] Партнеру {inviter_id} не начислены 3 дня, так как он на денежной программе.")
+                        
+                        # Но новичку (клиенту) 3 дня всё равно даем, чтобы была мотивация переходить!
+                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+                        await renew_vpn_subscription_flexible(user_id, 3)
+                        
+                        ref_bonus_text = (
+                            f"<blockquote>🎉 <b>Вам начислен приветственный бонус!</b>\n"
+                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+                        )
+                    else:
+                        # СТАНДАРТНАЯ ЛОГИКА ОБОИМ (если пригласивший — обычный юзер)
+                        try: inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
+                        except (ValueError, TypeError): inviter_old_expiry = 0
+                        
+                        current_time = int(time.time())
+                        if inviter_old_expiry > current_time:
+                            new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
+                        else:
+                            new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
 
-        except (ValueError, TypeError):
-            pass
+                        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
+                        await renew_vpn_subscription_flexible(inviter_id, 3)
 
-    # 3. Обработка регистрации и обновлений (если не было реферального бонуса)
+                        # Уведомление обычному юзеру
+                        try:
+                            await message.bot.send_message(
+                                chat_id=inviter_id,
+                                text=f"🤝 <b>Новый реферал!</b>\n\n"
+                                     f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
+                                     f"🎁 Вам начислено: <b>+3 дня подписки</b>!</blockquote>",
+                                parse_mode="HTML"
+                            )
+                        except Exception: pass
+
+                        # Выдача дней новичку
+                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+                        await renew_vpn_subscription_flexible(user_id, 3)
+                        
+                        ref_bonus_text = (
+                            f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
+                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+                        )
+
+                    try: add_referral_connection(inviter_id, user_id)
+                    except Exception: pass 
+        except (ValueError, TypeError): pass
+
+
+    # 3. Финализация регистрации в основной БД
     if is_new_user and not ref_bonus_text:
         add_or_update_user(user_id, username, expiry_time=0)
     elif not is_new_user:
-        try:
-            old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
-        except (ValueError, TypeError):
-            old_expiry = 0
-            
+        try: old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
+        except (ValueError, TypeError): old_expiry = 0
         add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
 
     # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
-    try:
-        await loading_msg.delete()
-    except Exception:
-        pass
+    try: await loading_msg.delete()
+    except Exception: pass
 
     # 5. Отправка главного сообщения (видео)
     final_caption = f"{ref_bonus_text}{text1}"
-    
     await message.answer_video(
         video=VIDEO_MAIN,  
         caption=final_caption,
@@ -2800,6 +3054,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         parse_mode="HTML",
         message_effect_id="5046509860389126442"
     )
+
+
 
 
 
@@ -2877,10 +3133,13 @@ async def cabinet(callback: types.CallbackQuery):
             role_badge = "<b>Статус:</b> 🟢БОРЗ (Владелец)"
             is_premium_role = True
         elif role == "admin":
-            role_badge = "<b>Статус:</b> 🔴Администратор (Staff)"
+            role_badge = "<b>Статус:</b> 🔴Администратор"
             is_premium_role = True
         elif role == "ambassador":
-            role_badge = "<b>Статус:</b> 🟠Амбассадор (Partner)"
+            role_badge = "<b>Статус:</b> 🟠Амбассадор"
+            is_premium_role = True
+        elif role == "partner":
+            role_badge = "<b>Статус:</b> 🟣Партнер"
             is_premium_role = True
         else:
             role_badge = "<b>Статус:</b> 🔵Пользователь"
@@ -3523,12 +3782,12 @@ async def process_os_choice(callback: types.CallbackQuery):
         
         # ТЕПЕРЬ HAPP ДОСТУПЕН НА ВСЕХ ПЛАТФОРМАХ!
         apps_by_os = {
-            "ios": [("Happ 🍏", "happ"), ("Streisand", "streisand"), ("Karing", "karing"), ("INCY", "incy")],
-            "and": [("Happ 🤖", "happ"), ("v2rayNG", "v2rayng"), ("INCY", "incy"), ("Karing", "karing")],
-            "win": [("Happ 🪟", "happ"), ("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing"), ("INCY", "incy")],
-            "mac": [("Happ 💻", "happ"), ("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs"), ("Karing", "karing"), ("INCY", "incy")],
-            "lin": [("Happ 🐧", "happ"), ("Nekobox", "nekobox"), ("Sing-Box", "singbox"), ("v2rayN", "v2rayn"), ("Karing", "karing")],
-            "atv": [("Happ 📺 (По умолчанию)", "happ")],
+            "ios": [("Happ", "happ"), ("Streisand", "streisand"), ("Karing", "karing"), ("INCY", "incy")],
+            "and": [("Happ", "happ"), ("v2rayNG", "v2rayng"), ("INCY", "incy"), ("Karing", "karing")],
+            "win": [("Happ", "happ"), ("v2rayN", "v2rayn"), ("Nekobox", "nekobox"), ("Karing", "karing"), ("INCY", "incy")],
+            "mac": [("Happ", "happ"), ("Sing-Box", "singbox"), ("FoXray", "foxray"), ("V2RayXS", "v2rayxs"), ("Karing", "karing"), ("INCY", "incy")],
+            "lin": [("Happ", "happ"), ("Nekobox", "nekobox"), ("Sing-Box", "singbox"), ("v2rayN", "v2rayn"), ("Karing", "karing")],
+            "atv": [("Happ 🍏📺 (По умолчанию)", "happ")],
             "antv": [("Happ 🤖📺 (По умолчанию)", "happ")]
         }
 
@@ -4561,7 +4820,7 @@ async def process_successful_payment(message: types.Message):
             # Извлекаем текущий лимит из 10-й колонки SQLite
             current_db_limit = user_data_before[10] if (user_data_before and len(user_data_before) > 10 and user_data_before[10] is not None) else 5
             
-            # 🔥 ЗАЩИТА: Если у пользователя уже безлимит (999) или лимит выше, оставляем его!
+            # 🔥 ЗАЩИТА: Если у пользователя уже безлимит (999) or лимит выше, оставляем его!
             if current_db_limit >= 999 or current_db_limit > device_limit:
                 device_limit = current_db_limit
 
@@ -4589,8 +4848,6 @@ async def process_successful_payment(message: types.Message):
             )
             
             # 3. 🔥 МГНОВЕННАЯ СИНХРОНИЗАЦИЯ С САЙТОМ (sn-go.ru)
-            # Передаем обновленный конфиг и финальный лимит устройств.
-            # Названия аргументов приведены строго в соответствие с вашей функцией send_sub_to_website!
             try:
                 await send_sub_to_website(
                     token=sub_id, 
@@ -4602,6 +4859,45 @@ async def process_successful_payment(message: types.Message):
             except Exception as site_err:
                 logging.error(f"Не удалось отправить новый лимит на сайт: {site_err}")
             
+            # =====================================================================
+            # 🔥 ФОНОВЫЙ БЛОК: НАЧИСЛЕНИЕ ДВУХУРОВНЕВЫХ ПАРТНЕРСКИХ БОНУСОВ (28% и 9%)
+            # =====================================================================
+            try:
+                # Получаем полную стоимость платежа в копейках напрямую из объекта сообщения Telegram
+                total_amount_coins = message.successful_payment.total_amount
+                
+                # Ищем, закреплены ли за оплатившим пользователем партнеры в таблице партнерки
+                partners = get_partners_for_user(user_id)
+                
+                if partners:
+                    partner_1st_lvl, partner_2nd_lvl = partners
+                    
+                    # 1. Начисление 28% партнеру 1-го уровня (кто пригласил напрямую)
+                    if partner_1st_lvl:
+                        bonus_1st_coins = total_amount_coins * 0.28
+                        await add_partner_balance(
+                            partner_id=partner_1st_lvl, 
+                            amount=bonus_1st_coins, 
+                            level=1, 
+                            from_user_id=user_id,
+                            bot=bot
+                        )
+                        
+                    # 2. Начисление 9% партнеру 2-го уровня (кто пригласил этого партнера)
+                    if partner_2nd_lvl:
+                        bonus_2nd_coins = total_amount_coins * 0.09
+                        await add_partner_balance(
+                            partner_id=partner_2nd_lvl, 
+                            amount=bonus_2nd_coins, 
+                            level=2, 
+                            from_user_id=user_id,
+                            bot=bot
+                        )
+            except Exception as partner_err:
+                # Обернуто в try/except, чтобы ошибки партнерки ни в коем случае не ломали основную выдачу VPN
+                logging.error(f"Ошибка в фоновом начислении партнерских бонусов: {partner_err}", exc_info=True)
+            # =====================================================================
+
             # Формируем красивый вывод лимита для сообщения
             limit_display_text = "🚀 БЕЗЛИМИТ" if device_limit >= 999 else f"{device_limit} устр."
             
@@ -4623,6 +4919,7 @@ async def process_successful_payment(message: types.Message):
     else:
         logging.error(f"Неизвестный payload платежа: {payload}")
         await message.answer("⚠️ Произошла ошибка: неизвестный тип подписки.")
+
 
 
 
@@ -4994,6 +5291,377 @@ async def admin_set_device_limit(message: types.Message):
     except Exception as e:
         logging.error(f"Ошибка при изменении лимита устройств админом для {target_user_id}: {e}", exc_info=True)
         await message.answer(f"❌ <b>Произошла критическая ошибка базы данных:</b> {e}")
+
+
+
+
+
+
+from aiogram.filters import Command
+
+@dp.message(Command("setpartner"))
+async def set_partner_command(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return  # Обычные пользователи команду не увидят
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Формат команды: <code>/setpartner ID_ЮЗЕРА</code>")
+        return
+
+    target_id = args[1]
+    if not target_id.isdigit():
+        await message.answer("❌ ID должен содержать только цифры.")
+        return
+
+    target_id = int(target_id)
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        # Меняем поле role на 'partner' в твоей таблице users
+        cursor.execute("UPDATE users SET role = 'partner' WHERE user_id = ?", (target_id,))
+        conn.commit()
+        conn.close()
+
+        await message.answer(f"✅ Пользователю <code>{target_id}</code> успешно выдан статус <b>Партнер (Бизнес)</b>!")
+        
+        # ФОНОВОЕ оповещение пользователя, если он не заблокал бота
+        try:
+            await bot.send_message(target_id, "🎉 Поздравляем! Вам присвоен статус <b>Партнер</b>. Теперь вы можете зарабатывать на приглашениях.")
+        except Exception:
+            pass
+            
+    except Exception as e:
+        await message.answer(f"❌ Ошибка выполнения SQL: {e}")
+
+
+
+
+
+
+@dp.message(Command("panel_partner"))
+async def panel_partner_cmd(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    
+    user_data = get_user_from_db(user_id)
+    db_role = user_data[5] if (user_data and len(user_data) > 5) else "user"
+    role = "creator" if user_id == ADMIN_ID else db_role
+    
+    # ЕСЛИ ПОЛЬЗОВАТЕЛЬ ПАРТНЕР / АДМИН / ВЛАДЕЛЕЦ
+    if role in ["partner", "ambassador", "admin", "creator"]:
+        balance_rub, total_earned, refs_count, quest_claimed = get_partner_profile(user_id)
+        
+        bot_info = await bot.get_me()
+        quest_progress = min(refs_count, 10)
+        quest_status = "✅ Цель достигнута! Вечный безлимит выдан." if quest_claimed == 1 else f"⏳ Прогресс цели: <code>{quest_progress}/10</code> приглашенных"
+        
+        menu_text = (
+            f"🟣 <b>БИЗНЕС-ПАНЕЛЬ ПАРТНЕРА</b>\n\n"
+            f"💰 Доступный баланс: <b>{balance_rub} руб.</b>\n"
+            f"📈 Суммарный доход: <code>{total_earned} руб.</code>\n"
+            f"👥 Активных рефералов (Уровень 1): <b>{refs_count} чел.</b>\n\n"
+            f"🎯 <b>Активная цель:</b>\n"
+            f"Приведи 10 пользователей по партнерской ссылке и получи вечную безлимитную подписку на VPN!\n"
+            f"{quest_status}\n\n"
+            f"<i>💡 Нажми на кнопки ниже, чтобы мгновенно сгенерировать реферальную ссылку и получить QR-код для приглашения партнеров или клиентов.</i>"
+        )
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Вывести заработок", callback_data="partner_withdraw_start")],
+            [InlineKeyboardButton(text="🤝 Пригласить Партнера", callback_data=f"get_qr_partner_{user_id}")],
+            [InlineKeyboardButton(text="👤 Пригласить Клиента", callback_data=f"get_qr_client_{user_id}")]
+        ])
+        
+        await message.answer(menu_text, reply_markup=kb, parse_mode="HTML")
+        
+    # ЕСЛИ ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ — ИНТЕРФЕЙС ЗАЯВКИ
+    else:
+        text_invite = (
+            f"👋 <b>Хотите зарабатывать на партнерстве с Sonata VPN?</b>\n\n"
+            f"Мы запустили закрытую двухуровневую систему начислений:\n"
+            f"💰 <b>28%</b> наличными со всех трат пользователей, пришедших напрямую по твоей ссылке.\n"
+            f"💸 <b>9%</b> от оплат пользователей, которых приведут твои субпартнеры (у них процент не вычитается!).\n"
+            f"🎁 Приведи первых 10 человек и забери <b>Вечный Безлимитный VPN</b>!\n\n"
+            f"Нажми кнопку ниже, чтобы отправить тестовую заявку на статус партнера."
+        )
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Подать заявку на статус Партнера", callback_data=f"apply_partner_{user_id}")]
+        ])
+        await message.answer(text_invite, reply_markup=kb, parse_mode="HTML")
+
+
+
+# -------------------------------------------------------------------------
+# 🔥 ХЭНДЛЕРЫ ОБРАБОТКИ ЗАЯВОК И ВЫДАЧИ QR-КОДОВ
+# -------------------------------------------------------------------------
+
+@dp.callback_query(F.data.startswith("apply_partner_"))
+async def apply_partner_callback(callback: types.CallbackQuery, bot: Bot):
+    applicant_id = int(callback.data.split("_")[2])
+    await callback.answer("⏳ Ваша заявка успешно отправлена администратору!", show_alert=True)
+    await callback.message.edit_text("⏳ <b>Ваша заявка находится на рассмотрении у администратора.</b>", parse_mode="HTML")
+    
+    # Отправляем заявку админу (ADMIN_ID) с инлайн-кнопками аппрува
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_approve_{applicant_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_decline_{applicant_id}")
+        ]
+    ])
+    
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔔 <b>Новая заявка на статус Партнера!</b>\n\n"
+                 f"👤 Пользователь: @{callback.from_user.username or 'без юзернейма'}\n"
+                 f"🆔 Telegram ID: <code>{applicant_id}</code>",
+            reply_markup=admin_kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить заявку админу: {e}")
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def admin_decision_callback(callback: types.CallbackQuery, bot: Bot):
+    # Защита: кликать кнопки админ-панели может только ADMIN_ID
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ У вас нет прав на это действие.", show_alert=True)
+        return
+        
+    action = callback.data.split("_")[1]
+    target_user_id = int(callback.data.split("_")[2])
+    
+    if action == "approve":
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET role = 'partner' WHERE user_id = ?", (target_user_id,))
+            conn.commit()
+            conn.close()
+            
+            await callback.message.edit_text(f"✅ Заявка пользователя <code>{target_user_id}</code> успешно одобрена!", parse_mode="HTML")
+            
+            # Уведомляем счастливчика
+            await bot.send_message(
+                chat_id=target_user_id,
+                text="🎉 <b>Ваша заявка одобрена!</b>\n\nТеперь вам доступен статус <b>Партнер</b>. Введите команду /panel_partner, чтобы зайти в личный кабинет и получить реферальные ссылки! 🚀",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await callback.answer(f"Ошибка БД: {e}", show_alert=True)
+            
+    elif action == "decline":
+        await callback.message.edit_text(f"❌ Заявка пользователя <code>{target_user_id}</code> отклонена.", parse_mode="HTML")
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text="⚠️ К сожалению, ваша заявка на участие в партнерской программе была отклонена администрацией.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+# Интеграция с твоей системой генерации QR-кодов
+@dp.callback_query(F.data.startswith("get_qr_"))
+async def send_partner_qr(callback: types.CallbackQuery, bot: Bot):
+    await callback.answer()
+    data_parts = callback.data.split("_")
+    qr_type = data_parts[2] # "partner" или "client"
+    partner_id = int(data_parts[3])
+    
+    bot_username = (await bot.get_me()).username
+    if qr_type == "partner":
+        target_link = f"https://t.me/{bot_username}?start=p{partner_id}"
+        caption_text = "🟣 Твой бизнес-QR для привлечения рефералов."
+    else:
+        target_link = f"https://t.me/{bot_username}?start=ref{partner_id}"
+        caption_text = "🎁 Твой клиентский QR-код."
+
+    # ТУТ ВЫЗОВ ТВОЕЙ СУЩЕСТВУЮЩЕЙ СИСТЕМЫ QR
+    # Передаем ссылку `target_link` в твой генератор и отправляем фото
+    # Пример (замени на свою функцию генерации/отправки):
+    try:
+        # qr_photo = await твоя_функция_генерации(target_link)
+        # await callback.message.answer_photo(photo=qr_photo, caption=caption_text)
+        await callback.message.answer(f"📲 Сгенерированная ссылка для твоего QR-кода:\n<code>{target_link}</code>\n\n<i>(Передай эту ссылку в свою функцию генерации QR-фото)</i>", parse_mode="HTML")
+    except Exception as qr_err:
+        logging.error(f"Ошибка вызова QR: {qr_err}")
+
+
+
+
+
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+
+class WithdrawStates(StatesGroup):
+    choosing_method = State()
+    entering_details = State()
+
+
+# 🛠 Начало процесса вывода
+@dp.callback_query(F.data == "partner_withdraw_start")
+async def withdraw_start(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    balance_rub, _, _, _ = get_partner_profile(user_id)
+    
+    # Защита от вывода нулевого баланса (минималку можешь поставить любую, например 100 руб)
+    if balance_rub <= 0:
+        await callback.answer("❌ У вас нет доступных средств для вывода.", show_alert=True)
+        return
+        
+    await callback.answer()
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 На банковскую карту", callback_data="method_card")],
+        [InlineKeyboardButton(text="🤖 Через CryptoBot (USDT/Крипта)", callback_data="method_cryptobot")],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="back_to_partner_panel")]
+    ])
+    
+    await callback.message.edit_text(
+        f"💰 Ваш текущий баланс: <b>{balance_rub} руб.</b>\n\n"
+        f"Выберите удобный способ получения выплаты:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await state.set_state(WithdrawStates.choosing_method)
+
+# 🛠 Выбор метода выплаты
+@dp.callback_query(WithdrawStates.choosing_method, F.data.startswith("method_"))
+async def withdraw_method_chosen(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    method = callback.data.split("_")[1]
+    
+    await state.update_data(chosen_method=method)
+    
+    if method == "card":
+        prompt_text = "💳 Введите <b>номер вашей банковской карты или номер телефона</b> и название банка (например: <i>2202... Тинькофф</i>):"
+    else:
+        prompt_text = "🤖 Введите ваш <b>Telegram юзернейм или адрес кошелька</b> для перевода через CryptoBot Чеки/Счета:"
+        
+    await callback.message.edit_text(prompt_text, parse_mode="HTML")
+    await state.set_state(WithdrawStates.entering_details)
+
+# 🛠 Получение реквизитов и отправка заявки админу
+@dp.message(WithdrawStates.entering_details)
+async def withdraw_details_received(message: types.Message, state: FSMContext, bot: Bot):
+    partner_id = message.from_user.id
+    credentials = message.text
+    
+    # Извлекаем метод и баланс
+    state_data = await state.get_data()
+    method = state_data.get("chosen_method")
+    balance_rub, _, _, _ = get_partner_profile(partner_id)
+    
+    await state.clear() # Сбрасываем FSM-состояние
+    
+    # 1. Записываем заявку в БД
+    req_id = create_withdrawal_request(partner_id, balance_rub, method, credentials)
+    
+    # 2. Уведомляем партнера
+    method_name = "Банковская карта" if method == "card" else "CryptoBot"
+    await message.answer(
+        f"⏳ <b>Заявка на вывод успешно создана!</b>\n\n"
+        f"💵 Сумма: <b>{balance_rub} руб.</b>\n"
+        f"📊 Способ: <code>{method_name}</code>\n"
+        f"📌 Реквизиты: <code>{credentials}</code>\n\n"
+        f"<i>Администрация рассмотрит заявку в течение 24 часов. Баланс спишется после подтверждения выплаты.</i>",
+        parse_mode="HTML"
+    )
+    
+    # 3. 🔥 Мгновенная отправка заявки ВЛАДЕЛЬЦУ (ADMIN_ID) с инлайн-кнопками управления
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Выплачено (Списать баланс)", callback_data=f"p_pay_{req_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"p_reject_{req_id}")
+        ]
+    ])
+    
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"💰 <b>ЗАЯВКА НА ВЫВОД СРЕДСТВ</b>\n\n"
+                 f"👤 От партнера: ID <code>{partner_id}</code> (@{message.from_user.username or 'нет'})\n"
+                 f"💵 Сумма к выплате: <b>{balance_rub} руб.</b>\n"
+                 f"📊 Метод: <b>{method_name}</b>\n"
+                 f"📌 Реквизиты: <code>{credentials}</code>\n\n"
+                 f"<i>Переведите указанную сумму, после чего нажмите кнопку «Выплачено» для автоматического списания фонового баланса у партнера.</i>",
+            reply_markup=admin_kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить заявку на вывод админу: {e}")
+
+
+@dp.callback_query(F.data.startswith("p_pay_") | F.data.startswith("p_reject_"))
+async def admin_withdrawal_decision(callback: types.CallbackQuery, bot: Bot):
+    # Жесткая проверка на права администратора
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Доступ запрещен.", show_alert=True)
+        return
+        
+    data_parts = callback.data.split("_")
+    action = data_parts[1]  # "pay" или "reject"
+    req_id = int(data_parts[2])
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Берем инфу о заявке
+    cursor.execute("SELECT partner_id, amount, status, method, credentials FROM partner_withdrawals WHERE id = ?", (req_id,))
+    row = cursor.fetchone()
+    
+    if not row or row[2] != 'pending':
+        await callback.answer("⚠️ Заявка не найдена или уже обработана.", show_alert=True)
+        conn.close()
+        return
+        
+    partner_id, amount, _, method, credentials = row
+    
+    if action == "pay":
+        # Списываем баланс через нашу функцию
+        result = confirm_withdrawal_db(req_id)
+        if result:
+            await callback.message.edit_text(
+                f"✅ <b>Выплата подтверждена!</b>\n"
+                f"Сумма <b>{amount} руб.</b> списана с фонового баланса партнера <code>{partner_id}</code>.", 
+                parse_mode="HTML"
+            )
+            # Отправляем радостное уведомление партнеру
+            try:
+                await bot.send_message(
+                    chat_id=partner_id,
+                    text=f"💸 <b>Выплата успешно произведена!</b>\n\n"
+                         f"Сумма <b>{amount} руб.</b> отправлена на ваши реквизиты. "
+                         f"Спасибо за сотрудничество с Sonata VPN! 🚀",
+                    parse_mode="HTML"
+                )
+            except Exception: pass
+            
+    elif action == "reject":
+        cursor.execute("UPDATE partner_withdrawals SET status = 'rejected' WHERE id = ?", (req_id,))
+        conn.commit()
+        
+        await callback.message.edit_text(
+            f"❌ <b>Заявка №{req_id} отклонена.</b> Баланс партнера не изменялся.", 
+            parse_mode="HTML"
+        )
+        # Уведомляем партнера об отказе
+        try:
+            await bot.send_message(
+                chat_id=partner_id,
+                text=f"⚠️ Ваша заявка на вывод <b>{amount} руб.</b> была отклонена администратором. "
+                     f"Обратитесь в поддержку для уточнения деталей.",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+        
+    conn.close()
+
+
+
 
 
 
