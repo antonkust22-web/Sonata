@@ -3343,9 +3343,9 @@ async def show_user_devices(callback: types.CallbackQuery):
         inline_keyboard.append(navigation_row)
 
     # Системная кнопка возврата в кабинет
-    inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet")])
-    inline_keyboard.append([InlineKeyboardButton(text="📱 Докупить устройства", callback_data="buy_device_limit")])
-    kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+    inline_keyboard.append([InlineKeyboardButton(text="📱 Докупить устройства", callback_data="buy_device_limit", style=ButtonStyle.SUCCESS)])
+    inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад в Кабинет", callback_data="cabinet", style=ButtonStyle.PRIMARY)])
+    kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)  
 
     try:
         if callback.message.caption:
@@ -3406,7 +3406,7 @@ async def view_single_device(callback: types.CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
-        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices", style=ButtonStyle.DANGER)]
     ])
     
     try:
@@ -3815,7 +3815,8 @@ async def process_os_choice(callback: types.CallbackQuery):
         text_apps = (
             f"📥 <b>Вы выбрали систему: {selected_os.upper()}</b>\n\n"
             "Теперь выберите приложение, через которое вы будете запускать VPN подписку на вашем устройстве.\n\n"
-            "<b>Нажмите один раз для решения</b>"
+            "<b>Нажмите один раз для решения</b>\n"
+            "<b>Рекомендуется INCY или Happ.</b>"
         )
         
         try:
@@ -3977,7 +3978,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     if selected_app.lower() == "happ":
         app_scheme = f"happ://add/"
     elif selected_app.lower() == "incy":
-        app_scheme = f"incy://import?url=" + urllib.parse.quote(raw_sub_url)
+        app_scheme = f"incy://import/" + urllib.parse.quote(raw_sub_url)
     elif selected_app.lower() == "streisand":
         app_scheme = f"streisand://import/"
     elif selected_app.lower() in ["v2rayng", "v2rayn", "nekobox", "v2rayxs"]:
