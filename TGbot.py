@@ -1701,7 +1701,8 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/send</code> — Запустить массовую рассылку сообщений пользователям\n"
         "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
         "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
-        "└ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n\n"
+        "├ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n\n"
+        "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
         "├ <code>/panel_partner</code> — Открыть бизнес-панель (просмотр баланса, ссылок и квестов)\n"
