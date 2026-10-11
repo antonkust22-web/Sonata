@@ -4437,8 +4437,8 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
 
 
 
+import time
 import logging
-import datetime as dt  # Используем dt, как у вас в основном проекте
 from aiogram import F, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -4455,38 +4455,42 @@ async def subscription(callback: types.CallbackQuery):
     except Exception:
         pass
         
-    # --- 1. ВЫЧИСЛЕНИЕ ВРЕМЕНИ ПОДПИСКИ ИЗ БД ---
+    # --- 1. ВЫЧИСЛЕНИЕ ВРЕМЕНИ ПОДПИСКИ ИЗ ВАШЕЙ БД ---
     try:
-        # ЗАМЕНИТЕ get_user_expiry_from_db на вашу реальную функцию запроса к БД
-        db_raw_time = await get_user_expiry_from_db(user_id) 
+        # Получаем данные пользователя из вашей функции БД
+        db_data = get_user_from_db(user_id)
         
-        expiry_time = None
-        if db_raw_time:
-            # Если БД вернула строку (TEXT), переводим её в формат даты datetime
-            if isinstance(db_raw_time, str):
-                # Убираем возможные миллисекунды, если они есть в строке даты
-                db_raw_time = db_raw_time.split(".")[0]
-                expiry_time = dt.datetime.strptime(db_raw_time, "%Y-%m-%d %H:%M:%S")
-            else:
-                expiry_time = db_raw_time
-
-        if expiry_time:
-            # Сравниваем время через dt.datetime.now()
-            now = dt.datetime.now(expiry_time.tzinfo if expiry_time.tzinfo else None)
+        status_sub = "⚪️ Нет активной подписки"  # Значение по умолчанию
+        
+        if db_data and len(db_data) > 4:
+            db_role = db_data[5] if len(db_data) > 5 and db_data[5] is not None else "user"
             
-            if expiry_time > now:
-                time_left = expiry_time - now
-                days_left = time_left.days
-                hours_left = time_left.seconds // 3600
-                
-                if days_left > 0:
-                    status_sub = f"🟢 <b>Активна</b> (осталось: <code>{days_left} дн. {hours_left} ч.</code>)"
-                else:
-                    status_sub = f"🟡 <b>Истекает</b> (осталось: <code>{hours_left} ч.</code>)"
+            # Определение роли (Владелец / Администрация / Пользователь)
+            if user_id == ADMIN_ID:
+                role = "creator"
             else:
-                status_sub = "🔴 <b>Истекла</b>"
+                role = db_role
+
+            # Флаг премиум-ролей для безлимита
+            is_premium_role = role in ["creator", "admin", "ambassador", "partner"]
+
+            # Извлекаем timestamp окончания подписки по индексу 4
+            expiry_timestamp = db_data[4] if db_data[4] is not None else 0
+            current_time = time.time()
+            
+            days_left = 0
+            if expiry_timestamp > current_time:
+                days_left = int((expiry_timestamp - current_time) / (24 * 3600))
+
+            # Формируем статус-текст точно так же, как в кабинете
+            if days_left > 3000 or is_premium_role:
+                status_sub = "<b>🟢 ∞ Безлимитная подписка</b>"
+            elif days_left > 0:
+                status_sub = f"🟢 Активна (осталось {days_left} дн.)"
+            else:
+                status_sub = "🔴 Не активна (требуется оплата)"
         else:
-            status_sub = "⚪️ <b>Нет активной подписки</b>"
+            status_sub = "⚪️ Нет активной подписки"
             
     except Exception as e:
         logging.error(f"Ошибка при получении expiry_time в меню тарифов: {e}")
@@ -4500,7 +4504,7 @@ async def subscription(callback: types.CallbackQuery):
     
     prefix = "🔥 " if is_promo else "💳 "
     
-    # --- 3. КЛАВИАТУРА ТАРИФОВ С ОБНОВЛЕННЫМИ ЛИМИТАМИ ---
+    # --- 3. КЛАВИАТУРА ТАРИФОВ (СО СТРОГИМИ ЛИМИТАМИ ОТ 50+ РУБ) ---
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{prefix}1 месяц (5 устр.) — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца (10 устр.) — {p90} руб.", callback_data="pay_90_days")],
@@ -4510,17 +4514,17 @@ async def subscription(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="buy_menu")]
     ])
     
-    # --- 4. КРАСИВОЕ ТЕКСТОВОЕ ОФОРМЛЕНИЕ ---
+    # --- 4. КРАСИВОЕ ТЕКСТОВОЕ ОФОРМЛЕНИЕ МЕНЮ ---
     promo_header = "🔥 <b>Внимание! Действует скидка 30% на все помесячные тарифы!</b>\n\n" if is_promo else ""
     
     caption_text = (
         f"{promo_header}"
         "💳 <b>Выбор тарифа:</b>\n"
-        "───────────────────────────────\n"
+        "────────────────\n"
         f"👤 <b>Ваш ID:</b> <code>{user_id}</code>\n"
         f"📊 <b>Статус подписки:</b> {status_sub}\n"
-        "───────────────────────────────\n\n"
-        "📖 <blockquote><b>Доступные варианты подписки:</b></blockquote>"
+        "────────────────\n\n"
+        " <blockquote><b>Доступные варианты подписки:</b></blockquote>"
     )
     
     # --- 5. ОТПРАВКА С ВИДЕО ИЛИ ОБЫЧНЫМ ТЕКСТОМ ---
@@ -4532,6 +4536,7 @@ async def subscription(callback: types.CallbackQuery):
             logging.error(f"Не удалось отправить старое video в меню тарифов: {e}")
             
     await callback.message.answer(text=caption_text, reply_markup=buy_kb, parse_mode="HTML")
+
 
 
 
