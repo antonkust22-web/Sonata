@@ -3464,147 +3464,7 @@ async def delete_single_device(callback: types.CallbackQuery):
 
 
 
-#@dp.callback_query(F.data == "connect")
-#async def connect(callback: types.CallbackQuery):
-#   await callback.answer()
-#   
-#    user_id = callback.from_user.id
-#    username = callback.from_user.username or ""    
-    # 1. Запускаем нашу проверку подписки
-#    is_subscribed = await check_user_subscription(callback.bot, user_id)
-    
-#    if not is_subscribed:
-        # Если пользователь не подписан, прерываем логику и выдаем блокирующее окно
-#        await callback.answer("⚠️ Требуется подписка!")
-        
-        # Получаем прямую ссылку на канал для кнопки
-#        channel_username = CHANNEL_ID.replace("@", "")
-#        channel_url = f"https://t.me/{channel_username}"
-        
-        # Кнопка проверки и кнопка перехода в канал
-#        kb = InlineKeyboardMarkup(inline_keyboard=[
-#            [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_url)],
-            # Важно: callback_data должна вести на этот же хэндлер ("connect"), 
-            # чтобы при повторном нажатии после подписки пользователя сразу пропустило дальше!
-#            [InlineKeyboardButton(text="🔄 Я подписался (Проверить)", callback_data="connect")]
-#        ])
-        
-#        text = (
-#            "🔒 <b>Требуется подписка на канал</b>\n\n"
-#            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш официальный канал.\n\n"
-#            "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
-#        )
-        
-#        try:
-#            if callback.message.caption:
-#                await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-#            else:
-#                await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
-#        except Exception:
-#            pass
-#        return  # Завершаем выполнение, не давая скачать VPN-конфиг
 
-    # 1. Проверяем статус подписки перед генерацией
-#    db_data = get_user_from_db(user_id)
-#    current_time = time.time()
-    
-#    try:
-#        expiry_in_db = int(db_data[5]) if (db_data and len(db_data) > 5 and db_data[5] is not None) else 0
-#    except (ValueError, TypeError):
-#        expiry_in_db = 0
-    
-    # ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТИРОВАНИЯ
-    # if expiry_in_db <= current_time:
-    #     kb_no_access = InlineKeyboardMarkup(inline_keyboard=[
-    #         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy")],
-    #         [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="enter_promo")],
-    #         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-    #     ])
-    #     text_no_access = "🔒 <b>Доступ ограничен</b>\n\nУ вас нет активной подписки."
-    #     if callback.message.caption:
-    #         await callback.message.edit_caption(caption=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
-    #     else:
-    #         await callback.message.edit_text(text=text_no_access, reply_markup=kb_no_access, parse_mode="HTML")
-    #     return
-
-#    loading_text = "⏳ <b>Синхронизация серверов и формирование вашей подписки...</b>"
-#    try:
-#        if callback.message.caption:
-#            await callback.message.edit_caption(caption=loading_text, reply_markup=None, parse_mode="HTML")
-#        else:
-#            await callback.message.edit_text(text=loading_text, reply_markup=None, parse_mode="HTML")
-#    except Exception as e:
-#        logging.warning(f"Не удалось обновить сообщение на статус загрузки: {e}")
-
-#    try:
-#        vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
-        
-#        sub_id = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        
-        # ИСПРАВЛЕНО СТРОГО ПО ВАШЕЙ СТРУКТУРЕ: Убраны фигурные скобки вокруг переменной
-#        auto_connect_url = f"https://sonatavpn.ru" + "/" + str(sub_id) + "?auto=1"
-
-        # Склеиваем ссылки строго через перенос строки (\n) для базы данных
-#        combined_configs = "\n".join(vless_links) if vless_links else ""
-#        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
-
-#        expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
-#        if expiry_seconds == 0:
-#            expiry_seconds = int(time.time() + 2592000)
-            
-#        expiry_date = datetime.fromtimestamp(expiry_seconds).strftime('%d.%m.%Y в %H:%M')
-
-#        debug_servers_info = ""
-#        for link in vless_links:
-#            if "#" in link:
-#                server_name = urllib.parse.unquote(link.split("#")[-1]).strip()
-#            else:
-#                server_name = "Доступный узел"
-#            debug_servers_info += f"✅ {server_name} — <b>Успешно подключен</b>\n"
-
-#        if not vless_links:
-#            debug_servers_info = "❌ <b>Ни одна нода не ответила!</b> Проверьте логи.\n"
-
-#        kb = InlineKeyboardMarkup(inline_keyboard=[
-#            [InlineKeyboardButton(text="⚡️ ИМПОРТИРОВАТЬ В HAPP", url=auto_connect_url)],
-#            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
-#        ])
-
-#        text = (
-#            f"🚀 <b>РЕЖИМ ОТЛАДКИ Sonata VPN</b>\n\n"
-#            f"📅 Срок действия: до <b>{expiry_date}</b>\n"
-#            f"🔗 Ссылка импорта: <code>{auto_connect_url}</code>\n\n"
-#            f"<b>Статус синхронизации нод:</b>\n"
-#            f"{debug_servers_info}\n"
-#            f"Нажмите кнопку ниже для автоматического импорта конфигураций всех доступных стран в ваше приложение Happ."
-#        )
-
-        # Проверяем реальный статус для сайта, не отключая режим отладки в ТГ
-#        if expiry_seconds <= int(time.time()):
-            # Если подписка РЕАЛЬНО просрочена прямо сейчас (новое время вышло)
-#            asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
-#            logging.info(f"[ОТЛАДКА] Пользователь {user_id} действительно просрочен. На сайт ушла пустота.")
-#        else:
-            # Если подписка активна (новое время больше текущего)
-#            asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
-#            logging.info(f"[ОТЛАДКА] Пользователь {user_id} активен до {expiry_date}. Конфиги отправлены.")
-            
-#        add_or_update_user(user_id, username, combined_configs, sub_id, expiry_seconds)
-
-
-#        try:
-#            await callback.message.delete()
-#        except Exception:
-#            pass
-            
-#        await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
-            
-#    except Exception as e:
-#        logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
-#        try:
-#            await callback.message.answer("⚠️ Произошла внутренняя ошибка бота при генерации.")
-#        except Exception:
-#            pass
 
 
 
@@ -4376,11 +4236,20 @@ async def show_buy_options(callback: types.CallbackQuery):
 
 
 
+from aiogram import F, types, Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
+
+# =====================================================================
+# 1. БЛОК: ПОКУПКА ДОПОЛНИТЕЛЬНЫХ УСТРОЙСТВ (ПОШТУЧНО)
+# =====================================================================
+
 class CustomDevicesPayment(StatesGroup):
-    waiting_for_devices = State()
+    waiting_for_devices = State()  # Состояние ожидания ввода количества устройств
 
 
-# 1. Изменяем поведение кнопки: переводим человека в режим ожидания ввода количества устройств
+# ШАГ 1: Пользователь нажал кнопку "buy_device_limit" -> включаем ожидание ввода
 @dp.callback_query(F.data == "buy_device_limit")
 async def start_custom_devices_process(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -4392,9 +4261,10 @@ async def start_custom_devices_process(callback: types.CallbackQuery, state: FSM
     text = (
         "📱 <b>Покупка дополнительных слотов устройств</b>\n\n"
         "Стоимость одного дополнительного устройства составляет <b>20 рублей</b>.\n\n"
-        "✍️ <b>Введите числом в чат, сколько устройств вы хотите докупить:</b>"
+        "✍️ <blockquote><b>Введите числом в чат, сколько устройств вы хотите докупить:</b></blockquote>"
     )
     
+    # Включаем режим ожидания текста от пользователя
     await state.set_state(CustomDevicesPayment.waiting_for_devices)
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
@@ -4402,16 +4272,16 @@ async def start_custom_devices_process(callback: types.CallbackQuery, state: FSM
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-# 2. Обрабатываем введенное пользователем текстовое число устройств
+# ШАГ 2: Ловим текст от пользователя, пока он находится в состоянии waiting_for_devices
 @dp.message(CustomDevicesPayment.waiting_for_devices)
-async def process_custom_devices_entered(message: types.Message, state: FSMContext, bot: Bot):
+async def process_custom_devices_entered(message: types.Message, state: FSMContext):
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="buy_menu")]
     ])
 
     text_input = message.text.strip()
     
-    # Проверяем, что введено именно целое число
+    # Проверка на валидность числа
     if not text_input.isdigit():
         await message.answer("⚠️ <b>Пожалуйста, введите корректное число устройств (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
         return
@@ -4421,42 +4291,42 @@ async def process_custom_devices_entered(message: types.Message, state: FSMConte
         await message.answer("❌ Количество докупаемых устройств должно быть не менее 1.", reply_markup=kb_back)
         return
 
-    # Динамический расчет цены: количество устройств * 20 рублей
+    # Динамический расчет стоимости
     total_price = slots_to_buy * 20
     final_price_rub, is_promo = get_discount_price(total_price)
     
     # Сбрасываем состояние FSM перед выставлением счета
     await state.clear()
 
+    # Создаем клавиатуру с кнопкой оплаты (pay=True обязательно первой)
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить {slots_to_buy} устр. — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_menu")]
     ])
 
-    # Выставляем счет. В payload зашиваем точное количество устройств: "addslots_3"
-    await bot.send_invoice(
-        chat_id=message.from_user.id,
+    # Отправляем инвойс в чат
+    await message.answer_invoice(
         title=f"Слоты устройств (+{slots_to_buy} шт.) {'-30%' if is_promo else ''}",
         description=f"Расширение лимита на {slots_to_buy} дополнительных устройств.",
         payload=f"addslots_{slots_to_buy}", 
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=final_price_rub * 100)],
+        # Обернуто в int(), чтобы не падало из-за float после подсчета скидки рефералки
+        prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=int(final_price_rub * 100))], 
         start_parameter=f"vpn-add-{slots_to_buy}-slots",
         reply_markup=invoice_kb
     )
 
 
-
-
-
-
+# =====================================================================
+# 2. БЛОК: ПОДНЕВНАЯ ОПЛАТА ПОДПИСКИ
+# =====================================================================
 
 class CustomDaysPayment(StatesGroup):
-    waiting_for_days = State()
+    waiting_for_days = State()  # Состояние ожидания ввода количества дней
 
 
-# Пользователь нажал кнопку подневной оплаты
+# ШАГ 1: Пользователь нажал кнопку "pay_custom_days" -> включаем ожидание ввода
 @dp.callback_query(F.data == "pay_custom_days")
 async def start_custom_days_process(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -4468,9 +4338,10 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
     text = (
         "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
         "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n\n"
-        "✍️ <b>Введите числом в чат, сколько дней подписки вы хотите купить:</b>"
+        "✍️ <blockquote><b>Введите числом в чат, сколько дней подписки вы хотите купить:</b></blockquote>"
     )
     
+    # Включаем режим ожидания текста от пользователя
     await state.set_state(CustomDaysPayment.waiting_for_days)
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
@@ -4478,20 +4349,16 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-
-
-
-
-# Принимаем текстовый ответ пользователя с числом дней
+# ШАГ 2: Ловим текст от пользователя, пока он находится в состоянии waiting_for_days
 @dp.message(CustomDaysPayment.waiting_for_days)
-async def process_custom_days_entered(message: types.Message, state: FSMContext, bot: Bot):
+async def process_custom_days_entered(message: types.Message, state: FSMContext):
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
     ])
 
     text_input = message.text.strip()
     
-    # Проверяем, что введено корректное целое число
+    # Проверка на валидность числа
     if not text_input.isdigit():
         await message.answer("⚠️ <b>Пожалуйста, введите корректное число дней (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
         return
@@ -4501,31 +4368,32 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext,
         await message.answer("❌ Количество дней подписки должно быть не менее 1.", reply_markup=kb_back)
         return
 
-    # Считаем итоговую стоимость (10 рублей за день)
+    # Динамический расчет стоимости
     total_price = days * 10
     final_price_rub, is_promo = get_discount_price(total_price)
     
     # Сбрасываем состояние FSM перед выставлением счета
     await state.clear()
 
+    # Создаем клавиатуру с кнопкой оплаты
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить {days} дн. — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
     ])
 
-    # Выставляем индивидуальный инвойс
-    await bot.send_invoice(
-        chat_id=message.from_user.id,
+    # Отправляем инвойс в чат
+    await message.answer_invoice(
         title=f"Подписка на {days} дней {'-30%' if is_promo else ''}",
         description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней. Лимит: 5 устройств.",
-        # Зашиваем количество дней прямо в payload: "customdays_3" или "customdays_15"
         payload=f"customdays_{days}", 
         provider_token=PROVIDER_TOKEN,
         currency="RUB",
-        prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=final_price_rub * 100)],
+        # Обернуто в int(), чтобы не падало из-за float после подсчета скидки рефералки
+        prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=int(final_price_rub * 100))], 
         start_parameter=f"vpn-custom-{days}-days",
         reply_markup=invoice_kb
     )
+
 
 
 
