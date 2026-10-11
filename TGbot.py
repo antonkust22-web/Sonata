@@ -4236,20 +4236,20 @@ async def show_buy_options(callback: types.CallbackQuery):
 
 
 
-from aiogram import F, types, Bot
+
+from aiogram import F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 
 # =====================================================================
-# 1. БЛОК: ПОКУПКА ДОПОЛНИТЕЛЬНЫХ УСТРОЙСТВ (ПОШТУЧНО)
+# 1. ПОКУПКА УСТРОЙСТВ (ПОЛНЫЙ ЦИКЛ С FSM И ЛОГАМИ)
 # =====================================================================
 
 class CustomDevicesPayment(StatesGroup):
-    waiting_for_devices = State()  # Состояние ожидания ввода количества устройств
+    waiting_for_devices = State()  # Обязательное состояние FSM
 
-
-# ШАГ 1: Пользователь нажал кнопку "buy_device_limit" -> включаем ожидание ввода
+# Нажатие на кнопку покупки лимита устройств
 @dp.callback_query(F.data == "buy_device_limit")
 async def start_custom_devices_process(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -4261,27 +4261,30 @@ async def start_custom_devices_process(callback: types.CallbackQuery, state: FSM
     text = (
         "📱 <b>Покупка дополнительных слотов устройств</b>\n\n"
         "Стоимость одного дополнительного устройства составляет <b>20 рублей</b>.\n\n"
-        "✍️ <blockquote><b>Введите числом в чат, сколько устройств вы хотите докупить:</b></blockquote>"
+        "<blockquote><b>Введите числом в чат, сколько устройств вы хотите докупить:</b></blockquote>"
     )
     
-    # Включаем режим ожидания текста от пользователя
+    # Включаем ожидание ввода от пользователя
     await state.set_state(CustomDevicesPayment.waiting_for_devices)
+    
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-# ШАГ 2: Ловим текст от пользователя, пока он находится в состоянии waiting_for_devices
+# Прием числа от пользователя (Логика срабатывает ТОЛЬКО при активном состоянии waiting_for_devices)
 @dp.message(CustomDevicesPayment.waiting_for_devices)
 async def process_custom_devices_entered(message: types.Message, state: FSMContext):
+    # Принудительно выводим в консоль факт того, что бот зашел в хэндлер устройств
+    print(f"[DEBUG DEVICES] Пользователь {message.from_user.id} ввел: {message.text}")
+    
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад в магазин", callback_data="buy_menu")]
     ])
 
     text_input = message.text.strip()
     
-    # Проверка на валидность числа
     if not text_input.isdigit():
         await message.answer("⚠️ <b>Пожалуйста, введите корректное число устройств (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
         return
@@ -4291,42 +4294,47 @@ async def process_custom_devices_entered(message: types.Message, state: FSMConte
         await message.answer("❌ Количество докупаемых устройств должно быть не менее 1.", reply_markup=kb_back)
         return
 
-    # Динамический расчет стоимости
     total_price = slots_to_buy * 20
-    final_price_rub, is_promo = get_discount_price(total_price)
     
-    # Сбрасываем состояние FSM перед выставлением счета
+    try:
+        # Расчет цены с учетом рефералки
+        final_price_rub, is_promo = get_discount_price(total_price)
+    except Exception as e:
+        logging.error(f"Ошибка при расчете скидки устройств в боте: {e}")
+        await message.answer("❌ Произошла ошибка при расчете стоимости.")
+        return
+    
+    # Очищаем состояние СТРОГО перед инвойсом
     await state.clear()
 
-    # Создаем клавиатуру с кнопкой оплаты (pay=True обязательно первой)
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить {slots_to_buy} устр. — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_menu")]
     ])
 
-    # Отправляем инвойс в чат
-    await message.answer_invoice(
-        title=f"Слоты устройств (+{slots_to_buy} шт.) {'-30%' if is_promo else ''}",
-        description=f"Расширение лимита на {slots_to_buy} дополнительных устройств.",
-        payload=f"addslots_{slots_to_buy}", 
-        provider_token=PROVIDER_TOKEN,
-        currency="RUB",
-        # Обернуто в int(), чтобы не падало из-за float после подсчета скидки рефералки
-        prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=int(final_price_rub * 100))], 
-        start_parameter=f"vpn-add-{slots_to_buy}-slots",
-        reply_markup=invoice_kb
-    )
+    try:
+        await message.answer_invoice(
+            title=f"Слоты устройств (+{slots_to_buy} шт.) {'-30%' if is_promo else ''}",
+            description=f"Расширение лимита на {slots_to_buy} дополнительных устройств.",
+            payload=f"addslots_{slots_to_buy}", 
+            provider_token=PROVIDER_TOKEN,
+            currency="RUB",
+            prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=int(final_price_rub * 100))], 
+            start_parameter=f"vpn-add-{slots_to_buy}-slots",
+            reply_markup=invoice_kb
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при отправке инвойса устройств в боте: {e}")
 
 
 # =====================================================================
-# 2. БЛОК: ПОДНЕВНАЯ ОПЛАТА ПОДПИСКИ
+# 2. ПОДНЕВНАЯ ОПЛАТА (ПОЛНЫЙ ЦИКЛ С FSM И ЛОГАМИ)
 # =====================================================================
 
 class CustomDaysPayment(StatesGroup):
-    waiting_for_days = State()  # Состояние ожидания ввода количества дней
+    waiting_for_days = State()  # Обязательное состояние FSM
 
-
-# ШАГ 1: Пользователь нажал кнопку "pay_custom_days" -> включаем ожидание ввода
+# Нажатие на кнопку подневной оплаты
 @dp.callback_query(F.data == "pay_custom_days")
 async def start_custom_days_process(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -4338,27 +4346,30 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
     text = (
         "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
         "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n\n"
-        "✍️ <blockquote><b>Введите числом в чат, сколько дней подписки вы хотите купить:</b></blockquote>"
+        "<blockquote><b>Введите числом в чат, сколько дней подписки вы хотите купить:</b></blockquote>"
     )
     
-    # Включаем режим ожидания текста от пользователя
+    # Включаем ожидание ввода от пользователя
     await state.set_state(CustomDaysPayment.waiting_for_days)
+    
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-# ШАГ 2: Ловим текст от пользователя, пока он находится в состоянии waiting_for_days
+# Прием числа от пользователя (Логика срабатывает ТОЛЬКО при активном состоянии waiting_for_days)
 @dp.message(CustomDaysPayment.waiting_for_days)
 async def process_custom_days_entered(message: types.Message, state: FSMContext):
+    # Принудительно выводим в консоль факт того, что бот зашел в хэндлер дней
+    print(f"[DEBUG DAYS] Пользователь {message.from_user.id} ввел: {message.text}")
+    
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
     ])
 
     text_input = message.text.strip()
     
-    # Проверка на валидность числа
     if not text_input.isdigit():
         await message.answer("⚠️ <b>Пожалуйста, введите корректное число дней (только цифры)!</b>", parse_mode="HTML", reply_markup=kb_back)
         return
@@ -4368,31 +4379,38 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
         await message.answer("❌ Количество дней подписки должно быть не менее 1.", reply_markup=kb_back)
         return
 
-    # Динамический расчет стоимости
     total_price = days * 10
-    final_price_rub, is_promo = get_discount_price(total_price)
     
-    # Сбрасываем состояние FSM перед выставлением счета
+    try:
+        # Расчет цены с учетом рефералки
+        final_price_rub, is_promo = get_discount_price(total_price)
+    except Exception as e:
+        logging.error(f"Ошибка при расчете скидки дней в боте: {e}")
+        await message.answer("❌ Произошла ошибка при расчете стоимости.")
+        return
+    
+    # Очищаем состояние СТРОГО перед инвойсом
     await state.clear()
 
-    # Создаем клавиатуру с кнопкой оплаты
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить {days} дн. — {final_price_rub} руб.", pay=True)],
         [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy")]
     ])
 
-    # Отправляем инвойс в чат
-    await message.answer_invoice(
-        title=f"Подписка на {days} дней {'-30%' if is_promo else ''}",
-        description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней. Лимит: 5 устройств.",
-        payload=f"customdays_{days}", 
-        provider_token=PROVIDER_TOKEN,
-        currency="RUB",
-        # Обернуто в int(), чтобы не падало из-за float после подсчета скидки рефералки
-        prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=int(final_price_rub * 100))], 
-        start_parameter=f"vpn-custom-{days}-days",
-        reply_markup=invoice_kb
-    )
+    try:
+        await message.answer_invoice(
+            title=f"Подписка на {days} дней {'-30%' if is_promo else ''}",
+            description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней. Лимит: 5 устройств.",
+            payload=f"customdays_{days}", 
+            provider_token=PROVIDER_TOKEN,
+            currency="RUB",
+            prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=int(final_price_rub * 100))], 
+            start_parameter=f"vpn-custom-{days}-days",
+            reply_markup=invoice_kb
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при отправке инвойса дней в боте: {e}")
+
 
 
 
