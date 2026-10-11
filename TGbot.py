@@ -1701,7 +1701,7 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/send</code> — Запустить массовую рассылку сообщений пользователям\n"
         "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
         "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
-        "├ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n\n"
+        "├ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -4224,8 +4224,8 @@ async def show_buy_options(callback: types.CallbackQuery):
     text = (
         "💳 <b>Магазин Sonata VPN</b>\n\n"
         "Выберите, что вы хотите приобрести:\n\n"
-        "• <b>Купить подписку</b> — оформление или продление времени доступа к VPN.\n"
-        "• <b>Расширить лимит</b> — покупка дополнительных слотов для одновременного подключения новых устройств."
+        "<blockquote>• <b>Купить подписку</b> — оформление или продление времени доступа к VPN.\n</blockquote>"
+        "<blockquote>• <b>Расширить лимит</b> — покупка дополнительных слотов для одновременного подключения новых устройств.</blockquote>"
     )
     
     try:
@@ -4237,17 +4237,18 @@ async def show_buy_options(callback: types.CallbackQuery):
 
 
 
+import logging
 from aiogram import F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 
 # =====================================================================
-# 1. ПОКУПКА УСТРОЙСТВ (ПОЛНЫЙ ЦИКЛ С FSM И ЛОГАМИ)
+# 1. БЛОК: ПОКУПКА ДОПОЛНИТЕЛЬНЫХ УСТРОЙСТВ (40 РУБ / ШТ, МИН. 2 ШТ)
 # =====================================================================
 
 class CustomDevicesPayment(StatesGroup):
-    waiting_for_devices = State()  # Обязательное состояние FSM
+    waiting_for_devices = State()
 
 # Нажатие на кнопку покупки лимита устройств
 @dp.callback_query(F.data == "buy_device_limit")
@@ -4260,23 +4261,21 @@ async def start_custom_devices_process(callback: types.CallbackQuery, state: FSM
     
     text = (
         "📱 <b>Покупка дополнительных слотов устройств</b>\n\n"
-        "Стоимость одного дополнительного устройства составляет <b>20 рублей</b>.\n\n"
+        "Стоимость одного дополнительного устройства составляет <b>40 рублей</b>.\n"
+        "⚠️ <i>Минимальный заказ — от 2 устройств (80 руб.)</i>\n\n"
         "<blockquote><b>Введите числом в чат, сколько устройств вы хотите докупить:</b></blockquote>"
     )
     
-    # Включаем ожидание ввода от пользователя
     await state.set_state(CustomDevicesPayment.waiting_for_devices)
-    
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-# Прием числа от пользователя (Логика срабатывает ТОЛЬКО при активном состоянии waiting_for_devices)
+# Прием числа устройств от пользователя
 @dp.message(CustomDevicesPayment.waiting_for_devices)
 async def process_custom_devices_entered(message: types.Message, state: FSMContext):
-    # Принудительно выводим в консоль факт того, что бот зашел в хэндлер устройств
     print(f"[DEBUG DEVICES] Пользователь {message.from_user.id} ввел: {message.text}")
     
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
@@ -4290,21 +4289,30 @@ async def process_custom_devices_entered(message: types.Message, state: FSMConte
         return
         
     slots_to_buy = int(text_input)
-    if slots_to_buy < 1:
-        await message.answer("❌ Количество докупаемых устройств должно быть не менее 1.", reply_markup=kb_back)
+    
+    # КРИТИЧЕСКИЙ ПОРОГ: минимум 2 устройства (80 рублей), чтобы чек был больше 50 руб.
+    if slots_to_buy < 2:
+        await message.answer("❌ <b>Минимальный заказ — от 2 устройств (80 руб.)</b>\n\nПожалуйста, введите число от 2 и более:", parse_mode="HTML", reply_markup=kb_back)
         return
 
-    total_price = slots_to_buy * 20
+    total_price = slots_to_buy * 40
     
     try:
-        # Расчет цены с учетом рефералки
         final_price_rub, is_promo = get_discount_price(total_price)
+        print(f"[DEBUG DEVICES] Скидка: final_price_rub={final_price_rub}, is_promo={is_promo}")
     except Exception as e:
         logging.error(f"Ошибка при расчете скидки устройств в боте: {e}")
         await message.answer("❌ Произошла ошибка при расчете стоимости.")
         return
     
-    # Очищаем состояние СТРОГО перед инвойсом
+    # Защита от багов рефералки
+    if not final_price_rub or final_price_rub <= 0:
+        print(f"[WARN DEVICES] Рефералка вернула некорректную цену: {final_price_rub}. Сброс на базовую.")
+        final_price_rub = total_price
+        is_promo = False
+
+    calculated_amount = int(final_price_rub * 100)
+    
     await state.clear()
 
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -4319,20 +4327,21 @@ async def process_custom_devices_entered(message: types.Message, state: FSMConte
             payload=f"addslots_{slots_to_buy}", 
             provider_token=PROVIDER_TOKEN,
             currency="RUB",
-            prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=int(final_price_rub * 100))], 
+            prices=[LabeledPrice(label=f"Доп. устройства (+{slots_to_buy} устр.)", amount=calculated_amount)], 
             start_parameter=f"vpn-add-{slots_to_buy}-slots",
             reply_markup=invoice_kb
         )
+        print(f"[DEBUG DEVICES] Инвойс успешно отправлен!")
     except Exception as e:
         logging.error(f"Ошибка при отправке инвойса устройств в боте: {e}")
 
 
 # =====================================================================
-# 2. ПОДНЕВНАЯ ОПЛАТА (ПОЛНЫЙ ЦИКЛ С FSM И ЛОГАМИ)
+# 2. БЛОК: ПОДНЕВНАЯ ОПЛАТА ПОДПИСКИ (ОТ 6 ДНЕЙ, 10 РУБ / ДЕНЬ)
 # =====================================================================
 
 class CustomDaysPayment(StatesGroup):
-    waiting_for_days = State()  # Обязательное состояние FSM
+    waiting_for_days = State()
 
 # Нажатие на кнопку подневной оплаты
 @dp.callback_query(F.data == "pay_custom_days")
@@ -4345,23 +4354,21 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
     
     text = (
         "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
-        "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n\n"
+        "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n"
+        "⚠️ <i>Минимальный срок заказа — 6 дней (60 руб.)</i>\n\n"
         "<blockquote><b>Введите числом в чат, сколько дней подписки вы хотите купить:</b></blockquote>"
     )
     
-    # Включаем ожидание ввода от пользователя
     await state.set_state(CustomDaysPayment.waiting_for_days)
-    
     try:
         await callback.message.edit_text(text=text, reply_markup=kb_back, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text=text, reply_markup=kb_back, parse_mode="HTML")
 
 
-# Прием числа от пользователя (Логика срабатывает ТОЛЬКО при активном состоянии waiting_for_days)
+# Прием числа дней от пользователя
 @dp.message(CustomDaysPayment.waiting_for_days)
 async def process_custom_days_entered(message: types.Message, state: FSMContext):
-    # Принудительно выводим в консоль факт того, что бот зашел в хэндлер дней
     print(f"[DEBUG DAYS] Пользователь {message.from_user.id} ввел: {message.text}")
     
     kb_back = InlineKeyboardMarkup(inline_keyboard=[
@@ -4375,21 +4382,30 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
         return
         
     days = int(text_input)
-    if days < 1:
-        await message.answer("❌ Количество дней подписки должно быть не менее 1.", reply_markup=kb_back)
+    
+    # КРИТИЧЕСКИЙ ПОРОГ: минимум 6 дней (60 рублей), чтобы чек был строго больше 50 рублей
+    if days < 6:
+        await message.answer("❌ <b>Минимальный заказ для этого тарифа — от 6 дней (60 руб.)</b>\n\nПожалуйста, введите число от 6 и более:", parse_mode="HTML", reply_markup=kb_back)
         return
 
     total_price = days * 10
     
     try:
-        # Расчет цены с учетом рефералки
         final_price_rub, is_promo = get_discount_price(total_price)
+        print(f"[DEBUG DAYS] Скидка: final_price_rub={final_price_rub}, is_promo={is_promo}")
     except Exception as e:
         logging.error(f"Ошибка при расчете скидки дней в боте: {e}")
         await message.answer("❌ Произошла ошибка при расчете стоимости.")
         return
     
-    # Очищаем состояние СТРОГО перед инвойсом
+    # Защита от багов рефералки
+    if not final_price_rub or final_price_rub <= 0:
+        print(f"[WARN DAYS] Рефералка вернула некорректную цену: {final_price_rub}. Сброс на базовую.")
+        final_price_rub = total_price
+        is_promo = False
+
+    calculated_amount = int(final_price_rub * 100)
+
     await state.clear()
 
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -4400,14 +4416,15 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
     try:
         await message.answer_invoice(
             title=f"Подписка на {days} дней {'-30%' if is_promo else ''}",
-            description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней. Лимит: 5 устройств.",
+            description=f"Индивидуальный тариф доступа к VPN Sonata на {days} дней.",
             payload=f"customdays_{days}", 
             provider_token=PROVIDER_TOKEN,
             currency="RUB",
-            prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=int(final_price_rub * 100))], 
+            prices=[LabeledPrice(label=f"Подписка на {days} дн.", amount=calculated_amount)], 
             start_parameter=f"vpn-custom-{days}-days",
             reply_markup=invoice_kb
         )
+        print(f"[DEBUG DAYS] Инвойс успешно отправлен!")
     except Exception as e:
         logging.error(f"Ошибка при отправке инвойса дней в боте: {e}")
 
@@ -4419,11 +4436,18 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
 
 
 
+
+import logging
+import datetime as dt  # Используем dt, как у вас в основном проекте
+from aiogram import F, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 # ВЫБОР ТАРИФА (Вызывается по кнопке "buy" или "back" из инвойса)
 @dp.callback_query(F.data == "buy")
 async def subscription(callback: types.CallbackQuery):
     await callback.answer()
     
+    user_id = callback.from_user.id
     old_video = callback.message.video.file_id if callback.message.video else None
     
     try:
@@ -4431,40 +4455,84 @@ async def subscription(callback: types.CallbackQuery):
     except Exception:
         pass
         
-    # Считаем динамические цены из БД с учетом скидок
+    # --- 1. ВЫЧИСЛЕНИЕ ВРЕМЕНИ ПОДПИСКИ ИЗ БД ---
+    try:
+        # ЗАМЕНИТЕ get_user_expiry_from_db на вашу реальную функцию запроса к БД
+        db_raw_time = await get_user_expiry_from_db(user_id) 
+        
+        expiry_time = None
+        if db_raw_time:
+            # Если БД вернула строку (TEXT), переводим её в формат даты datetime
+            if isinstance(db_raw_time, str):
+                # Убираем возможные миллисекунды, если они есть в строке даты
+                db_raw_time = db_raw_time.split(".")[0]
+                expiry_time = dt.datetime.strptime(db_raw_time, "%Y-%m-%d %H:%M:%S")
+            else:
+                expiry_time = db_raw_time
+
+        if expiry_time:
+            # Сравниваем время через dt.datetime.now()
+            now = dt.datetime.now(expiry_time.tzinfo if expiry_time.tzinfo else None)
+            
+            if expiry_time > now:
+                time_left = expiry_time - now
+                days_left = time_left.days
+                hours_left = time_left.seconds // 3600
+                
+                if days_left > 0:
+                    status_sub = f"🟢 <b>Активна</b> (осталось: <code>{days_left} дн. {hours_left} ч.</code>)"
+                else:
+                    status_sub = f"🟡 <b>Истекает</b> (осталось: <code>{hours_left} ч.</code>)"
+            else:
+                status_sub = "🔴 <b>Истекла</b>"
+        else:
+            status_sub = "⚪️ <b>Нет активной подписки</b>"
+            
+    except Exception as e:
+        logging.error(f"Ошибка при получении expiry_time в меню тарифов: {e}")
+        status_sub = "⚠️ <i>Не удалось загрузить данные</i>"
+
+    # --- 2. РАСЧЕТ ДИНАМИЧЕСКИХ СКИДОК ---
     p30, is_promo = get_discount_price(150)
     p90, _ = get_discount_price(350)
     p150, _ = get_discount_price(650)
-    p365, _ = get_discount_price(1099) # 4-й тариф (1 год)
+    p365, _ = get_discount_price(1099)
     
     prefix = "🔥 " if is_promo else "💳 "
     
-    
+    # --- 3. КЛАВИАТУРА ТАРИФОВ С ОБНОВЛЕННЫМИ ЛИМИТАМИ ---
     buy_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{prefix}1 месяц (5 устр.) — {p30} руб.", callback_data="pay_30_days")],
         [InlineKeyboardButton(text=f"{prefix}3 месяца (10 устр.) — {p90} руб.", callback_data="pay_90_days")],
         [InlineKeyboardButton(text=f"{prefix}5 месяцев (20 устр.) — {p150} руб.", callback_data="pay_150_days")],
         [InlineKeyboardButton(text=f"{prefix}1 год (Безлимит устр.) — {p365} руб.", callback_data="pay_365_days")],
-        [InlineKeyboardButton(text="📆 Свой тариф (10 руб/день)", callback_data="pay_custom_days")],
+        [InlineKeyboardButton(text="📆 Свой тариф (10 руб/день, от 6 дн.)", callback_data="pay_custom_days")],
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="buy_menu")]
     ])
     
+    # --- 4. КРАСИВОЕ ТЕКСТОВОЕ ОФОРМЛЕНИЕ ---
+    promo_header = "🔥 <b>Внимание! Действует скидка 30% на все помесячные тарифы!</b>\n\n" if is_promo else ""
+    
     caption_text = (
-        "🔥 <b>ВНИМАНИЕ! Действует скидка 30% на все тарифы!</b>\n\n" if is_promo else ""
-    ) + (
-        "Выбор тарифа:\n\n"
-        "Также вы можете выбрать подневную оплату\n\n"
-        "📖 Доступные варианты подписки:"
+        f"{promo_header}"
+        "💳 <b>Выбор тарифа:</b>\n"
+        "───────────────────────────────\n"
+        f"👤 <b>Ваш ID:</b> <code>{user_id}</code>\n"
+        f"📊 <b>Статус подписки:</b> {status_sub}\n"
+        "───────────────────────────────\n\n"
+        "📖 <blockquote><b>Доступные варианты подписки:</b></blockquote>"
     )
     
+    # --- 5. ОТПРАВКА С ВИДЕО ИЛИ ОБЫЧНЫМ ТЕКСТОМ ---
     if old_video:
         try:
             await callback.message.answer_video(video=old_video, caption=caption_text, reply_markup=buy_kb, parse_mode="HTML")
             return
         except Exception as e:
-            logging.error(f"Не удалось отправить старое видео: {e}")
+            logging.error(f"Не удалось отправить старое video в меню тарифов: {e}")
             
     await callback.message.answer(text=caption_text, reply_markup=buy_kb, parse_mode="HTML")
+
 
 
 
