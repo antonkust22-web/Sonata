@@ -1840,23 +1840,22 @@ async def handle_demote_user(message: types.Message):
 
 def get_user_comprehensive(search_term):
     """
-    Ищет пользователя по ID или Юзернейму.
-    Возвращает всю строку пользователя из БД или None.
+    Ищет пользователя по ID или Юзернейму с полной очисткой ввода.
     """
     import sqlite3
-    # Укажите ваш правильный путь к базе данных DB_PATH
+    # Подставьте ваш точный DB_PATH
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     cursor = conn.cursor()
     
-    # Очищаем ввод от лишних символов (например, если ввели @username)
-    search_term = str(search_term).strip().replace("@", "")
+    # Очищаем ввод: убираем пробелы и символ @, если пользователь его ввел
+    clean_term = str(search_term).strip().replace("@", "")
     
-    if search_term.isdigit():
-        # Если введены только цифры — ищем по Telegram ID [0]
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (int(search_term),))
+    if clean_term.isdigit():
+        # Если только цифры — ищем строго по целому числу user_id
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (int(clean_term),))
     else:
-        # Иначе ищем по юзернейму [1]
-        cursor.execute("SELECT * FROM users WHERE username = ?", (search_term,))
+        # Иначе ищем по юзернейму (в нижнем или обычном регистре в зависимости от записи в вашей БД)
+        cursor.execute("SELECT * FROM users WHERE username = ?", (clean_term,))
         
     row = cursor.fetchone()
     conn.close()
@@ -1864,66 +1863,83 @@ def get_user_comprehensive(search_term):
 
 
 import datetime
+import time
 from aiogram.filters import CommandObject, Command
 from aiogram import types
 
 @dp.message(Command("find_user"))
 async def find_user_universal_cmd(message: types.Message, command: CommandObject):
-    # 1. Проверяем, передал ли человек аргумент (ID или Юзернейм)
     if not command.args:
         await message.answer(
             "⚠️ <b>Ошибка использования команды!</b>\n\n"
             "Пишите так: <code>/find_user юзернейм_или_ID</code>\n"
             "Примеры:\n"
-            "• <code>/find_user Sonata_VPN_Admin</code>\n"
-            "• <code>/find_user 123456789</code>", 
+            "• <code>/find_user exm512</code>\n"
+            "• <code>/find_user @exm512</code>\n"
+            "• <code>/find_user 396022610</code>", 
             parse_mode="HTML"
         )
         return
 
     raw_input = command.args.strip()
     
-    # 2. Ищем пользователя в базе данных с помощью новой функции
+    # Ищем запись в базе данных
     db_row = get_user_comprehensive(raw_input)
     
     if db_row:
-        # Извлекаем данные по вашим индексам структуры БД:
-        uid = db_row[0]              # [0] Telegram ID
-        username = db_row[1]         # [1] Юзернейм
-        expiry_timestamp = db_row[4] # [4] Стандартный индекс для окончания подписки
+        # Раскладываем строго по колонкам со скриншота:
+        uid = db_row[0]
+        username = db_row[1]
+        github_raw_url = db_row[3]
+        expiry_timestamp = db_row[4]
+        role = str(db_row[5]).strip()
+        actions_gift = db_row[6]
+        actions_gen = db_row[7]
+        saved_os = db_row[8]
+        saved_app = db_row[9]
+        device_limit = db_row[10]
+        active_devices = db_row[11] if len(db_row) > 11 else 0
+
+        # Красивое отображение юзернейма
+        username_display = f"@{username}" if username and str(username).lower() != "null" else "Не установлен"
         
-        # Защита от коротких строк БД (на случай, если у кого-то нет этих колонок)
-        device_limit = db_row[10] if len(db_row) > 10 else "Не указан"
-        devices_used = db_row[11] if len(db_row) > 11 else "0"
-        
-        # Роль обычно идет в районе 5-7 индексов, подстройте под себя (в вашем коде была db_data[2])
-        role = db_row[5] if len(db_row) > 5 else "Пользователь" 
-        
-        # Переводим timestamp подписки в красивую дату
+        # Форматирование даты окончания подписки
         try:
-            expiry_date = datetime.datetime.fromtimestamp(int(expiry_timestamp)).strftime('%d.%m.%Y %H:%M')
+            if expiry_timestamp and int(expiry_timestamp) > 0:
+                expiry_date = datetime.datetime.fromtimestamp(int(expiry_timestamp)).strftime('%d.%m.%Y %H:%M')
+            else:
+                expiry_date = "Нет активной подписки ❌"
         except Exception:
             expiry_date = "Не определена"
 
-        # Форматируем отображение юзернейма
-        username_display = f"@{username}" if username else "Отсутствует"
-
-        await message.answer(
+        # Начало формирования текста ответа
+        text = (
             f"🔍 <b>Пользователь найден!</b>\n\n"
-            f"🆔 <b>Telegram ID:</b> <code>{uid}</code> (Нажмите для копирования)\n"
+            f"🆔 <b>Telegram ID:</b> <code>{uid}</code>\n"
             f"👤 <b>Юзернейм:</b> {username_display}\n"
             f"👑 <b>Текущая роль:</b> <code>{role}</code>\n"
-            f"📅 <b>Подписка до:</b> {expiry_date}\n\n"
-            f"📊 <b>Информация об устройствах:</b>\n"
-            f"📱 Использовано слотов: <code>{devices_used}</code> из <code>{device_limit}</code>",
-            parse_mode="HTML"
+            f"📅 <b>Подписка до:</b> {expiry_date}\n"
+            f"🔗 <b>Хэш ссылки (github_raw_url):</b> <code>{github_raw_url if github_raw_url else 'NULL'}</code>\n\n"
+            f"📊 <b>Параметры сессии устройства:</b>\n"
+            f" OS: <code>{saved_os if saved_os else 'Не выбрана'}</code>\n"
+            f" App: <code>{saved_app if saved_app else 'Не выбрано'}</code>\n"
+            f"📱 Слоты устройств: <code>{active_devices}</code> из <code>{device_limit}</code>\n"
         )
+
+        # ДИНАМИЧЕСКИЙ БЛОК: Выводим спец-поля, только если роль отличная от рядового 'user'
+        if role != "user":
+            text += "\n⚙️ <b>Статистика прав (Админ/Амбассадор):</b>\n"
+            text += f"🎁 Выдано подписок (actions_gift): <code>{actions_gift}</code>\n"
+            text += f"🎫 Создано промокодов (actions_gen): <code>{actions_gen}</code>\n"
+
+        await message.answer(text, parse_mode="HTML")
     else:
         await message.answer(
             f"❌ Пользователь со значением <b>{raw_input}</b> отсутствует в базе данных бота.\n"
-            f"Убедитесь в правильности ввода ID или Юзернейма.",
+            f"Проверьте правильность написания ID или юзернейма.",
             parse_mode="HTML"
         )
+
 
 
 
@@ -3120,8 +3136,8 @@ async def enter_promo_callback(callback: types.CallbackQuery, state: FSMContext)
     await state.set_state(PromoStates.waiting_for_promo)
     
     text = (
-        "🎟 <b>Активация промокода Sonata VPN</b>\n\n"
-        "Отправьте ваш промокод в ответ на это сообщение (просто текстом в чат, без команд)."
+        "🎟 <b>Активация промокода</b>\n\n"
+        "<blockquote>Отправьте ваш промокод в ответ на это сообщение (просто текстом в чат, без команд).</blockquote>"
     )
     
     # Кнопка возврата в главное меню (использует стандартный 'back')
