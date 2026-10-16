@@ -1701,7 +1701,7 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/send</code> — Запустить массовую рассылку сообщений пользователям\n"
         "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
         "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
-        "├ <code>/find_user_name [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n"
+        "├ <code>/find_user [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -1838,50 +1838,96 @@ async def handle_demote_user(message: types.Message):
 
 
 
+def get_user_comprehensive(search_term):
+    """
+    Ищет пользователя по ID или Юзернейму.
+    Возвращает всю строку пользователя из БД или None.
+    """
+    import sqlite3
+    # Укажите ваш правильный путь к базе данных DB_PATH
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    cursor = conn.cursor()
+    
+    # Очищаем ввод от лишних символов (например, если ввели @username)
+    search_term = str(search_term).strip().replace("@", "")
+    
+    if search_term.isdigit():
+        # Если введены только цифры — ищем по Telegram ID [0]
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (int(search_term),))
+    else:
+        # Иначе ищем по юзернейму [1]
+        cursor.execute("SELECT * FROM users WHERE username = ?", (search_term,))
+        
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
 import datetime
 from aiogram.filters import CommandObject, Command
 from aiogram import types
 
-@dp.message(Command("find_user_name"))
-async def find_user_by_username_cmd(message: types.Message, command: CommandObject):
-    # 1. Проверяем, передал ли человек юзернейм после команды
+@dp.message(Command("find_user"))
+async def find_user_universal_cmd(message: types.Message, command: CommandObject):
+    # 1. Проверяем, передал ли человек аргумент (ID или Юзернейм)
     if not command.args:
         await message.answer(
             "⚠️ <b>Ошибка использования команды!</b>\n\n"
-            "Пишите так: <code>/find_user_name юзернейм</code>\n"
-            "Пример: <code>/find_user_name Sonata_VPN_Admin</code>", 
+            "Пишите так: <code>/find_user юзернейм_или_ID</code>\n"
+            "Примеры:\n"
+            "• <code>/find_user Sonata_VPN_Admin</code>\n"
+            "• <code>/find_user 123456789</code>", 
             parse_mode="HTML"
         )
         return
 
-    target_username = command.args.strip()
+    raw_input = command.args.strip()
     
-    # 2. Ищем целевого пользователя в базе данных
-    user_data = get_id_by_username(target_username)
+    # 2. Ищем пользователя в базе данных с помощью новой функции
+    db_row = get_user_comprehensive(raw_input)
     
-    if user_data:
-        uid, expiry_timestamp, role = user_data
+    if db_row:
+        # Извлекаем данные по вашим индексам структуры БД:
+        uid = db_row[0]              # [0] Telegram ID
+        username = db_row[1]         # [1] Юзернейм
+        expiry_timestamp = db_row[4] # [4] Стандартный индекс для окончания подписки
+        
+        # Защита от коротких строк БД (на случай, если у кого-то нет этих колонок)
+        device_limit = db_row[10] if len(db_row) > 10 else "Не указан"
+        devices_used = db_row[11] if len(db_row) > 11 else "0"
+        
+        # Роль обычно идет в районе 5-7 индексов, подстройте под себя (в вашем коде была db_data[2])
+        role = db_row[5] if len(db_row) > 5 else "Пользователь" 
         
         # Переводим timestamp подписки в красивую дату
         try:
-            expiry_date = datetime.datetime.fromtimestamp(expiry_timestamp).strftime('%d.%m.%Y %H:%M')
+            expiry_date = datetime.datetime.fromtimestamp(int(expiry_timestamp)).strftime('%d.%m.%Y %H:%M')
         except Exception:
             expiry_date = "Не определена"
+
+        # Форматируем отображение юзернейма
+        username_display = f"@{username}" if username else "Отсутствует"
 
         await message.answer(
             f"🔍 <b>Пользователь найден!</b>\n\n"
             f"🆔 <b>Telegram ID:</b> <code>{uid}</code> (Нажмите для копирования)\n"
-            f"👤 <b>Юзернейм:</b> @{target_username}\n"
+            f"👤 <b>Юзернейм:</b> {username_display}\n"
             f"👑 <b>Текущая роль:</b> <code>{role}</code>\n"
-            f"📅 <b>Подписка до:</b> {expiry_date}",
+            f"📅 <b>Подписка до:</b> {expiry_date}\n\n"
+            f"📊 <b>Информация об устройствах:</b>\n"
+            f"📱 Использовано слотов: <code>{devices_used}</code> из <code>{device_limit}</code>",
             parse_mode="HTML"
         )
     else:
         await message.answer(
-            f"❌ Пользователь <b>@{target_username}</b> отсутствует в базе данных бота.\n"
-            f"Скорее всего, он еще ни разу не запускал бота.",
+            f"❌ Пользователь со значением <b>{raw_input}</b> отсутствует в базе данных бота.\n"
+            f"Убедитесь в правильности ввода ID или Юзернейма.",
             parse_mode="HTML"
         )
+
+
+
+
 
 
 
@@ -3133,19 +3179,19 @@ async def cabinet(callback: types.CallbackQuery):
 
         # Настройка текстовых плашек ролей
         if role == "creator":
-            role_badge = "<b>Статус:</b> 🟢БОРЗ (Владелец)"
+            role_badge = "<b>Статус:</b> 👁️Куратор"
             is_premium_role = True
         elif role == "admin":
-            role_badge = "<b>Статус:</b> 🔴Администратор"
+            role_badge = "<b>Статус:</b> 🛡️Администратор"
             is_premium_role = True
         elif role == "ambassador":
-            role_badge = "<b>Статус:</b> 🟠Амбассадор"
+            role_badge = "<b>Статус:</b> 📣Амбассадор"
             is_premium_role = True
         elif role == "partner":
-            role_badge = "<b>Статус:</b> 🟣Партнер"
+            role_badge = "<b>Статус:</b> 🤝Партнер"
             is_premium_role = True
         else:
-            role_badge = "<b>Статус:</b> 🔵Пользователь"
+            role_badge = "<b>Статус:</b> 👤Пользователь"
             is_premium_role = False
 
         # Извлекаем время подписки по индексу 4
@@ -3406,8 +3452,8 @@ async def view_single_device(callback: types.CallbackQuery):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}")],
-        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices", style=ButtonStyle.DANGER)]
+        [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
     ])
     
     try:
@@ -3491,7 +3537,7 @@ async def connect(callback: types.CallbackQuery):
         ])
         text = (
             "🔒 <b>Требуется подписка на канал</b>\n\n"
-            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш official канал.\n\n"
+            "<blockquote>Для доступа к подписке, пожалуйста, подпишитесь на наш канал.\n\n"
             "Там мы публикуем важные обновления, информацию и промокоды.😉</blockquote>"
         )
         
@@ -3552,7 +3598,7 @@ async def connect(callback: types.CallbackQuery):
 
         expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else int(expiry_in_db)
         if expiry_seconds == 0:
-            expiry_seconds = int(time.time() + 2592000)
+            expiry_seconds = int(time.time())
 
         # 🔥 УМНЫЙ РАСЧЕТ ЛИМИТА УСТРОЙСТВ (Проверка на БЕЗЛИМИТ)
         current_time_now = int(time.time())
@@ -4337,7 +4383,7 @@ async def process_custom_devices_entered(message: types.Message, state: FSMConte
 
 
 # =====================================================================
-# 2. БЛОК: ПОДНЕВНАЯ ОПЛАТА ПОДПИСКИ (ОТ 6 ДНЕЙ, 10 РУБ / ДЕНЬ)
+# 2. БЛОК: ПОДНЕВНАЯ ОПЛАТА ПОДПИСКИ (ОТ 8 ДНЕЙ, 10 РУБ / ДЕНЬ)
 # =====================================================================
 
 class CustomDaysPayment(StatesGroup):
@@ -4355,7 +4401,7 @@ async def start_custom_days_process(callback: types.CallbackQuery, state: FSMCon
     text = (
         "📆 <b>Подневной тариф Sonata VPN</b>\n\n"
         "Стоимость подписки составляет <b>10 рублей за 1 день</b>.\n"
-        "⚠️ <i>Минимальный срок заказа — 6 дней (60 руб.)</i>\n\n"
+        "⚠️ <i>Минимальный срок заказа — 8 дней (60 руб.)</i>\n\n"
         "<blockquote><b>Введите числом в чат, сколько дней подписки вы хотите купить:</b></blockquote>"
     )
     
@@ -4384,8 +4430,8 @@ async def process_custom_days_entered(message: types.Message, state: FSMContext)
     days = int(text_input)
     
     # КРИТИЧЕСКИЙ ПОРОГ: минимум 6 дней (60 рублей), чтобы чек был строго больше 50 рублей
-    if days < 6:
-        await message.answer("❌ <b>Минимальный заказ для этого тарифа — от 6 дней (60 руб.)</b>\n\nПожалуйста, введите число от 6 и более:", parse_mode="HTML", reply_markup=kb_back)
+    if days < 8:
+        await message.answer("❌ <b>Минимальный заказ для этого тарифа — от 8 дней (80 руб.)</b>\n\nПожалуйста, введите число от 8 и более:", parse_mode="HTML", reply_markup=kb_back)
         return
 
     total_price = days * 10
