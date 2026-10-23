@@ -228,7 +228,7 @@ def init_db():
     cursor.execute('PRAGMA journal_mode=WAL;')
     cursor.execute('PRAGMA synchronous=NORMAL;')
 
-    # 1. Ваша существующая таблица пользователей (Порядок полей строго сохранен, role в конце)
+    # 1. Ваша существующая таблица пользователей (Добавлено поле is_bot в конец)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -236,80 +236,85 @@ def init_db():
             vpn_config TEXT,
             github_raw_url TEXT,
             expiry_time INTEGER DEFAULT 0,
-            role TEXT DEFAULT 'user'  -- Новое поле добавлено в конец таблицы
+            role TEXT DEFAULT 'user',
+            actions_gift INTEGER DEFAULT 0,
+            actions_gen INTEGER DEFAULT 0,
+            saved_os TEXT DEFAULT NULL,
+            saved_app TEXT DEFAULT NULL,
+            device_limit INTEGER DEFAULT 5,
+            active_devices_count INTEGER DEFAULT 0,
+            is_bot INTEGER DEFAULT 0  -- 13-е поле: 0 = человек, 1 = бот
         )
     ''')
 
-    # 2. Обновленная таблица промокодов (Добавлено max_uses и current_uses)
+    # 2. Обновленная таблица промокодов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
             days INTEGER NOT NULL,
-            max_uses INTEGER DEFAULT 1,     -- 1 = одноразовый, 0 = без ограничений
-            current_uses INTEGER DEFAULT 0  -- Сколько раз уже активировали всего
+            max_uses INTEGER DEFAULT 1,
+            current_uses INTEGER DEFAULT 0
         )
     ''')
     
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ: Если таблица уже была на Amvera, добавляем новые колонки
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ
     try:
         cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
         cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
     except sqlite3.OperationalError:
         pass 
 
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS: Безопасно добавляем колонку role и новые счетчики действий в существующую структуру на сервере
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
-    except sqlite3.OperationalError:
-        pass 
+    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS (добавление старых колонок)
+    try: cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
+    except sqlite3.OperationalError: pass 
 
     try:
-        # ВСТАВЛЕНО: Безопасное добавление колонок для подсчета админ-действий
         cursor.execute("ALTER TABLE users ADD COLUMN actions_gift INTEGER DEFAULT 0;")
         cursor.execute("ALTER TABLE users ADD COLUMN actions_gen INTEGER DEFAULT 0;")
-    except sqlite3.OperationalError:
-        pass # Если колонки уже есть, SQLite их просто пропустит
+    except sqlite3.OperationalError: pass 
 
-    # 3. Новая таблица для логирования активаций многоразовых промокодов
+    # 3. Таблица для логирования активаций
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocode_activations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT NOT NULL,
             user_id INTEGER NOT NULL,
             activated_at TEXT DEFAULT NULL,
-            UNIQUE(code, user_id) -- Это жестко запретит одному юзеру вводить один код дважды
+            UNIQUE(code, user_id)
         )
     ''')
 
-    # 4. Новая таблица для учета реферальных связей и построения ТОП-ов
+    # 4. Таблица для учета реферальных связей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS referral_connections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            inviter_id INTEGER NOT NULL,  -- Кто пригласил (реферер)
-            referral_id INTEGER NOT NULL, -- Кого пригласили (новый юзер)
-            created_at TEXT DEFAULT (datetime('now', 'localtime')), -- Дата и время
-            UNIQUE(referral_id) -- Один реферал может быть приглашен только один раз
+            inviter_id INTEGER NOT NULL,
+            referral_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(referral_id)
         )
     ''')
 
-    # ТЕХНИЧЕСКИЙ ХАК ДЛЯ СХЕМА-ИНДЕКСОВ [8] и: Добавляем поля для сохранения ОС и Приложения
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN saved_os TEXT DEFAULT NULL;")
         cursor.execute("ALTER TABLE users ADD COLUMN saved_app TEXT DEFAULT NULL;")
         logging.info("Диспетчер: Колонки saved_os и saved_app успешно проверены/добавлены.")
-    except sqlite3.OperationalError:
-        pass # Если колонки уже есть, SQLite их просто пропустит
+    except sqlite3.OperationalError: pass
 
-    # 🔥 🔥 🔥 НОВЫЙ ТЕХНИЧЕСКИЙ ХАК ДЛЯ СХЕМА-ИНДЕКСОВ [10] и [11] (ЛИМИТЫ УСТРОЙСТВ)
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN device_limit INTEGER DEFAULT 5;")
         cursor.execute("ALTER TABLE users ADD COLUMN active_devices_count INTEGER DEFAULT 0;")
         logging.info("Диспетчер: Колонки device_limit и active_devices_count успешно проверены/добавлены.")
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError: pass
 
-    # 5. Новая таблица для логирования конкретных сессий устройств (IP, ОС, приложение)
-    # Используется PHP скриптом для детального контроля лимитов "в одни руки"
+    # 🔥 🔥 🔥 НОВЫЙ ТЕХНИЧЕСКИЙ ХАК ДЛЯ АВТО-МИГРАЦИИ КОЛОНКИ IS_BOT НА AMVERA
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_bot INTEGER DEFAULT 0;")
+        logging.info("Диспетчер: Колонка is_bot успешно проверена/добавлена в существующую БД.")
+    except sqlite3.OperationalError:
+        pass # Если колонка уже создана, SQLite её пропустит
+
+    # 5. Таблица для конкретных сессий устройств
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_devices (
             user_id INTEGER,
@@ -326,28 +331,30 @@ def init_db():
     log_system_routing()
 
 
-
-
-def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None, saved_os=None, saved_app=None, device_limit=None, active_devices_count=None):
+def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, expiry_time=None, role=None, 
+                       saved_os=None, saved_app=None, device_limit=None, active_devices_count=None, is_bot=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # Запрашиваем абсолютно ВСЕ 12 полей строго по порядку индексов от 0 до 11
+    # Запрашиваем абсолютно ВСЕ 13 полей строго по порядку индексов от 0 до 12
     cursor.execute('''
         SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
                role, actions_gift, actions_gen, saved_os, saved_app,
-               device_limit, active_devices_count
+               device_limit, active_devices_count, is_bot
         FROM users WHERE user_id = ?
     ''', (user_id,))
     row = cursor.fetchone()
 
-    # Защита: гарантируем, что expiry_time — это int перед записью
     clean_expiry = int(expiry_time) if expiry_time is not None else None
 
     if not row:
         cursor.execute('''
-            INSERT INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role, actions_gift, actions_gen, saved_os, saved_app, device_limit, active_devices_count) 
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
+            INSERT INTO users (
+                user_id, username, vpn_config, github_raw_url, expiry_time, 
+                role, actions_gift, actions_gen, saved_os, saved_app, 
+                device_limit, active_devices_count, is_bot
+            ) 
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
         ''', (
                 user_id, 
                 username, 
@@ -355,10 +362,11 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
                 github_raw_url, 
                 clean_expiry if clean_expiry is not None else 0, 
                 role if role is not None else 'user',
-                saved_os,  # db[8]
-                saved_app, # db[9]
-                device_limit if device_limit is not None else 5,          # db[10] (дефолт 5 устр)
-                active_devices_count if active_devices_count is not None else 0 # db[11] (дефолт 0 активных)
+                saved_os,  
+                saved_app, 
+                device_limit if device_limit is not None else 5,          
+                active_devices_count if active_devices_count is not None else 0,
+                is_bot if is_bot is not None else 0 # Индекс: по дефолту не бот (0)
             )
         )
     else:
@@ -370,9 +378,11 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
         new_os = saved_os if saved_os is not None else row[8]
         new_app = saved_app if saved_app is not None else row[9]
         
-        # Защита лимитов: берем новые значения или сохраняем то, что уже лежало в БД
         new_limit = device_limit if device_limit is not None else row[10]
         new_active = active_devices_count if active_devices_count is not None else row[11]
+        
+        # Защита флага бота: если передали новое значение — пишем его, иначе берем старое из БД
+        new_is_bot = is_bot if is_bot is not None else row[12]
 
         try:
             new_expiry = int(new_expiry)
@@ -389,12 +399,14 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
                 saved_os = ?,
                 saved_app = ?,
                 device_limit = ?,
-                active_devices_count = ?
+                active_devices_count = ?,
+                is_bot = ?
             WHERE user_id = ?
-        ''', (username, new_config, new_github, new_expiry, new_role, new_os, new_app, new_limit, new_active, user_id))
+        ''', (username, new_config, new_github, new_expiry, new_role, new_os, new_app, new_limit, new_active, new_is_bot, user_id))
         
     conn.commit()
     conn.close()
+
 
 
 
@@ -416,11 +428,12 @@ def get_user_from_db(user_id):
     # [8]  = saved_os
     # [9]  = saved_app
     # [10] = device_limit         <- Новое поле: разрешенный лимит устройств
-    # [11] = active_devices_count   <- Новое поле: сколько сейчас подключено
+    # [11] = active_devices_count   
+    # [12] = is_bot проверка на бота
     cursor.execute('''
         SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
                role, actions_gift, actions_gen, saved_os, saved_app,
-               device_limit, active_devices_count
+               device_limit, active_devices_count, is_bot
         FROM users WHERE user_id = ?
     ''', (user_id,))
     row = cursor.fetchone()
@@ -958,166 +971,121 @@ def confirm_withdrawal_db(req_id: int):
 
 
 
-#-------миграция бд ------------------
+#-------статус бд ------------------
   
 
-# Глобальная переменная для удержания бэкапа в оперативной памяти
-DB_MEMORY_BACKUP = None
 
-@dp.message(Command("migrate_db"))
-async def cmd_migrate_db(message: types.Message):
-    global DB_MEMORY_BACKUP
-    
+# Переменные DP, ADMIN_ID, DB_PATH должны быть объявлены выше в вашем коде
+
+@dp.message(Command("status_db"))
+async def cmd_admin_stats(message: types.Message):
+    # Строгая проверка на права администратора
     if message.from_user.id != ADMIN_ID:
         return
 
-    status_msg = await message.answer("🔍 <b>Анализ состояния 5 таблиц базы данных...</b>", parse_mode="HTML")
+    status_msg = await message.answer("🔄 <b>Собираю аналитику и проверяю базу данных...</b>", parse_mode="HTML")
 
     try:
+        current_unix_time = int(time.time())
+        
+        # Подключаемся к SQLite
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
         cursor = conn.cursor()
 
-        # Проверяем, есть ли данные в таблице users прямо сейчас
-        try:
-            cursor.execute("SELECT COUNT(*) FROM users")
-            users_count = cursor.fetchone()[0]
-        except sqlite3.OperationalError:
-            users_count = 0
+        # ==========================================
+        # 1. СТАТИСТИКА ПО ПОЛЬЗОВАТЕЛЯМ И УСТРОЙСТВАМ
+        # ==========================================
+        # Всего пользователей
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
 
-        # ====================================================================
-        # РЕЖИМ 1: СБОР ДАННЫХ И АРХИВАЦИЯ (Вызывать ПЕРЕД обновлением кода)
-        # ====================================================================
-        if users_count > 0:
-            await status_msg.edit_text("📥 <b>Режим: Архивация. Выгружаю 5 таблиц в память...</b>", parse_mode="HTML")
-            
-            # 1. Выгружаем таблицу users строго по порядку колонок
-            cursor.execute('''
-                SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
-                       role, actions_gift, actions_gen, saved_os, saved_app 
-                FROM users
-            ''')
-            backup_users = cursor.fetchall()
+        # Действующие VPN-подписки (expiry_time > текущего времени)
+        cursor.execute("SELECT COUNT(*) FROM users WHERE expiry_time > ?", (current_unix_time,))
+        active_keys = cursor.fetchone()[0]
 
-            # 2. Выгружаем таблицу промокодов promocodes
-            cursor.execute('SELECT code, days, max_uses, current_uses FROM promocodes')
-            backup_promocodes = cursor.fetchall()
+        # Группировка по операционным системам (saved_os)
+        cursor.execute("""
+            SELECT saved_os, COUNT(*) 
+            FROM users 
+            WHERE saved_os IS NOT NULL AND saved_os != 'NULL' AND saved_os != '' 
+            GROUP BY saved_os
+        """)
+        os_stats = cursor.fetchall()
+        
+        # Группировка по приложениям импорта (saved_app)
+        cursor.execute("""
+            SELECT saved_app, COUNT(*) 
+            FROM users 
+            WHERE saved_app IS NOT NULL AND saved_app != 'NULL' AND saved_app != '' 
+            GROUP BY saved_app
+        """)
+        app_stats = cursor.fetchall()
 
-            # 3. Выгружаем логи активаций promocode_activations
-            cursor.execute('SELECT id, code, user_id, activated_at FROM promocode_activations')
-            backup_activations = cursor.fetchall()
+        # ==========================================
+        # 2. АНАЛИТИКА ДОСТУПНЫХ ПРОМОКОДОВ
+        # ==========================================
+        # Выгружаем промокоды, которые еще можно активировать
+        cursor.execute("""
+            SELECT code, days, max_uses, current_uses 
+            FROM promocodes 
+            WHERE max_uses = 0 OR current_uses < max_uses
+        """)
+        available_promos = cursor.fetchall()
+        
+        conn.close()
 
-            # 4. Выгружаем реферальные связи referral_connections
-            cursor.execute('SELECT id, inviter_id, referral_id, created_at FROM referral_connections')
-            backup_referrals = cursor.fetchall()
+        # ==========================================
+        # 3. ТЕХНИЧЕСКИЙ СТАТУС ФАЙЛА БД
+        # ==========================================
+        db_size_mb = 0.0
+        if os.path.exists(DB_PATH):
+            db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
 
-            # 5. СКАЧИВАЕМ СИСТЕМНУЮ 5-Ю ТАБЛИЦУ: sqlite_sequence (Счетчики автоинкремента)
-            try:
-                cursor.execute('SELECT name, seq FROM sqlite_sequence')
-                backup_sequence = cursor.fetchall()
-            except sqlite3.OperationalError:
-                backup_sequence = []
+        # ==========================================
+        # 4. ФОРМИРОВАНИЕ ОТЧЕТА И ВЫВОД
+        # ==========================================
+        report = []
+        report.append("📊 <b>ГЛУБОКАЯ АНАЛИТИКА ВПН-СЕРВИСА</b>\n")
+        
+        # Блок пользователей
+        report.append("👥 <b>Пользователи и подписки:</b>")
+        report.append(f"• Всего в базе: <code>{total_users}</code> строк")
+        report.append(f"• Активных подписок: <code>{active_keys}</code> шт. 🔥")
+        
+        # Блок операционных систем
+        if os_stats:
+            report.append("\n📱 <b>Устройства клиентов (OS):</b>")
+            for os_name, count in os_stats:
+                report.append(f"• {os_name}: <code>{count}</code> польз.")
+        
+        # Блок приложений
+        if app_stats:
+            report.append("\n⚙️ <b>Используемые приложения:</b>")
+            for app_name, count in app_stats:
+                report.append(f"• {app_name}: <code>{count}</code> шт.")
 
-            conn.close()
-
-            # Сохраняем во временную оперативную память сервера все 5 таблиц
-            DB_MEMORY_BACKUP = {
-                "users": backup_users,
-                "promocodes": backup_promocodes,
-                "activations": backup_activations,
-                "referrals": backup_referrals,
-                "sequence": backup_sequence  # Записали пятую таблицу
-            }
-
-            # На Amvera дублируем бэкап в изолированный JSON-файл в папку /data/ для вечного хранения
-            backup_file_path = "/data/db_backup_secure.json" if os.path.exists("/data") else "db_backup_secure.json"
-            with open(backup_file_path, "w", encoding="utf-8") as f:
-                json.dump(DB_MEMORY_BACKUP, f, ensure_ascii=False, indent=4)
-
-            # ТЕПЕРЬ В ТЕКСТЕ ОТОБРАЖАЮТСЯ ВСЕ 5 ТАБЛИЦ СТРОГО ПО ВАШЕМУ СКРИНШОТУ!
-            await status_msg.edit_text(
-                f"📦 <b>Бэкап 5 таблиц успешно создан!</b>\n"
-                f"Данные сохранены в кэш и в файл <code>db_backup_secure.json</code>:\n"
-                f"• Таблица <code>users</code>: {len(backup_users)} строк\n"
-                f"• Таблица <code>promocodes</code>: {len(backup_promocodes)} строк\n"
-                f"• Таблица <code>promocode_activations</code>: {len(backup_activations)} строк\n"
-                f"• Таблица <code>referral_connections</code>: {len(backup_referrals)} строк\n"
-                f"• Таблица <code>sqlite_sequence</code>: {len(backup_sequence)} строк\n\n"
-                f"🔥 Теперь вы можете спокойно делать пуш и обновлять код на Amvera. После перезапуска бота введите эту команду повторно для разворачивания базы.",
-                parse_mode="HTML"
-            )
-            return
-
-        # ====================================================================
-        # РЕЖИМ 2: ВОССТАНОВЛЕНИЕ БАЗЫ ИЗ БЭКАПА (Вызывать ПОСЛЕ обновления кода)
-        # ====================================================================
+        # Блок промокодов
+        report.append("\n🎟 <b>Доступные промокоды:</b>")
+        if available_promos:
+            for code, days, max_uses, current_uses in available_promos:
+                limit_text = "Безлимит" if max_uses == 0 else f"{current_uses}/{max_uses}"
+                report.append(f"• <code>{code}</code> | Дней: <b>{days}</b> | Использовано: <code>{limit_text}</code>")
         else:
-            await status_msg.edit_text("⏳ <b>Режим: Восстановление. Поиск сохраненных архивов...</b>", parse_mode="HTML")
-            
-            backup_file_path = "/data/db_backup_secure.json" if os.path.exists("/data") else "db_backup_secure.json"
-            
-            if DB_MEMORY_BACKUP is None and os.path.exists(backup_file_path):
-                with open(backup_file_path, "r", encoding="utf-8") as f:
-                    DB_MEMORY_BACKUP = json.load(f)
+            report.append("• <i>Нет доступных к активации промокодов</i>")
+        
+        # Технический блок
+        report.append("\n💾 <b>Техническое состояние:</b>")
+        report.append(f"• Размер файла БД на Amvera: <code>{db_size_mb:.2f} MB</code>")
 
-            if not DB_MEMORY_BACKUP:
-                conn.close()
-                await status_msg.edit_text("❌ <b>Файлы бэкапа не найдены!</b> Восстановление отменено. Сначала сделайте бэкап на старой версии кода.", parse_mode="HTML")
-                return
-
-            # Инициализируем пустую структуру вашей базы данных
-            init_db() 
-
-            # Подключаемся заново для массовой заливки данных обратно
-            conn = sqlite3.connect(DB_PATH, timeout=30.0)
-            cursor = conn.cursor()
-
-            # Переносим 1. users
-            if "users" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["users"]:
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO users (user_id, username, vpn_config, github_raw_url, expiry_time, role, actions_gift, actions_gen, saved_os, saved_app)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', DB_MEMORY_BACKUP["users"])
-
-            # Переносим 2. promocodes
-            if "promocodes" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["promocodes"]:
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO promocodes (code, days, max_uses, current_uses)
-                    VALUES (?, ?, ?, ?)
-                ''', DB_MEMORY_BACKUP["promocodes"])
-
-            # Переносим 3. promocode_activations
-            if "activations" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["activations"]:
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO promocode_activations (id, code, user_id, activated_at)
-                    VALUES (?, ?, ?, ?)
-                ''', DB_MEMORY_BACKUP["activations"])
-
-            # Переносим 4. referral_connections
-            if "referrals" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["referrals"]:
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO referral_connections (id, inviter_id, referral_id, created_at)
-                    VALUES (?, ?, ?, ?)
-                ''', DB_MEMORY_BACKUP["referrals"])
-
-            # Переносим 5. Системную sqlite_sequence (Обновляем счетчики ID)
-            if "sequence" in DB_MEMORY_BACKUP and DB_MEMORY_BACKUP["sequence"]:
-                cursor.executemany('''
-                    INSERT OR REPLACE INTO sqlite_sequence (name, seq)
-                    VALUES (?, ?)
-                ''', DB_MEMORY_BACKUP["sequence"])
-
-            conn.commit()
-            conn.close()
-
-            await status_msg.edit_text(
-                "✅ <b>Миграция успешно завершена!</b>\n"
-                "Все 5 таблиц структуры заново развернуты на сервере Amvera. Данные пользователей (включая сохраненные ОС и приложения импорта), промокоды, логи рефералов и системные счетчики полностью восстановлены.",
-                parse_mode="HTML"
-            )
+        # Отправляем итоговый красивый отчет администратору
+        await status_msg.edit_text("\n".join(report), parse_mode="HTML")
 
     except Exception as e:
-        logging.error(f"Критическая ошибка миграции: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ <b>Ошибка миграции:</b>\n<code>{e}</code>", parse_mode="HTML")
+        # Логирование критических ошибок миграции/сбора
+        logging.error(f"Критическая ошибка статистики: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ <b>Ошибка сбора данных:</b>\n<code>{e}</code>", parse_mode="HTML")
+
+
 
 
 
@@ -1698,10 +1666,12 @@ async def creator_panel_help(message: types.Message):
         "└ <code>/gen [дни] [код] [лимит]</code> — Ограниченный на X человек промокод\n\n"
         
         "⚙️ <b>СЕРВИСНЫЕ И МАРКЕТИНГОВЫЕ КОМАНДЫ</b>\n"
-        "├ <code>/send</code> — Запустить массовую рассылку сообщений пользователям\n"
+        "├ <code>/send</code>(TG ID) — Запустить массовую рассылку сообщений пользователям или написать пользователю лично\n"
         "├ <code>/set_limit [ID] [кол-во]</code> — Изменить лимит одновременных устройств пользователю\n"
         "├ <code>/start_promo</code> — Объявить о начале глобальной акции (скидки 30%)\n"
         "├ <code>/find_user [username]</code> — 🔍 Найти Telegram ID по юзернейму пользователя\n"
+        "├ <code>/status_db</code> — Узнать статус Базы Данных\n"
+        "├ <code>/top</code> — Список людей которые привели больше всех рефераллов\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -2885,12 +2855,259 @@ def back_kb():
 
 
 # Секунды в 3 днях
-THREE_DAYS_SECONDS = 3 * 24 * 3600
+#THREE_DAYS_SECONDS = 3 * 24 * 3600
 
-from aiogram.types import WebAppInfo, MenuButtonWebApp
-from aiogram.filters import CommandObject
+
+#@dp.message(Command("start"))
+#async def cmd_start(message: types.Message, command: CommandObject = None):
+#    user_id = message.from_user.id
+#    username = message.from_user.username or f"user_{user_id}"
+
+    # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
+#    loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
+
+
+    # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
+#    try:
+        # Формируем правильную ссылку с явным GET-параметром ?tg_id=
+#        personal_miniapp_url = f"https://sn-go.ru/miniapp?tg_id={uid}"
+
+#        await bot.set_chat_menu_button(
+#            chat_id=message.chat.id,
+#            menu_button=MenuButtonWebApp(
+#                text="Open",  # Текст на синей кнопке в углу экрана
+#                web_app=WebAppInfo(url=personal_miniapp_url)
+#            )
+#        )
+#        logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
+#    except Exception as e:
+#        logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
+
+    # === 🔥 ШАГ 0.2: ПРЯМАЯ И ПРИНУДИТЕЛЬНАЯ ВЫГРУЗКА ДАННЫХ ИЗ SQLITE НА САЙТ ===
+#    try:
+        # Подключаемся напрямую к локальному файлу базы вашего Docker-бота
+        # Если в контейнере путь к базе другой, поменяйте '/app/users.db' на ваш рабочий путь
+#        with sqlite3.connect('/app/users.db') as conn:
+#            conn.row_factory = sqlite3.Row  # Позволяет обращаться к колонкам по их именам
+#            cursor = conn.cursor()
+            
+            # Делаем точный запрос к вашей таблице users на основе вашего скриншота структуры
+#            cursor.execute(
+#                "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?", 
+#                (uid,)
+#            )
+#            row = cursor.fetchone()
+            
+#            if row:
+#                username_str = row['username'] if row['username'] else f"User_{uid}"
+#                vpn_config_str = row['vpn_config'] if row['vpn_config'] else ""
+#                expiry_time_int = int(row['expiry_time']) if row['expiry_time'] else 0
+#                github_raw_url_str = row['github_raw_url'] if row['github_raw_url'] else ""
+
+#               logging.info(f"🛰 [DB READ] Данные юзера {uid} успешно прочитаны из локального users.db. Отправляем POST на сайт...")
+
+                # Вызываем вашу сетевую функцию aiohttp отправки данных на PHP-сайт
+                # ВНИМАНИЕ: Обязательно передаем github_raw_url пятым аргументом!
+#                await sync_user_to_miniapp(
+#                    user_id=uid,
+#                    username=username_str,
+#                    vpn_config=vpn_config_str,
+#                    expiry_time=expiry_time_int,
+#                    github_raw_url=github_raw_url_str
+#                )
+#            else:
+#                logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
+                
+#    except Exception as sync_err:
+        # Если база заблокирована или путь неверный — мы гарантированно увидим причину в логах!
+#       logging.error(f"❌ [CRITICAL SYNC ERROR] Не удалось принудительно выгрузить данные юзера {uid}: {sync_err}")
+
+
+
+    
+    # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
+#    existing_user = get_user_from_db(user_id)
+#    is_new_user = existing_user is None
+    
+#    ref_bonus_text = ""
+    
+    # =========================================================================
+    # 🔥 МОДЕРНИЗИРОВАННАЯ ДЕНЕЖНАЯ ПАРТНЕРСКАЯ ПРОГРАММА (28% / 9%)
+    # =========================================================================
+#    if command and command.args and command.args.startswith("p") and is_new_user:
+#        try:
+#            partner_1st = int(command.args[1:])  # Отрезаем букву "p", получаем ID партнера 1-го уровня
+            
+#            if partner_1st != user_id:
+#                # Проверяем, существует ли такой партнер в основной базе данных
+#                partner_data = get_user_from_db(partner_1st)
+#                if partner_data:
+#                    conn = sqlite3.connect(DB_PATH)
+#                    cursor = conn.cursor()
+#                    
+#                    # 🔥 Ищем партнера 2-го уровня (кто пригласил нашего партнера 1-го уровня)
+#                    cursor.execute("SELECT partner_id FROM partner_refs WHERE user_id = ?", (partner_1st,))
+#                    parent_row = cursor.fetchone()
+#                    partner_2nd = parent_row[0] if parent_row else None
+#                    
+#                    # Жестко фиксируем денежную связку: Новичок -> Партнер 1 (28%) -> Партнер 2 (9%)
+#                    cursor.execute(
+#                        "INSERT OR IGNORE INTO partner_refs (user_id, partner_id, sub_partner_id) VALUES (?, ?, ?)",
+#                        (user_id, partner_1st, partner_2nd)
+#                    )
+#                    
+#                    # В фоне увеличиваем счетчик приглашенных пользователей у партнера 1-го уровня
+#                    cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_1st,))
+#                    cursor.execute("UPDATE partner_stats SET referrals_count = referrals_count + 1 WHERE partner_id = ?", (partner_1st,))
+#                    
+#                    # Если есть партнер 2-го уровня, увеличиваем ему счетчик субпартнеров в фоне
+#                    if partner_2nd:
+#                        cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_2nd,))
+#                        cursor.execute("UPDATE partner_stats SET sub_partners_count = sub_partners_count + 1 WHERE partner_id = ?", (partner_2nd,))
+#                    
+#                    # 💥 КВЕСТ НА БЕЗЛИМИТ: Проверяем, набрал ли партнер 10 приглашенных
+#                    cursor.execute("SELECT referrals_count, quest_claimed FROM partner_stats WHERE partner_id = ?", (partner_1st,))
+#                    quest_row = cursor.fetchone()
+#                    
+#                    if quest_row and quest_row[0] >= 10 and quest_row[1] == 0:
+#                        # Помечаем квест как выполненный
+#                        cursor.execute("UPDATE partner_stats SET quest_claimed = 1 WHERE partner_id = ?", (partner_1st,))
+#                        conn.commit()
+#                        
+#                        # Начисляем вечный безлимит партнеру (Ставим expiry до 2060 года и 999 устройств)
+#                        eternal_timestamp = 2840000000
+#                        p_role = partner_data[5] if len(partner_data) > 5 else "user"
+#                        p_username = partner_data[1] if len(partner_data) > 1 else f"user_{partner_1st}"
+#                        
+#                        add_or_update_user(partner_1st, p_username, expiry_time=eternal_timestamp, role=p_role, device_limit=999)
+#                        await renew_vpn_subscription_flexible(partner_1st, 99999)
+#                        
+#                        try:
+#                            await message.bot.send_message(
+#                                chat_id=partner_1st,
+#                                text="🔥 <b>Цель достигнута!</b>\n\n"
+#                                     "<blockquote>Вы привели 10 платящих пользователей!\n"
+#                                     "🎁 Вам автоматически активирована <b>БЕЗЛИМИТНАЯ подписка на VPN</b> без ограничения по устройствам! Спасибо за работу! 🚀</blockquote>",
+#                                parse_mode="HTML"
+#                            )
+#                        except Exception:
+#                            pass
+#                    else:
+#                        conn.commit()
+                    
+#                    conn.close()
+#                    logging.info(f"🔗 [ПАРТНЕРКА ФОН] Новый пользователь {user_id} привязан к денежному партнеру {partner_1st}")
+#        except Exception as p_err:
+#            logging.error(f"Ошибка в фоновом партнерском блоке /start: {p_err}")
+
+    # =========================================================================
+    # 🎁 КЛИЕНТСКАЯ РЕФЕРАЛКА НА ДНИ (ref123) С ЗАЩИТОЙ ОТ НАЧИСЛЕНИЯ ПАРТНЕРАМ
+    # =========================================================================
+#    elif command and command.args and command.args.startswith("ref") and is_new_user:
+#        try:
+#            inviter_id = int(command.args.replace("ref", ""))
+#            if inviter_id != user_id:
+#                inviter_data = get_user_from_db(inviter_id)
+#                if inviter_data:
+                    # Узнаем роль пригласившего
+#                    inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
+#                    inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
+                    
+                    # 🔥 ПРОВЕРКА: Если пригласивший — партнер или админ, ДНИ ЕМУ НЕ ДАЕМ
+#                    if inviter_role in ["partner", "ambassador", "admin", "creator"]:
+#                        logging.info(f"🚫 [РЕФ СИСТЕМА] Партнеру {inviter_id} не начислены 3 дня, так как он на денежной программе.")
+                        
+                        # Но новичку (клиенту) 3 дня всё равно даем, чтобы была мотивация переходить!
+#                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+#                        await renew_vpn_subscription_flexible(user_id, 3)
+                        
+#                        ref_bonus_text = (
+#                            f"<blockquote>🎉 <b>Вам начислен приветственный бонус!</b>\n"
+#                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+#                        )
+#                    else:
+                        # СТАНДАРТНАЯ ЛОГИКА ОБОИМ (если пригласивший — обычный юзер)
+#                        try: inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
+#                        except (ValueError, TypeError): inviter_old_expiry = 0
+                        
+#                        current_time = int(time.time())
+#                        if inviter_old_expiry > current_time:
+#                            new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
+#                        else:
+#                            new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
+
+#                        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
+#                        await renew_vpn_subscription_flexible(inviter_id, 3)
+
+                        # Уведомление обычному юзеру
+#                        try:
+#                            await message.bot.send_message(
+#                                chat_id=inviter_id,
+#                                text=f"🤝 <b>Новый реферал!</b>\n\n"
+#                                     f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
+#                                     f"🎁 Вам начислено: <b>+3 дня подписки</b>!</blockquote>",
+#                                parse_mode="HTML"
+#                            )
+#                        except Exception: pass
+
+                        # Выдача дней новичку
+#                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+#                        await renew_vpn_subscription_flexible(user_id, 3)
+                        
+#                        ref_bonus_text = (
+#                            f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
+#                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+#                        )
+
+#                    try: add_referral_connection(inviter_id, user_id)
+#                    except Exception: pass 
+#        except (ValueError, TypeError): pass
+
+
+    # 3. Финализация регистрации в основной БД
+#    if is_new_user and not ref_bonus_text:
+#        add_or_update_user(user_id, username, expiry_time=0)
+#    elif not is_new_user:
+#        try: old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
+#        except (ValueError, TypeError): old_expiry = 0
+#        add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
+
+    # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
+#    try: await loading_msg.delete()
+#    except Exception: pass
+
+#    # 5. Отправка главного сообщения (видео)
+#    final_caption = f"{ref_bonus_text}{text1}"
+#    await message.answer_video(
+#        video=VIDEO_MAIN,  
+#        caption=final_caption,
+#        reply_markup=main_kb(), 
+#        parse_mode="HTML",
+#        message_effect_id="5046509860389126442"
+#    )
+
+
+
+
+
+import time
+import random
 import logging
-import sqlite3  # Используем стандартный драйвер, который гарантированно есть в Python
+import sqlite3
+from aiogram import types, F
+from aiogram.filters import Command, CommandObject
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import WebAppInfo, MenuButtonWebApp
+
+# Набор смайликов животных для капчи
+ANIMAL_MAP = {
+    "🐶": "Собака", "🐱": "Кошка", "🐭": "Мышь", "🐹": "Хомяк",
+    "🐰": "Кролик", "🦊": "Лиса", "🐻": "Медведь", "🐼": "Панда",
+    "🦁": "Лев", "🐯": "Тигр", "🐨": "Коала", "🐸": "Лягушка",
+    "🐵": "Обезьяна", "🐔": "Курица", "🐧": "Пингвин", "🐦": "Птица",
+    "🦆": "Утка", "🦅": "Орел", "🦉": "Сова", "🦇": "Летучая мышь"
+}
+THREE_DAYS_SECONDS = 3 * 24 * 3600
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject = None):
@@ -2899,7 +3116,6 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
     # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
-
 
     # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
 #    try:
@@ -2963,52 +3179,118 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
     
-    ref_bonus_text = ""
+    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ СТАРЫЙ: СРАЗУ ВЫДАЕМ МЕНЮ БЕЗ КАПЧИ ===
+    if not is_new_user:
+        try: old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
+        except (ValueError, TypeError): old_expiry = 0
+        add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
+        
+        try: await loading_msg.delete()
+        except Exception: pass
+
+        await message.answer_video(
+            video=VIDEO_MAIN,  
+            caption=text1,
+            reply_markup=main_kb(), 
+            parse_mode="HTML",
+            message_effect_id="5046509860389126442"
+        )
+        return
+
+    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ НОВЫЙ: УДАЛЯЕМ ЗАГЛУШКУ И ГЕНЕРИРУЕМ КАПЧУ ===
+    try: await loading_msg.delete()
+    except Exception: pass
+
+    random_animals = random.sample(list(ANIMAL_MAP.keys()), 4)
+    correct_animal = random.choice(random_animals)
+    correct_name = ANIMAL_MAP[correct_animal]
+
+    # Сохраняем входящий реф-аргумент (если его нет, пишем 'none')
+    ref_arg = command.args if (command and command.args) else "none"
+
+    kb = InlineKeyboardBuilder()
+    for animal in random_animals:
+        status = "yes" if animal == correct_animal else "no"
+        kb.button(
+            text=animal, 
+            callback_data=f"captcha:{status}:{ref_arg}"
+        )
+    kb.adjust(4)
+
+    # Животное выводится только текстом (например: "Выбери животное: Кошка"), сам смайлик удален
+    await message.answer(
+        f"🤖 <b>Верификация аккаунта</b>\n\n"
+        f"Добро пожаловать! Для защиты от автоматических регистраций пройдите верификацию.\n"
+        f"Выбери животное: <b>{correct_name}</b>",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================================
+# 🔥 ОБРАБОТЧИК НАЖАТИЯ НА КНОПКИ КАПЧИ
+# =========================================================================
+@dp.callback_query(F.data.startswith("captcha:"))
+async def process_captcha(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    username = callback.from_user.username or f"user_{user_id}"
     
+    data_parts = callback.data.split(":")
+    status = data_parts[1]
+    ref_arg = data_parts[2]
+
+    if status == "no":
+        await callback.answer("❌ Неверно! Нажмите /start для новой попытки.", show_alert=True)
+        try: await callback.message.delete()
+        except Exception: pass
+        return
+
+    await callback.answer("✅ Проверка пройдена!")
+    
+    existing_user = get_user_from_db(user_id)
+    is_new_user = existing_user is None
+
+    if not is_new_user:
+        await callback.message.edit_text("❌ Ваш аккаунт уже зарегистрирован.")
+        return
+
+    ref_bonus_text = ""
+
     # =========================================================================
-    # 🔥 МОДЕРНИЗИРОВАННАЯ ДЕНЕЖНАЯ ПАРТНЕРСКАЯ ПРОГРАММА (28% / 9%)
+    # 🔥 МОДЕРНИЗИРОВАННАЯ ДЕНЕЖНАЯ ПАРТНЕРСКАЯ ПРОГРАММА (Внутри Капчи)
     # =========================================================================
-    if command and command.args and command.args.startswith("p") and is_new_user:
+    if ref_arg != "none" and ref_arg.startswith("p") and is_new_user:
         try:
-            partner_1st = int(command.args[1:])  # Отрезаем букву "p", получаем ID партнера 1-го уровня
-            
+            partner_1st = int(ref_arg[1:])
             if partner_1st != user_id:
-                # Проверяем, существует ли такой партнер в основной базе данных
                 partner_data = get_user_from_db(partner_1st)
                 if partner_data:
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
                     
-                    # 🔥 Ищем партнера 2-го уровня (кто пригласил нашего партнера 1-го уровня)
                     cursor.execute("SELECT partner_id FROM partner_refs WHERE user_id = ?", (partner_1st,))
                     parent_row = cursor.fetchone()
                     partner_2nd = parent_row[0] if parent_row else None
                     
-                    # Жестко фиксируем денежную связку: Новичок -> Партнер 1 (28%) -> Партнер 2 (9%)
                     cursor.execute(
                         "INSERT OR IGNORE INTO partner_refs (user_id, partner_id, sub_partner_id) VALUES (?, ?, ?)",
                         (user_id, partner_1st, partner_2nd)
                     )
                     
-                    # В фоне увеличиваем счетчик приглашенных пользователей у партнера 1-го уровня
                     cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_1st,))
                     cursor.execute("UPDATE partner_stats SET referrals_count = referrals_count + 1 WHERE partner_id = ?", (partner_1st,))
                     
-                    # Если есть партнер 2-го уровня, увеличиваем ему счетчик субпартнеров в фоне
                     if partner_2nd:
                         cursor.execute("INSERT OR IGNORE INTO partner_stats (partner_id) VALUES (?)", (partner_2nd,))
                         cursor.execute("UPDATE partner_stats SET sub_partners_count = sub_partners_count + 1 WHERE partner_id = ?", (partner_2nd,))
                     
-                    # 💥 КВЕСТ НА БЕЗЛИМИТ: Проверяем, набрал ли партнер 10 приглашенных
                     cursor.execute("SELECT referrals_count, quest_claimed FROM partner_stats WHERE partner_id = ?", (partner_1st,))
                     quest_row = cursor.fetchone()
                     
                     if quest_row and quest_row[0] >= 10 and quest_row[1] == 0:
-                        # Помечаем квест как выполненный
                         cursor.execute("UPDATE partner_stats SET quest_claimed = 1 WHERE partner_id = ?", (partner_1st,))
                         conn.commit()
                         
-                        # Начисляем вечный безлимит партнеру (Ставим expiry до 2060 года и 999 устройств)
                         eternal_timestamp = 2840000000
                         p_role = partner_data[5] if len(partner_data) > 5 else "user"
                         p_username = partner_data[1] if len(partner_data) > 1 else f"user_{partner_1st}"
@@ -3017,7 +3299,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                         await renew_vpn_subscription_flexible(partner_1st, 99999)
                         
                         try:
-                            await message.bot.send_message(
+                            await callback.bot.send_message(
                                 chat_id=partner_1st,
                                 text="🔥 <b>Цель достигнута!</b>\n\n"
                                      "<blockquote>Вы привели 10 платящих пользователей!\n"
@@ -3030,28 +3312,25 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                         conn.commit()
                     
                     conn.close()
+
                     logging.info(f"🔗 [ПАРТНЕРКА ФОН] Новый пользователь {user_id} привязан к денежному партнеру {partner_1st}")
         except Exception as p_err:
-            logging.error(f"Ошибка в фоновом партнерском блоке /start: {p_err}")
+            logging.error(f"Ошибка в фоновом партнерском блоке капчи: {p_err}")
 
     # =========================================================================
-    # 🎁 КЛИЕНТСКАЯ РЕФЕРАЛКА НА ДНИ (ref123) С ЗАЩИТОЙ ОТ НАЧИСЛЕНИЯ ПАРТНЕРАМ
+    # 🎁 КЛИЕНТСКАЯ РЕФЕРАЛКА НА ДНИ (ref123) (Внутри Капчи)
     # =========================================================================
-    elif command and command.args and command.args.startswith("ref") and is_new_user:
+    elif ref_arg != "none" and ref_arg.startswith("ref") and is_new_user:
         try:
-            inviter_id = int(command.args.replace("ref", ""))
+            inviter_id = int(ref_arg.replace("ref", ""))
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
                 if inviter_data:
-                    # Узнаем роль пригласившего
                     inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
                     inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
                     
-                    # 🔥 ПРОВЕРКА: Если пригласивший — партнер или админ, ДНИ ЕМУ НЕ ДАЕМ
                     if inviter_role in ["partner", "ambassador", "admin", "creator"]:
                         logging.info(f"🚫 [РЕФ СИСТЕМА] Партнеру {inviter_id} не начислены 3 дня, так как он на денежной программе.")
-                        
-                        # Но новичку (клиенту) 3 дня всё равно даем, чтобы была мотивация переходить!
                         add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
                         await renew_vpn_subscription_flexible(user_id, 3)
                         
@@ -3060,7 +3339,6 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                             f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
                         )
                     else:
-                        # СТАНДАРТНАЯ ЛОГИКА ОБОИМ (если пригласивший — обычный юзер)
                         try: inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
                         except (ValueError, TypeError): inviter_old_expiry = 0
                         
@@ -3073,9 +3351,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                         add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
                         await renew_vpn_subscription_flexible(inviter_id, 3)
 
-                        # Уведомление обычному юзеру
                         try:
-                            await message.bot.send_message(
+                            await callback.bot.send_message(
                                 chat_id=inviter_id,
                                 text=f"🤝 <b>Новый реферал!</b>\n\n"
                                      f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
@@ -3084,7 +3361,6 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                             )
                         except Exception: pass
 
-                        # Выдача дней новичку
                         add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
                         await renew_vpn_subscription_flexible(user_id, 3)
                         
@@ -3097,28 +3373,28 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
                     except Exception: pass 
         except (ValueError, TypeError): pass
 
-
-    # 3. Финализация регистрации в основной БД
+    # 3. Финализация регистрации в основной БД, если бонуса дней не было
     if is_new_user and not ref_bonus_text:
-        add_or_update_user(user_id, username, expiry_time=0)
-    elif not is_new_user:
-        try: old_expiry = int(existing_user[4]) if existing_user[4] is not None else 0
-        except (ValueError, TypeError): old_expiry = 0
-        add_or_update_user(user_id, username, expiry_time=old_expiry, role=existing_user[5])
+        # Также принудительно выставляем is_bot = 0, так как капча успешно пройдена
+        add_or_update_user(user_id, username, expiry_time=0, is_bot=0)
 
-    # === ШАГ 4: УДАЛЕНИЕ СООБЩЕНИЯ О ЗАГРУЗКЕ ===
-    try: await loading_msg.delete()
+    # === УДАЛЯЕМ ТЕКСТ КАПЧИ ИЗ ЧАТА ===
+    try: await callback.message.delete()
     except Exception: pass
 
-    # 5. Отправка главного сообщения (видео)
+    # 4. Отправка главного сообщения с медиа-эффектом
     final_caption = f"{ref_bonus_text}{text1}"
-    await message.answer_video(
+    await callback.bot.send_video(
+        chat_id=user_id,
         video=VIDEO_MAIN,  
         caption=final_caption,
         reply_markup=main_kb(), 
         parse_mode="HTML",
         message_effect_id="5046509860389126442"
     )
+
+
+
 
 
 
