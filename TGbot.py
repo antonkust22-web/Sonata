@@ -1296,39 +1296,40 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
                     
-                    client_payload = {
-                        "id": client_uuid, 
-                        "email": email_for_panel, 
-                        "limitIp": 2, 
-                        "totalGB": 0,
-                        "expiryTime": 0, 
-                        "enable": True, 
-                        "tgId": str(user_id) if has_token else user_id, 
-                        "subId": sub_id
-                    }
-                    if srv_flow:
-                        client_payload["flow"] = srv_flow
-
                     if has_token:
-                        # НАСТОЯЩИЙ ПУТЬ ДОБАВЛЕНИЯ ЧЕРЕЗ API-ТОКЕН В 3X-UI
+                        # ПРАВИЛЬНЫЙ СТАНДАРТ 3X-UI ДЛЯ API-ТОКЕНОВ: плоский JSON с inboundId
                         add_url = f"{base_url}/panel/api/inbounds/client/add"
                         headers["Content-Type"] = "application/json"
                         
-                        # Структура плоского JSON, которую требует официальное API токенов 3x-ui
                         payload = {
-                            "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                          "id": client_uuid,
+                          "inboundId": int(srv['inbound_id']), # Передаем ID инбаунда прямо в клиента!
+                          "email": email_for_panel,
+                          "limitIp": 2,
+                          "totalGB": 0,
+                          "expiryTime": 0,
+                          "enable": True,
+                          "tgId": str(user_id),
+                          "subId": sub_id
                         }
-                        
-                        # На всякий случай дублируем плоский вариант, если панель совсем новая:
-                        # Если этот не сработает, панель выдаст ошибку, которую мы увидим
+                        if srv_flow:
+                            payload["flow"] = srv_flow
+
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
                             logging.info(f"Ответ 3x-ui на ТОКЕН addClient для {srv['id']}: {add_resp}")
                     else:
-                        # Старый классический метод x-ui через форму
+                        # Старый классический метод x-ui через форму и settings
                         add_url = f"{base_url}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
+                        client_payload = {
+                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
+                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id
+                        }
+                        if srv_flow:
+                            client_payload["flow"] = srv_flow
+                            
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                             await r.text()
@@ -1337,38 +1338,45 @@ async def get_vpn_config_clean(user_id, username=""):
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     sub_id = current_client.get("subId", current_client.get("subId", secrets.token_hex(8)))
                         
-                    client_payload = {
-                        "id": client_uuid, 
-                        "email": email_for_panel, 
-                        "limitIp": current_client.get("limitIp", 2),
-                        "totalGB": current_client.get("totalGB", 0), 
-                        "expiryTime": expiry_time_ms, 
-                        "enable": current_client.get("enable", True), 
-                        "tgId": str(user_id) if has_token else user_id, 
-                        "subId": sub_id  
-                    }
-                    if srv_flow:
-                        client_payload["flow"] = srv_flow
-
                     if has_token:
-                        # НАСТОЯЩИЙ ПУТЬ ОБНОВЛЕНИЯ ЧЕРЕЗ API-ТОКЕН В 3X-UI
+                        # ПРАВИЛЬНЫЙ СТАНДАРТ 3X-UI ДЛЯ ОБНОВЛЕНИЯ ЧЕРЕЗ API-ТОКЕН
                         update_url = f"{base_url}/panel/api/inbounds/client/update/{client_uuid}"
                         headers["Content-Type"] = "application/json"
                         
                         payload = {
-                            "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                          "id": client_uuid,
+                          "inboundId": int(srv['inbound_id']),
+                          "email": email_for_panel,
+                          "limitIp": current_client.get("limitIp", 2),
+                          "totalGB": current_client.get("totalGB", 0),
+                          "expiryTime": expiry_time_ms,
+                          "enable": current_client.get("enable", True),
+                          "tgId": str(user_id),
+                          "subId": sub_id
                         }
+                        if srv_flow:
+                            payload["flow"] = srv_flow
+
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
                             logging.info(f"Ответ 3x-ui на ТОКЕН updateClient для {srv['id']}: {update_resp}")
                     else:
-                        # Старый классический метод x-ui через форму
+                        # Старый классический метод x-ui через форму и settings
                         update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
+                        client_payload = {
+                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
+                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": current_client.get("enable", True), 
+                            "tgId": user_id, "subId": sub_id  
+                        }
+                        if srv_flow:
+                            client_payload["flow"] = srv_flow
+                            
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                             await r.text()
+
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
