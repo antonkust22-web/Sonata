@@ -3275,8 +3275,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
     # Животное выводится только текстом (например: "Выбери животное: Кошка"), сам смайлик удален
     await message.answer(
-        f"🤖 <b>Верификация аккаунта</b>\n\n"
-        f"Добро пожаловать! Для защиты от автоматических регистраций пройдите верификацию.\n"
+        f"<b>Добро пожаловать! Пройдите верификацию.</b>\n\n"
         f"Выбери животное: <b>{correct_name}</b>",
         reply_markup=kb.as_markup(),
         parse_mode="HTML"
