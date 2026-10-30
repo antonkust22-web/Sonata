@@ -1309,19 +1309,25 @@ async def get_vpn_config_clean(user_id, username=""):
                     if srv_flow:
                         client_payload["flow"] = srv_flow
 
-                    add_url = f"{base_url}/panel/api/inbounds/addClient"
-                    
                     if has_token:
-                        # Корректный нативный JSON-запрос для 3x-ui API
+                        # НАСТОЯЩИЙ ПУТЬ ДОБАВЛЕНИЯ ЧЕРЕЗ API-ТОКЕН В 3X-UI
+                        add_url = f"{base_url}/panel/api/inbounds/client/add"
                         headers["Content-Type"] = "application/json"
+                        
+                        # Структура плоского JSON, которую требует официальное API токенов 3x-ui
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]})
                         }
+                        
+                        # На всякий случай дублируем плоский вариант, если панель совсем новая:
+                        # Если этот не сработает, панель выдаст ошибку, которую мы увидим
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на addClient для {srv['id']}: {add_resp}")
+                            logging.info(f"Ответ 3x-ui на ТОКЕН addClient для {srv['id']}: {add_resp}")
                     else:
+                        # Старый классический метод x-ui через форму
+                        add_url = f"{base_url}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
@@ -1344,18 +1350,21 @@ async def get_vpn_config_clean(user_id, username=""):
                     if srv_flow:
                         client_payload["flow"] = srv_flow
 
-                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
-                    
                     if has_token:
+                        # НАСТОЯЩИЙ ПУТЬ ОБНОВЛЕНИЯ ЧЕРЕЗ API-ТОКЕН В 3X-UI
+                        update_url = f"{base_url}/panel/api/inbounds/client/update/{client_uuid}"
                         headers["Content-Type"] = "application/json"
+                        
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на updateClient для {srv['id']}: {update_resp}")
+                            logging.info(f"Ответ 3x-ui на ТОКЕН updateClient для {srv['id']}: {update_resp}")
                     else:
+                        # Старый классический метод x-ui через форму
+                        update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
