@@ -1212,7 +1212,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
                 
             try:
-                # Проверяем токен: если его нет, он пустой или состоит из пробелов — считаем панель старой
                 token_raw = srv.get("api_token", "")
                 has_token = bool(token_raw and token_raw.strip())
                 
@@ -1227,12 +1226,10 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
                 
-                # --- АВТОРИЗАЦИЯ ---
+                # --- 1. АВТОРИЗАЦИЯ ---
                 if has_token:
-                    # Новая панель 3x-ui по Bearer-токену
                     headers["Authorization"] = f"Bearer {token_raw.strip()}"
                 else:
-                    # Старая панель x-ui по логину и кукам
                     login_url = f"{base_url}/login"
                     login_data = {"username": srv['panel_user'], "password": srv['panel_password']}
                     headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -1240,13 +1237,11 @@ async def get_vpn_config_clean(user_id, username=""):
                         await resp.text()
                         cookie_header = resp.headers.get("Set-Cookie")
                         if cookie_header:
-                            # ИСПРАВЛЕНО: Передаем куку строго как строку (str), а не как список (list)!
                             headers["Cookie"] = cookie_header
                     headers.pop("Content-Type", None)
 
                 # --- 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА ---
                 if has_token:
-                    # Метод /list для 3x-ui
                     get_url = f"{base_url}/panel/api/inbounds/list"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
@@ -1262,7 +1257,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     if not inbound_obj:
                         continue
                 else:
-                    # Старый метод /get/{id} для x-ui
                     get_url = f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
@@ -1309,11 +1303,11 @@ async def get_vpn_config_clean(user_id, username=""):
                     add_url = f"{base_url}/panel/api/inbounds/addClient"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Передаем inbound_id как int, а настройки сериализуем в JSON-строку
+                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Отправляем настройки как чистый JSON-объект, а не строку!
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": {"clients": [client_payload]}
                         }
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             await r.text()
@@ -1324,7 +1318,6 @@ async def get_vpn_config_clean(user_id, username=""):
                             await r.text()
                     expiry_time_ms = 0
                 else:
-                    # Если пользователь уже есть — обновляем его данные и выводим заново
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     sub_id = current_client.get("subId", current_client.get("subId", secrets.token_hex(8)))
                         
@@ -1344,11 +1337,11 @@ async def get_vpn_config_clean(user_id, username=""):
                     update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Отправляем валидный JSON для обновления существующего юзера
+                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Отправляем чистый JSON для обновления существующего пользователя
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": {"clients": [client_payload]}
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             await r.text()
@@ -1386,6 +1379,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
