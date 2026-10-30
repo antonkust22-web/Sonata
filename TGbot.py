@@ -1198,7 +1198,6 @@ async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
-    # Отключаем проверку SSL и настраиваем таймауты
     connector = aiohttp.TCPConnector(ssl=False)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
@@ -1212,7 +1211,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # Формируем чистые базовые URL (убираем возможные двойные слэши)
+                # Чистим URL от двойных слэшей
                 panel_url = srv['panel_url'].rstrip('/')
                 base_path = srv['base_path'].strip('/')
                 if base_path:
@@ -1224,23 +1223,29 @@ async def get_vpn_config_clean(user_id, username=""):
                 login_url = f"{base_url}/login"
                 login_data = {"username": srv['panel_user'], "password": srv['panel_password']}
                 
-                async with session.post(login_url, data=login_data, timeout=10) as resp:
-                    await resp.text() # Читаем ответ, чтобы зафиксировать куки в jar
-
-                # Важно для 3x-ui: явно передаем json-заголовки
+                # Создаем базовые заголовки для API
                 headers = {
                     "Accept": "application/json",
                     "Content-Type": "application/x-www-form-urlencoded"
                 }
 
+                async with session.post(login_url, data=login_data, timeout=10) as resp:
+                    await resp.text()
+                    # ВЫТАСКИВАЕМ КУКУ ВРУЧНУЮ ПОД 3X-UI:
+                    # Новая панель ставит куку '3x-ui' или 'session', забираем её из заголовков ответа
+                    cookie_header = resp.headers.get("Set-Cookie")
+                    if cookie_header:
+                        # Берем саму куку до первой точки с запятой
+                        clean_cookie = cookie_header.split(";")[0]
+                        headers["Cookie"] = clean_cookie
+
                 # 2. Получение данных инбаунда
                 if is_3xui:
                     get_url = f"{base_url}/panel/api/inbounds/list"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        # Защита от 404 HTML: сначала читаем сырой текст
                         resp_text = await resp.text()
                         if resp.status == 404:
-                            logging.error(f"Ошибка 404 на 3x-ui сервере {srv['id']}. Возможно, неверный base_path или сбросилась авторизация сессии. Ответ: {resp_text[:200]}")
+                            logging.error(f"Ошибка 404 на 3x-ui сервере {srv['id']}. Проверь base_path или авторизацию. Ответ сервера пустой.")
                             continue
                         res_json = json.loads(resp_text)
                     
@@ -1356,6 +1361,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
