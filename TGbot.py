@@ -1232,7 +1232,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         await resp.text()
                         cookie_header = resp.headers.get("Set-Cookie")
                         if cookie_header:
-                            headers["Cookie"] = cookie_header.split(";")[0]
+                            headers["Cookie"] = cookie_header.split(";")
                     headers.pop("Content-Type", None)
 
                 # --- 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА ---
@@ -1266,8 +1266,13 @@ async def get_vpn_config_clean(user_id, username=""):
                         continue
                     inbound_obj = res_json.get("obj")
 
-                # Разбираем настройки
-                settings = json.loads(inbound_obj["settings"])
+                # --- ИСПРАВЛЕНО: Универсальный разбор настроек (работает и со строкой, и со словарем) ---
+                raw_settings = inbound_obj.get("settings")
+                if isinstance(raw_settings, dict):
+                    settings = raw_settings
+                else:
+                    settings = json.loads(raw_settings) if raw_settings else {}
+                    
                 clients = settings.get("clients", [])
                 
                 current_client = next((c for c in clients if str(c.get("tgId")) == str(user_id)), None)
