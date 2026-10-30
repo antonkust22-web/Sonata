@@ -1274,20 +1274,16 @@ async def get_vpn_config_clean(user_id, username=""):
                     
                 clients = settings.get("clients", [])
                 
-                # ИСПРАВЛЕНО: Глубокий поиск клиента с приведением всех типов к строке (str)
+                # Глубокий поиск существующего пользователя
                 current_client = None
                 for c in clients:
-                    c_tg_id = str(c.get("tgId", "")) if c.get("tgId") is not None else ""
-                    c_email = str(c.get("email", ""))
-                    
-                    # Ищем совпадение либо по Telegram ID, либо по сгенерированному email
-                    if c_tg_id == str(user_id) or c_email == email_for_panel or c_email == f"user_{user_id}":
+                    if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
                         current_client = c
                         break
 
                 client_uuid = current_client.get("id") if current_client else None
 
-                # Если в конфиге сервера flow пустой, но сам инбаунд в панели использует XTLS-Vision, подтягиваем его автоматически
+                # Страхуем параметр flow для Reality
                 if not srv_flow and "xtls-rprx-vision" in str(inbound_obj.get("streamSettings", "")):
                     srv_flow = "xtls-rprx-vision"
 
@@ -1304,25 +1300,25 @@ async def get_vpn_config_clean(user_id, username=""):
                         "expiryTime": 0, 
                         "enable": True, 
                         "tgId": str(user_id) if has_token else user_id, 
-                        "subId": sub_id
+                        "subId": sub_id,
+                        "alterId": 0,
+                        "flow": srv_flow
                     }
-                    if srv_flow:
-                        client_payload["flow"] = srv_flow
 
                     if has_token:
-                        # СТАНДАРТ API 3X-UI v3.11.0+: Нативный плоский JSON, ключ "client" в единственном числе
-                        add_url = f"{base_url}/panel/api/inbounds/client/add"
+                        # ОФИЦИАЛЬНЫЙ ЭНДПОИНТ ДОБАВЛЕНИЯ КЛИЕНТА В 3X-UI v3.11.0+
+                        # Запрос идет на /panel/api/inbounds/addClient, но тело строго типизировано как JSON
+                        add_url = f"{base_url}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/json"
                         
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "client": client_payload  # Передаем как готовый dict, никаких json.dumps!
+                            "settings": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на addClient (v3.11.0+): {add_resp}")
+                            logging.info(f"Ответ 3x-ui v3.11.0 на addClient: {add_resp}")
                     else:
-                        # Старый классический метод x-ui через форму и settings
                         add_url = f"{base_url}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
@@ -1336,36 +1332,34 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_payload = {
                         "id": client_uuid, 
                         "email": email_for_panel, 
-                        "limitIp": current_client.get("limitIp", 2),
-                        "totalGB": current_client.get("totalGB", 0), 
-                        "expiryTime": expiry_time_ms, 
-                        "enable": current_client.get("enable", True), 
+                        "limitIp": int(current_client.get("limitIp", 2)),
+                        "totalGB": int(current_client.get("totalGB", 0)), 
+                        "expiryTime": int(expiry_time_ms), 
+                        "enable": bool(current_client.get("enable", True)), 
                         "tgId": str(user_id) if has_token else user_id, 
-                        "subId": sub_id  
+                        "subId": sub_id,
+                        "alterId": 0,
+                        "flow": srv_flow
                     }
-                    if srv_flow:
-                        client_payload["flow"] = srv_flow
 
                     if has_token:
-                        # СТАНДАРТ API 3X-UI v3.11.0+ ДЛЯ ОБНОВЛЕНИЯ: Нативный плоский JSON, ключ "client"
-                        update_url = f"{base_url}/panel/api/inbounds/client/update/{client_uuid}"
+                        # ОФИЦИАЛЬНЫЙ ЭНДПОИНТ ОБНОВЛЕНИЯ КЛИЕНТА В 3X-UI v3.11.0+
+                        update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/json"
                         
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "client": client_payload  # Передаем как готовый dict
+                            "settings": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на updateClient (v3.11.0+): {update_resp}")
+                            logging.info(f"Ответ 3x-ui v3.11.0 на updateClient: {update_resp}")
                     else:
-                        # Старый классический метод x-ui через форму и settings
                         update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                             await r.text()
-
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
@@ -1395,6 +1389,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
