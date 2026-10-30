@@ -1303,11 +1303,11 @@ async def get_vpn_config_clean(user_id, username=""):
                     add_url = f"{base_url}/panel/api/inbounds/addClient"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Отправляем настройки как чистый JSON-объект, а не строку!
+                        # ИСПРАВЛЕНО: Для 3x-ui ключ должен называться "json", а не "settings"
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": {"clients": [client_payload]}
+                            "json": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             await r.text()
@@ -1337,11 +1337,11 @@ async def get_vpn_config_clean(user_id, username=""):
                     update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО ДЛЯ 3X-UI: Отправляем чистый JSON для обновления существующего пользователя
+                        # ИСПРАВЛЕНО: Для 3x-ui при обновлении тоже передаем в ключ "json"
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": {"clients": [client_payload]}
+                            "json": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             await r.text()
@@ -1379,6 +1379,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
