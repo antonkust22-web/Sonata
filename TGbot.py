@@ -1202,6 +1202,10 @@ async def get_vpn_config_clean(user_id, username=""):
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
+            # Пропускаем неоплаченный сервер, чтобы бот не тратил время на таймауты
+            if srv["id"] == "fi_1":
+                continue
+                
             try:
                 is_3xui = srv.get("version") == "3x-ui"
                 srv_flow = srv.get("flow", "")
@@ -1215,16 +1219,34 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
 
-                # 2. Получение данных инбаунда
-                get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                async with session.get(get_url, headers=headers, timeout=10) as resp:
-                    res_json = await resp.json()
+                # 2. Получение данных инбаунда (Адаптивный метод под 3x-ui и старые версии)
+                if is_3xui:
+                    # В 3x-ui старый эндпоинт /get/{id} отдаёт 404. Используем /list
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/list"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
                     
-                if not res_json.get("success"):
-                    logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
-                    continue
+                    if not res_json.get("success"):
+                        logging.error(f"Панель {srv['id']} вернула ошибку при LIST: {res_json}")
+                        continue
+                    
+                    inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
+                    if not inbound_obj:
+                        logging.error(f"Инбаунд {srv['inbound_id']} не найден на сервере {srv['id']}")
+                        continue
+                else:
+                    # Классический метод для старых панелей
+                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                    async with session.get(get_url, headers=headers, timeout=10) as resp:
+                        res_json = await resp.json()
+                        
+                    if not res_json.get("success"):
+                        logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
+                        continue
+                    inbound_obj = res_json.get("obj")
 
-                settings = json.loads(res_json["obj"]["settings"])
+                # Чтение настроек
+                settings = json.loads(inbound_obj["settings"])
                 clients = settings.get("clients", [])
                 
                 # Поиск клиента (3x-ui требует tgId как string, старая — как int)
@@ -1243,7 +1265,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_payload = {
                         "id": client_uuid, 
                         "email": email_for_panel, 
-                        "limitIp": 30, 
+                        "limitIp": 2, 
                         "totalGB": 0,
                         "expiryTime": 0, 
                         "enable": True, 
@@ -1295,9 +1317,9 @@ async def get_vpn_config_clean(user_id, username=""):
                 if srv["id"] == "ru_bridge_1":
                     my_port = 443
                 else:
-                    my_port = res_json["obj"]["port"]
+                    my_port = inbound_obj["port"]
                 
-                # 4. Сборка ссылки строго по вашему эталону
+                # 4. Сборка ссылки
                 if srv["id"] in ["fi_1", "ru_bridge_1"]:
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                     current_fp = "firefox" if srv["id"] == "fi_1" else "qq"
@@ -1320,6 +1342,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
