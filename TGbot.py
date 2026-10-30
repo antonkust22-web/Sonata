@@ -1198,11 +1198,11 @@ async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
     jar = aiohttp.CookieJar(unsafe=True)
+    # Отключаем проверку SSL и настраиваем таймауты
     connector = aiohttp.TCPConnector(ssl=False)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
-            # Пропускаем неоплаченный сервер, чтобы бот не тратил время на таймауты
             if srv["id"] == "fi_1":
                 continue
                 
@@ -1212,36 +1212,54 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
+                # Формируем чистые базовые URL (убираем возможные двойные слэши)
+                panel_url = srv['panel_url'].rstrip('/')
+                base_path = srv['base_path'].strip('/')
+                if base_path:
+                    base_url = f"{panel_url}/{base_path}"
+                else:
+                    base_url = panel_url
+
                 # 1. Авторизация
-                login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
-                    await resp.text()
+                login_url = f"{base_url}/login"
+                login_data = {"username": srv['panel_user'], "password": srv['panel_password']}
+                
+                async with session.post(login_url, data=login_data, timeout=10) as resp:
+                    await resp.text() # Читаем ответ, чтобы зафиксировать куки в jar
 
-                headers = {"Accept": "application/json"}
+                # Важно для 3x-ui: явно передаем json-заголовки
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
 
-                # 2. Получение данных инбаунда (Адаптивный метод под 3x-ui и старые версии)
+                # 2. Получение данных инбаунда
                 if is_3xui:
-                    # В 3x-ui старый эндпоинт /get/{id} отдаёт 404. Используем /list
-                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/list"
+                    get_url = f"{base_url}/panel/api/inbounds/list"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
+                        # Защита от 404 HTML: сначала читаем сырой текст
+                        resp_text = await resp.text()
+                        if resp.status == 404:
+                            logging.error(f"Ошибка 404 на 3x-ui сервере {srv['id']}. Возможно, неверный base_path или сбросилась авторизация сессии. Ответ: {resp_text[:200]}")
+                            continue
+                        res_json = json.loads(resp_text)
                     
                     if not res_json.get("success"):
-                        logging.error(f"Панель {srv['id']} вернула ошибку при LIST: {res_json}")
+                        logging.error(f"Панель {srv['id']} вернула success=False при LIST: {res_json}")
                         continue
                     
                     inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
                     if not inbound_obj:
-                        logging.error(f"Инбаунд {srv['inbound_id']} не найден на сервере {srv['id']}")
+                        logging.error(f"Инбаунд {srv['inbound_id']} не найден на 3x-ui сервере {srv['id']}")
                         continue
                 else:
-                    # Классический метод для старых панелей
-                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
+                    get_url = f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}"
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
+                        resp_text = await resp.text()
+                        res_json = json.loads(resp_text)
                         
                     if not res_json.get("success"):
-                        logging.error(f"Панель {srv['id']} вернула ошибку при GET: {res_json}")
+                        logging.error(f"Панель {srv['id']} вернула success=False при GET: {res_json}")
                         continue
                     inbound_obj = res_json.get("obj")
 
@@ -1249,7 +1267,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 settings = json.loads(inbound_obj["settings"])
                 clients = settings.get("clients", [])
                 
-                # Поиск клиента (3x-ui требует tgId как string, старая — как int)
                 current_client = next((c for c in clients if str(c.get("tgId")) == str(user_id)), None)
                 if not current_client:
                     old_email = f"user_{user_id}"
@@ -1272,11 +1289,10 @@ async def get_vpn_config_clean(user_id, username=""):
                         "tgId": str(user_id) if is_3xui else user_id, 
                         "subId": sub_id
                     }
-                    
                     if srv_flow:
                         client_payload["flow"] = srv_flow
 
-                    add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
+                    add_url = f"{base_url}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
                         "settings": json.dumps({"clients": [client_payload]})
@@ -1298,11 +1314,10 @@ async def get_vpn_config_clean(user_id, username=""):
                         "tgId": str(user_id) if is_3xui else user_id, 
                         "subId": sub_id  
                     }
-                    
                     if srv_flow:
                         client_payload["flow"] = srv_flow
 
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
+                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
                         "settings": json.dumps({"clients": [client_payload]})
@@ -1313,7 +1328,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # Хак для порта нового моста
+                # Порт
                 if srv["id"] == "ru_bridge_1":
                     my_port = 443
                 else:
@@ -1334,7 +1349,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     f"?flow={srv_flow}&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}#{safe_remark}"
                 )
-                    
                 vless_links.append(config_link)
 
             except Exception as e:
@@ -1342,6 +1356,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
