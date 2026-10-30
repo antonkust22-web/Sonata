@@ -1283,6 +1283,9 @@ async def get_vpn_config_clean(user_id, username=""):
                 client_uuid = current_client.get("id") if current_client else None
 
                 # --- 3. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА ---
+                # Для обеих панелей возвращаем строго Content-Type формы x-www-form-urlencoded
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
@@ -1302,20 +1305,13 @@ async def get_vpn_config_clean(user_id, username=""):
 
                     add_url = f"{base_url}/panel/api/inbounds/addClient"
                     
-                    if has_token:
-                        # ИСПРАВЛЕНО: Для 3x-ui ключ должен называться "json", а не "settings"
-                        headers["Content-Type"] = "application/json"
-                        payload = {
-                            "id": int(srv['inbound_id']), 
-                            "json": json.dumps({"clients": [client_payload]})
-                        }
-                        async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
-                            await r.text()
-                    else:
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
-                        async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
-                            await r.text()
+                    # Железный формат отправки для x-ui и 3x-ui
+                    client_data = {
+                        "id": str(srv['inbound_id']), 
+                        "settings": json.dumps({"clients": [client_payload]})
+                    }
+                    async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
+                        await r.text()
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
@@ -1336,20 +1332,12 @@ async def get_vpn_config_clean(user_id, username=""):
 
                     update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                     
-                    if has_token:
-                        # ИСПРАВЛЕНО: Для 3x-ui при обновлении тоже передаем в ключ "json"
-                        headers["Content-Type"] = "application/json"
-                        payload = {
-                            "id": int(srv['inbound_id']), 
-                            "json": json.dumps({"clients": [client_payload]})
-                        }
-                        async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
-                            await r.text()
-                    else:
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
-                        async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                            await r.text()
+                    client_data = {
+                        "id": str(srv['inbound_id']), 
+                        "settings": json.dumps({"clients": [client_payload]})
+                    }
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                        await r.text()
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
@@ -1379,6 +1367,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
