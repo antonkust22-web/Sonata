@@ -1274,13 +1274,22 @@ async def get_vpn_config_clean(user_id, username=""):
                     
                 clients = settings.get("clients", [])
                 
-                # Поиск существующего пользователя
-                current_client = next((c for c in clients if str(c.get("tgId")) == str(user_id)), None)
-                if not current_client:
-                    old_email = f"user_{user_id}"
-                    current_client = next((c for c in clients if c.get("email") == old_email), None)
+                # ИСПРАВЛЕНО: Глубокий поиск клиента с приведением всех типов к строке (str)
+                current_client = None
+                for c in clients:
+                    c_tg_id = str(c.get("tgId", "")) if c.get("tgId") is not None else ""
+                    c_email = str(c.get("email", ""))
+                    
+                    # Ищем совпадение либо по Telegram ID, либо по сгенерированному email
+                    if c_tg_id == str(user_id) or c_email == email_for_panel or c_email == f"user_{user_id}":
+                        current_client = c
+                        break
 
                 client_uuid = current_client.get("id") if current_client else None
+
+                # Если в конфиге сервера flow пустой, но сам инбаунд в панели использует XTLS-Vision, подтягиваем его автоматически
+                if not srv_flow and "xtls-rprx-vision" in str(inbound_obj.get("streamSettings", "")):
+                    srv_flow = "xtls-rprx-vision"
 
                 # --- 3. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА ---
                 if not client_uuid:
@@ -1303,16 +1312,16 @@ async def get_vpn_config_clean(user_id, username=""):
                     add_url = f"{base_url}/panel/api/inbounds/addClient"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО НА 100% ДЛЯ 3X-UI: Отправляем плоский JSON-объект в формате JSON-строки для settings
+                        # Корректный нативный JSON-запрос для 3x-ui API
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
-                            await r.text()
+                            add_resp = await r.text()
+                            logging.info(f"Ответ 3x-ui на addClient для {srv['id']}: {add_resp}")
                     else:
-                        # Старый метод x-www-form-urlencoded
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
@@ -1338,14 +1347,14 @@ async def get_vpn_config_clean(user_id, username=""):
                     update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                     
                     if has_token:
-                        # ИСПРАВЛЕНО НА 100% ДЛЯ 3X-UI: Обновление через строго типизированный json-запрос
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]})
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
-                            await r.text()
+                            update_resp = await r.text()
+                            logging.info(f"Ответ 3x-ui на updateClient для {srv['id']}: {update_resp}")
                     else:
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {"id": str(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]})}
