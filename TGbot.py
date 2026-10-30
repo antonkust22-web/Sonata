@@ -1134,11 +1134,21 @@ optimize_database_speed()
 
 
 
+import aiohttp
+import json
+import uuid
+import secrets
+import logging
+from urllib.parse import quote
+
+# Добавлены параметры "version" и "flow" для каждого сервера
 SERVERS = [
     {
         "id": "fi_1",
         "panel_url": "http://78.17.11.14:2053",
         "base_path": "/xD2SJTfdphAmQqisoB", 
+        "version": "old",
+        "flow": "",                        # Старая панель без flow
         "panel_user": "Asad",
         "panel_password": "Lodka120259",
         "inbound_id": 1,
@@ -1153,28 +1163,32 @@ SERVERS = [
         "id": "de_1",
         "panel_url": "http://78.17.152.36:2053", 
         "base_path": "/dsjwEGmmrbon",
+        "version": "old",
+        "flow": "xtls-rprx-vision",        # Ставь сюда нужный flow для новой панели (или "")
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
         "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
         "sid": "bfb0e0d2c85acc", 
-        "sni": "www.cloudflare.com",                                   
+        "sni": "cloudflare.com",                                   
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     },
     {
         "id": "ru_bridge_1",
-        "panel_url": "https://217.171.146.33:2053",
-        "base_path": "/0wlhvqnD4d2O1ggT8d", # Добавили слэш в начало пути, чтобы .ru/ работал идеально  
+        "panel_url": "https://78.17.96.45:2053",
+        "base_path": "/sStN4TwNhzf4dBS4PI",
+        "version": "3x-ui",
+        "flow": "",                        # Оставляй пустым, если flow на этом сервере не нужен
         "panel_user": "Asad",  
-        "panel_password": "542013",  
+        "panel_password": "5420",  
         "inbound_id": 1,  
-        "my_ip": "217.171.146.33",  # 158.160.233.149 айпи второго серва
-        "pbk": "16N7o9hxq1tVpLqsR242g9zonP9EJ4qTiHHNvSZbjUk",  
-        "sid": "29a872b6",  
-        "sni": "cloudflare.com",  
-        "country_flag": "🇷🇺",
+        "my_ip": "51.250.89.217",  
+        "pbk": "Dfr_ZiYS76nGhCyu3OpWJPYqwr4An2e5qwKG_5KwixA",  
+        "sid": "2c87d277",  
+        "sni": "s.microsoft.com",  
+        "country_flag": "🇮🇪",
         "country_name": "Обход №1"
     }
 ]
@@ -1189,9 +1203,12 @@ async def get_vpn_config_clean(user_id, username=""):
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
         for srv in SERVERS:
             try:
+                is_3xui = srv.get("version") == "3x-ui"
+                srv_flow = srv.get("flow", "")
+                
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
                 
-                # 1. Авторизация (Классический рабочий метод)
+                # 1. Авторизация
                 login_url = f"{srv['panel_url']}{srv['base_path']}/login"
                 async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
                     await resp.text()
@@ -1210,7 +1227,8 @@ async def get_vpn_config_clean(user_id, username=""):
                 settings = json.loads(res_json["obj"]["settings"])
                 clients = settings.get("clients", [])
                 
-                current_client = next((c for c in clients if c.get("tgId") == user_id), None)
+                # Поиск клиента (3x-ui требует tgId как string, старая — как int)
+                current_client = next((c for c in clients if str(c.get("tgId")) == str(user_id)), None)
                 if not current_client:
                     old_email = f"user_{user_id}"
                     current_client = next((c for c in clients if c.get("email") == old_email), None)
@@ -1222,30 +1240,50 @@ async def get_vpn_config_clean(user_id, username=""):
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(8)
                     
+                    client_payload = {
+                        "id": client_uuid, 
+                        "email": email_for_panel, 
+                        "limitIp": 30, 
+                        "totalGB": 0,
+                        "expiryTime": 0, 
+                        "enable": True, 
+                        "tgId": str(user_id) if is_3xui else user_id, 
+                        "subId": sub_id
+                    }
+                    
+                    if srv_flow:
+                        client_payload["flow"] = srv_flow
+
                     add_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/addClient"
                     client_data = {
                         "id": str(srv['inbound_id']), 
-                        "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email_for_panel, "limitIp": 2, "totalGB": 0,
-                            "expiryTime": 0, "enable": True, "tgId": user_id, "subId": sub_id  
-                        }]})
+                        "settings": json.dumps({"clients": [client_payload]})
                     }
                     async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                         await r.text()
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    sub_id = current_client.get("subId", "")
-                    if not sub_id:
-                        sub_id = secrets.token_hex(8)
+                    sub_id = current_client.get("subId", current_client.get("subId", secrets.token_hex(8)))
                         
+                    client_payload = {
+                        "id": client_uuid, 
+                        "email": email_for_panel, 
+                        "limitIp": current_client.get("limitIp", 2),
+                        "totalGB": current_client.get("totalGB", 0), 
+                        "expiryTime": expiry_time_ms, 
+                        "enable": current_client.get("enable", True), 
+                        "tgId": str(user_id) if is_3xui else user_id, 
+                        "subId": sub_id  
+                    }
+                    
+                    if srv_flow:
+                        client_payload["flow"] = srv_flow
+
                     update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
                     client_data = {
                         "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [{
-                            "id": client_uuid, "email": email_for_panel, "limitIp": current_client.get("limitIp", 2),
-                            "totalGB": current_client.get("totalGB", 0), "expiryTime": expiry_time_ms, "enable": current_client.get("enable", True), "tgId": user_id, "subId": sub_id  
-                        }]})
+                        "settings": json.dumps({"clients": [client_payload]})
                     }
                     async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                         await r.text()
@@ -1253,41 +1291,36 @@ async def get_vpn_config_clean(user_id, username=""):
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
-                # Хак для порта нового моста Яндекса
+                # Хак для порта нового моста
                 if srv["id"] == "ru_bridge_1":
                     my_port = 443
                 else:
                     my_port = res_json["obj"]["port"]
                 
-                # 4. Сборка ссылки строго по вашему рабочему эталону           
-                if srv["id"] == "fi_1":
+                # 4. Сборка ссылки строго по вашему эталону
+                if srv["id"] in ["fi_1", "ru_bridge_1"]:
                     remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
-                    current_fp = "firefox"
-                elif srv["id"] == "ru_bridge_1":
-                    remark = f"{srv['country_flag']} {srv['country_name']}"
-                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
-                    current_fp = "qq"
+                    current_fp = "firefox" if srv["id"] == "fi_1" else "qq"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
-                    safe_remark = remark  # ИСПРАВЛЕНО: убрали quote
                     current_fp = "qq"
                 
-                # Полное посимвольное соответствие вашей структуре, но без лишнего слэша перед ремаркой
+                safe_remark = quote(remark)
+
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
-                    f"?flow=&type=tcp&headerType=none&security=reality&fp={current_fp}"
+                    f"?flow={srv_flow}&type=tcp&headerType=none&security=reality&fp={current_fp}"
                     f"&sni={srv['sni']}&pbk={srv['pbk']}&sid={srv['sid']}#{safe_remark}"
                 )
                     
                 vless_links.append(config_link)
-
 
             except Exception as e:
                 logging.error(f"Ошибка сервера {srv['id']}: {e}", exc_info=True)
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
