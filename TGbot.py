@@ -1230,47 +1230,55 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 headers = {"Accept": "application/json"}
                 
-                # --- 1. АВТОРИЗАЦИЯ (ИСПРАВЛЕНО) ---
-                # Для 3x-ui (даже с токеном) НАДО обязательно выполнить сначала вход через /login, 
-                # чтобы сессия сохранилась в session.cookie_jar для последующих POST запросов.
-                login_url = f"{base_url}/login"
+                logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Начало обработки сервера {srv['id']} ({srv['country_name']}). Версия: {srv.get('version')}, С токеном: {has_token}")
+
+                # --- 1. АВТОРИЗАЦИЯ ---
+                login_url = f"{base_url.rstrip('/')}/login"
                 login_data = {"username": srv['panel_user'], "password": srv['panel_password']}
                 
-                # Отправляем login как x-www-form-urlencoded
+                logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Отправка запроса авторизации на {login_url}")
                 async with session.post(login_url, data=login_data, timeout=10) as resp:
-                    await resp.text()
-                    # Если панель вернула куку в явном виде, подстрахуем заголовок
+                    login_text = await resp.text()
+                    logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Ответ /login: Статус={resp.status}, Тело={login_text}")
+                    
                     cookie_header = resp.headers.get("Set-Cookie")
                     if cookie_header:
                         headers["Cookie"] = cookie_header
-                
+                        logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Получена сессионная кука: {cookie_header}")
+
                 if has_token:
                     headers["Authorization"] = f"Bearer {token_raw.strip()}"
+                    logging.info("[ЛОГ ПОДКЛЮЧЕНИЯ] Добавлен заголовок Authorization Bearer")
 
                 # --- 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА ---
                 if srv.get("version") == "3x-ui" or has_token:
-                    get_url = f"{base_url}/panel/api/inbounds/list"
+                    get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list"
+                    logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Запрос списка инбаундов 3x-ui: {get_url}")
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
+                        logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Ответ /list: Статус={resp.status}")
                         if resp.status == 401 or resp.status == 403:
-                            logging.error(f"Ошибка авторизации на сервере {srv['id']}. Код: {resp.status}")
+                            logging.error(f"[ЛОГ ОШИБКИ] Отказано в доступе (401/403) на сервере {srv['id']}.")
                             continue
                         res_json = json.loads(resp_text)
-
-
                     
                     if not res_json.get("success"):
+                        logging.error(f"[ЛОГ ОШИБКИ] Панель вернула success=false на запрос списка: {resp_text}")
                         continue
                     
                     inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
                     if not inbound_obj:
+                        logging.error(f"[ЛОГ ОШИБКИ] Инбаунд с ID {srv['inbound_id']} не найден в списке!")
                         continue
                 else:
-                    get_url = f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}"
+                    get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/get/{srv['inbound_id']}"
+                    logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Запрос инбаунда старой x-ui: {get_url}")
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
+                        logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Ответ /get/{srv['inbound_id']}: Статус={resp.status}")
                         res_json = json.loads(resp_text)
                     if not res_json.get("success"):
+                        logging.error(f"[ЛОГ ОШИБКИ] Не удалось получить инбаунд: {resp_text}")
                         continue
                     inbound_obj = res_json.get("obj")
 
@@ -1282,6 +1290,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     settings = json.loads(raw_settings) if raw_settings else {}
                     
                 clients = settings.get("clients", [])
+                logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Всего клиентов в инбаунде сейчас: {len(clients)}")
                 
                 # Поиск существующего пользователя
                 current_client = None
@@ -1291,8 +1300,6 @@ async def get_vpn_config_clean(user_id, username=""):
                         break
 
                 client_uuid = current_client.get("id") if current_client else None
-
-                # Парсинг streamSettings для сборки ссылки Reality
                 raw_stream = inbound_obj.get("streamSettings")
                 stream_settings = json.loads(raw_stream) if isinstance(raw_stream, str) else (raw_stream or {})
 
@@ -1302,15 +1309,14 @@ async def get_vpn_config_clean(user_id, username=""):
                 # --- 3. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА ---
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    sub_id = secrets.token_hex(16)  # В 3x-ui лучше использовать 16 символов для subId
+                    sub_id = secrets.token_hex(16)
+                    logging.info(f"[ЛОГ КЛИЕНТА] Пользователь не найден. Генерируем новый UUID: {client_uuid}, subId: {sub_id}")
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        # Строгий формат объекта клиента для Go-бэкенда 3x-ui
                         client_payload = {
                             "id": client_uuid,
                             "alterId": 0,
                             "email": email_for_panel,
-                            "page": 0,  # Обязательный внутренний параметр для некоторых версий 3x-ui
                             "totalGB": 0,
                             "expiryTime": 0,
                             "enable": True,
@@ -1320,7 +1326,6 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                     else:
-                        # Старый формат для обычного x-ui
                         client_payload = {
                             "id": client_uuid, 
                             "email": email_for_panel, 
@@ -1334,29 +1339,34 @@ async def get_vpn_config_clean(user_id, username=""):
                             "flow": srv_flow
                         }
 
-                    add_url = f"{base_url}/panel/api/inbounds/addClient"
+                    add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
+                    logging.info(f"[ЛОГ КЛИЕНТА] Отправка запроса добавления на {add_url}")
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        headers["Content-Type"] = "application/json"
-                        # Важно: 3x-ui ждет settings как СТРОКУ, содержащую JSON
+                        headers["Content-Type"] = "application/json; charset=utf-8"
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
-                        async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
+                        raw_payload_str = json.dumps(payload, ensure_ascii=False)
+                        logging.info(f"[ЛОГ КЛИЕНТА] JSON Тело запроса для 3x-ui: {raw_payload_str}")
+                        
+                        async with session.post(add_url, headers=headers, data=raw_payload_str, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на addClient: {add_resp}")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
                             "id": str(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
+                        logging.info(f"[ЛОГ КЛИЕНТА] Form-urlencoded Тело запроса для старой x-ui: {client_data}")
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"Ответ старой x-ui на addClient: {add_resp}")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     expiry_time_ms = 0
                 else:
+                    logging.info(f"[ЛОГ КЛИЕНТА] Пользователь найден в панели. UUID: {client_uuid}. Переходим к обновлению.")
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     sub_id = current_client.get("subId", secrets.token_hex(16))
                         
@@ -1365,7 +1375,6 @@ async def get_vpn_config_clean(user_id, username=""):
                             "id": client_uuid,
                             "alterId": 0,
                             "email": email_for_panel,
-                            "page": 0,
                             "totalGB": int(current_client.get("totalGB", 0)), 
                             "expiryTime": int(expiry_time_ms), 
                             "enable": bool(current_client.get("enable", True)), 
@@ -1379,36 +1388,37 @@ async def get_vpn_config_clean(user_id, username=""):
                             "id": client_uuid, 
                             "email": email_for_panel, 
                             "limitIp": int(current_client.get("limitIp", 2)),
-                            "totalGB": int(current_client.get("totalGB", 0)), 
-                            "expiryTime": int(expiry_time_ms), 
-                            "enable": bool(current_client.get("enable", True)), 
-                            "tgId": user_id, 
+                            "totalGB": int(current_client.get("totalGB", 0)),
+                            "expiryTime": int(expiry_time_ms),
+                            "enable": bool(current_client.get("enable", True)),
+                            "tgId": user_id,
                             "subId": sub_id,
                             "alterId": 0,
                             "flow": srv_flow
                         }
-
-                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
-                    
-                    if srv.get("version") == "3x-ui" or has_token:
-                        headers["Content-Type"] = "application/json"
-                        payload = {
-                            "id": int(srv['inbound_id']),
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                        }
-                        async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
-                            update_resp = await r.text()
-                            logging.info(f"Ответ 3x-ui на updateClient: {update_resp}")
-                    else:
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        client_data = {
-                            "id": str(srv['inbound_id']),
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                        }
-                        async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                            update_resp = await r.text()
-
-
+                        
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка запроса обновления на {update_url}")
+                        
+                        if srv.get("version") == "3x-ui" or has_token:
+                            headers["Content-Type"] = "application/json; charset=utf-8"
+                            payload = {
+                                "id": int(srv['inbound_id']),
+                                "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            }
+                            async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
+                                update_resp = await r.text()
+                                logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                        else:
+                            headers["Content-Type"] = "application/x-www-form-urlencoded"
+                            client_data = {
+                                "id": str(srv['inbound_id']),
+                                "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            }
+                            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                                update_resp = await r.text()
+                                logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+ 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
