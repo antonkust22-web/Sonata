@@ -1326,31 +1326,38 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Точный роут для глобального API клиентов в 3x-ui (БЕЗ префикса inbounds)
-                        add_url = f"{panel_url}/{base_path}/panel/api/client/add" if base_path else f"{panel_url}/panel/api/client/add"
+                        # В REST API (по токену) слово /panel/ ИСКЛЮЧАЕТСЯ из пути добавления/обновления!
+                        # Правильный роут: /api/client/add
+                        add_url = f"{panel_url}/{base_path}/api/client/add" if base_path else f"{panel_url}/api/client/add"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # Передаем ID инбаунда как целое число в поле id, а settings — строкой JSON
                         payload = {
                             "id": int(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка JSON на глобальный API клиентов 3x-ui: {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка JSON на истинный REST API 3x-ui: {add_url}")
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
                             status_code = r.status
                             
-                            # Резервный вариант: если бэкенд требует именования inboundId вместо id
+                            # Если бэкенд требует inboundId вместо id
                             if status_code == 404 or "failed validation" in add_resp:
-                                logging.info("[ЛОГ КЛИЕНТА] Пробуем альтернативный ключ inboundId...")
+                                logging.info("[ЛОГ КЛИЕНТА] Пробуем альтернативный ключ inboundId или легаси-роут...")
                                 alt_payload = {
                                     "inboundId": int(srv['inbound_id']),
                                     "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                                 }
                                 async with session.post(add_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
-                                    add_resp = await r_alt.text()
-                                    status_code = r_alt.status
+                                    if r_alt.status != 404:
+                                        add_resp = await r_alt.text()
+                                        status_code = r_alt.status
+                                    else:
+                                        # Если и тут 404, пробуем чистый легаси /api/inbounds/addClient
+                                        legacy_url = f"{panel_url}/{base_path}/api/inbounds/addClient" if base_path else f"{panel_url}/api/inbounds/addClient"
+                                        async with session.post(legacy_url, headers=headers, json=payload, timeout=10) as r_leg:
+                                            add_resp = await r_leg.text()
+                                            status_code = r_leg.status
 
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат добавления 3x-ui: Статус HTTP={status_code}, Ответ='{add_resp}'")
                     else:
@@ -1395,8 +1402,8 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # Роут глобального API обновления клиентов в 3x-ui
-                        update_url = f"{panel_url}/{base_path}/panel/api/client/update/{client_uuid}" if base_path else f"{panel_url}/panel/api/client/update/{client_uuid}"
+                        # Истинный REST роут обновления: /api/client/update/{uuid}
+                        update_url = f"{panel_url}/{base_path}/api/client/update/{client_uuid}" if base_path else f"{panel_url}/api/client/update/{client_uuid}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
@@ -1414,8 +1421,14 @@ async def get_vpn_config_clean(user_id, username=""):
                                     "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                                 }
                                 async with session.post(update_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
-                                    update_resp = await r_alt.text()
-                                    status_code = r_alt.status
+                                    if r_alt.status != 404:
+                                        update_resp = await r_alt.text()
+                                        status_code = r_alt.status
+                                    else:
+                                        legacy_up_url = f"{panel_url}/{base_path}/api/inbounds/updateClient/{client_uuid}" if base_path else f"{panel_url}/api/inbounds/updateClient/{client_uuid}"
+                                        async with session.post(legacy_up_url, headers=headers, json=payload, timeout=10) as r_leg:
+                                            update_resp = await r_leg.text()
+                                            status_code = r_leg.status
                                     
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат обновления 3x-ui: Статус HTTP={status_code}, Ответ='{update_resp}'")
                     else:
