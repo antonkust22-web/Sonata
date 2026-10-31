@@ -1326,21 +1326,42 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # ИСТИННЫЙ РОУТ 3X-UI: panel/api/client/add (inbounds ПОЛНОСТЬЮ убрано)
-                        add_url = f"{panel_url}/{base_path}/panel/api/client/add" if base_path else f"{panel_url}/panel/api/client/add"
-                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
+                        
+                        # Копируем заголовки, чтобы безопасно переключать режимы авторизации
+                        api_headers = headers.copy()
+                        api_headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "inboundId": int(srv['inbound_id']),
-                            "client": client_payload
+                            "id": int(srv['inbound_id']), 
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка на изолированный REST API 3x-ui: {add_url}")
-                        async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
+                        logging.info(f"[ЛОГ КЛИЕНТА] Попытка добавления через Bearer API JSON: {add_url}")
+                        async with session.post(add_url, headers=api_headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат глобального client/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                            status_code = r.status
+                            
+                            # ЕСЛИ ПАНЕЛЬ ОТДАЛА 404 ИЛИ ОШИБКУ ВАЛИДАЦИИ: переключаемся на сессионную куку браузера!
+                            if status_code == 404 or "failed validation" in add_resp:
+                                logging.info("[ЛОГ КЛИЕНТА] Токен-режим отклонен. Переключаемся в режим браузерной сессии (куки)...")
+                                if "Authorization" in api_headers:
+                                    del api_headers["Authorization"] # Стираем токен, заставляя панель читать куку
+                                
+                                # В режиме куки 3x-ui идеально принимает классическую форму
+                                api_headers["Content-Type"] = "application/x-www-form-urlencoded"
+                                form_payload = {
+                                    "id": str(srv['inbound_id']),
+                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                                }
+                                
+                                async with session.post(add_url, headers=api_headers, data=form_payload, timeout=10) as r_cookie:
+                                    add_resp = await r_cookie.text()
+                                    status_code = r_cookie.status
+                                    
+                            logging.info(f"[ЛОГ КЛИЕНТА] Итоговый результат addClient 3x-ui: Статус HTTP={status_code}, Ответ='{add_resp}'")
                     else:
-                        # Старая панель x-ui
+                        # Старая панель x-ui (работает строго через форму)
                         client_payload = {
                             "id": client_uuid, 
                             "email": email_for_panel, 
@@ -1381,18 +1402,33 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # ИСТИННЫЙ РОУТ ОБНОВЛЕНИЯ 3X-UI: panel/api/client/update/{uuid}
-                        update_url = f"{panel_url}/{base_path}/panel/api/client/update/{client_uuid}" if base_path else f"{panel_url}/panel/api/client/update/{client_uuid}"
-                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
+                        api_headers = headers.copy()
+                        api_headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "inboundId": int(srv['inbound_id']),
-                            "client": client_payload
+                            "id": int(srv['inbound_id']),
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
+                        async with session.post(update_url, headers=api_headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат глобального client/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            status_code = r.status
+                            
+                            if status_code == 404 or "failed validation" in update_resp:
+                                logging.info("[ЛОГ КЛИЕНТА] Переключение updateClient в режим браузерной куки...")
+                                if "Authorization" in api_headers:
+                                    del api_headers["Authorization"]
+                                api_headers["Content-Type"] = "application/x-www-form-urlencoded"
+                                form_payload = {
+                                    "id": str(srv['inbound_id']),
+                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                                }
+                                async with session.post(update_url, headers=api_headers, data=form_payload, timeout=10) as r_cookie:
+                                    update_resp = await r_cookie.text()
+                                    status_code = r_cookie.status
+                                    
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={status_code}, Ответ='{update_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
