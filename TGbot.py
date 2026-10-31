@@ -1206,7 +1206,7 @@ async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
     
-    # Включаем автоматическую обработку кук. Новые панели 3x-ui требуют куку даже при наличии api_token на POST запросы!
+    # Автоматическая обработка кук (для 3x-ui сессия важна даже с Bearer токеном)
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
 
@@ -1252,7 +1252,6 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 # --- 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА ---
                 if srv.get("version") == "3x-ui" or has_token:
-                    # Для стабильности в 3x-ui эндпоинт списка инбаундов тоже лучше запрашивать со слэшем на конце
                     get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list/"
                     logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Запрос списка инбаундов 3x-ui: {get_url}")
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
@@ -1326,6 +1325,20 @@ async def get_vpn_config_clean(user_id, username=""):
                             "subId": sub_id,
                             "limitIp": 2
                         }
+                        
+                        # ИСПРАВЛЕНО: Объявление add_url перенесено НАВЕРХ блока 3x-ui до использования!
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
+                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        payload = {
+                            "id": int(srv['inbound_id']), 
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                        }
+                        raw_payload_str = json.dumps(payload, ensure_ascii=False)
+                        logging.info(f"[ЛОГ КЛИЕНТА] JSON Тело запроса для 3x-ui: {raw_payload_str}")
+                        
+                        async with session.post(add_url, headers=headers, data=raw_payload_str, timeout=10) as r:
+                            add_resp = await r.text()
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
                         client_payload = {
                             "id": client_uuid, 
@@ -1339,118 +1352,92 @@ async def get_vpn_config_clean(user_id, username=""):
                             "alterId": 0,
                             "flow": srv_flow
                         }
-
-                    if srv.get("version") == "3x-ui" or has_token:
-                        headers["Content-Type"] = "application/json; charset=utf-8"
-                        payload = {
-                            "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                        }
-                        raw_payload_str = json.dumps(payload, ensure_ascii=False)
-                        logging.info(f"[ЛОГ КЛИЕНТА] JSON Тело запроса для 3x-ui: {raw_payload_str}")
-
                         
-                        async with session.post(add_url, headers=headers, data=raw_payload_str, timeout=10) as r:
-                            add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
-                    else:
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
-                            "id": str(srv['inbound_id']), 
+                            "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
-                        logging.info(f"[ЛОГ КЛИЕНТА] Form-urlencoded Тело запроса для старой x-ui: {client_data}")
+                        
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                             add_resp = await r.text()
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
-                    expiry_time_ms = 0
+                
                 else:
-                    logging.info(f"[ЛОГ КЛИЕНТА] Пользователь найден в панели. UUID: {client_uuid}. Переходим к обновлению.")
+                    # Пользователь НАЙДЕН — обновляем его параметры
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    sub_id = current_client.get("subId", secrets.token_hex(16))
-                        
+                    
                     if srv.get("version") == "3x-ui" or has_token:
                         client_payload = {
                             "id": client_uuid,
                             "alterId": 0,
                             "email": email_for_panel,
-                            "totalGB": int(current_client.get("totalGB", 0)), 
-                            "expiryTime": int(expiry_time_ms), 
-                            "enable": bool(current_client.get("enable", True)), 
-                            "flow": srv_flow,
-                            "tgId": str(user_id), 
-                            "subId": sub_id,
-                            "limitIp": int(current_client.get("limitIp", 2))
-                        }
-                    else:
-                        client_payload = {
-                            "id": client_uuid, 
-                            "email": email_for_panel, 
-                            "limitIp": int(current_client.get("limitIp", 2)),
                             "totalGB": int(current_client.get("totalGB", 0)),
                             "expiryTime": int(expiry_time_ms),
                             "enable": bool(current_client.get("enable", True)),
-                            "tgId": user_id,
-                            "subId": sub_id,
-                            "alterId": 0,
-                            "flow": srv_flow
+                            "flow": srv_flow,
+                            "tgId": str(user_id),
+                            "subId": current_client.get("subId", secrets.token_hex(16)),
+                            "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка запроса обновления на {update_url}")
-                        
-                    if srv.get("version") == "3x-ui" or has_token:
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         payload = {
                             "id": int(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
-                        # ИСПРАВЛЕНО: Убран лишний отступ. Теперь блок стоит на уровне с payload
+                        
                         async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
                             update_resp = await r.text()
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
-                            headers["Content-Type"] = "application/x-www-form-urlencoded"
-                            client_data = {
-                                "id": str(srv['inbound_id']),
-                                "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                            }
-                            async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                                update_resp = await r.text()
-                                logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                        client_payload = {
+                            "id": client_uuid,
+                            "email": email_for_panel,
+                            "limitIp": int(current_client.get("limitIp", 2)),
+                            "totalGB": int(current_client.get("totalGB", 0)),
+                            "expiryTime": int(expiry_time_ms),
+                            "enable": bool(current_client.get("enable", True)),
+                            "tgId": user_id,
+                            "subId": current_client.get("subId", secrets.token_hex(16)),
+                            "alterId": 0,
+                            "flow": srv_flow
+                        }
+                        
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        client_data = {
+                            "id": str(srv['inbound_id']),
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                        }
+                        
+                        async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                            update_resp = await r.text()
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
 
-                # Безопасно получаем время истечения (для новых клиентов current_client равен None)
                 expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
                 # --- 4. ГЕНЕРАЦИЯ VLESS+REALITY ССЫЛКИ ---
                 port = inbound_obj.get("port")
-                
-                # Достаем параметры Reality из streamSettings
                 reality_settings = stream_settings.get("realitySettings", {})
                 
-                # Если в настройках инбаунда pbk/sid/sni пустые, берем дефолты из конфига SERVERS
                 pbk = reality_settings.get("publicKey", srv.get("pbk", ""))
                 
-                if isinstance(reality_settings.get("shortIds"), list) and reality_settings["shortIds"]:
-                    sid = reality_settings["shortIds"][0]
-                else:
-                    sid = srv.get("sid", "")
+                short_ids = reality_settings.get("shortIds", [])
+                sid = short_ids[0] if isinstance(short_ids, list) and short_ids else srv.get("sid", "")
                     
                 server_names = reality_settings.get("serverNames", [])
-                if server_names:
-                    sni = server_names[0]
-                else:
-                    sni = srv.get("sni", "google.com")
+                sni = server_names[0] if isinstance(server_names, list) and server_names else srv.get("sni", "google.com")
 
-                # Корректировка порта для конкретных серверов-мостов
                 if srv["id"] == "ru_bridge_1":
                     my_port = 443
                 else:
                     my_port = port if port else inbound_obj.get("port", 443)
                 
-                # Формирование корректного имени (Remark) ссылки с флагом
                 if srv["id"] in ["fi_1", "ru_bridge_1"]:
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                 else:
@@ -1458,7 +1445,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 safe_remark = quote(remark)
 
-                # Сборка финальной VLESS Reality конфигурации
                 config_link = (
                     f"vless://{client_uuid}@{srv['my_ip']}:{my_port}"
                     f"?flow={srv_flow}&type=tcp&headerType=none&security=reality&fp={current_fp}"
@@ -1471,6 +1457,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
   
@@ -3386,12 +3373,11 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         try: await loading_msg.delete()
         except Exception: pass
 
-        # 1. Сначала создаем синюю ссылку на профиль пользователя
-        user_name = message.from_user.first_name
+
 
         # 2. Формируем текст сообщения
         text1 = (
-            f"<b>👋 Привет {user_name}, добро пожаловать в наш VPN сервис</b>\n\n"
+            f"<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
             "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
             "📖 Выберите действие:\n\n"
             "<pre>Сейчас бот находится на тех. работах</pre>"
