@@ -1327,7 +1327,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         }
                         
                         # ИСПРАВЛЕНО: Объявление add_url перенесено НАВЕРХ блока 3x-ui до использования!
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         payload = {
                             "id": int(srv['inbound_id']), 
