@@ -1313,7 +1313,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     logging.info(f"[ЛОГ КЛИЕНТА] Пользователь не найден. Генерируем новый UUID: {client_uuid}, subId: {sub_id}")
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        # В новом API 3x-ui структура клиента передается чистым объектом, а ID инбаунда — строкой
                         client_payload = {
                             "id": client_uuid,
                             "alterId": 0,
@@ -1327,29 +1326,20 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Официальный эндпоинт для добавления клиента в новых версиях 3x-ui
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/add"
+                        # КРИТИЧЕСКИ ВАЖНО: Слэш на конце ОБЯЗАТЕЛЕН для 200 OK
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # Структура тела запроса строго под валидатор MHSanaei API
                         payload = {
-                            "id": str(srv['inbound_id']), 
+                            "id": int(srv['inbound_id']), # Должно быть строго int в JSON
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка API-JSON на {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка правильного JSON на {add_url}")
+                        # Отправляем через json= payload, чтобы aiohttp сам правильно сериализовал
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            
-                            # Если /client/add выдает 404, это старая сборка 3x-ui, пробуем резервный addClient БЕЗ слэша
-                            if r.status == 404:
-                                alt_add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
-                                logging.info(f"[ЛОГ КЛИЕНТА] 404 на /client/add, пробуем резервный {alt_add_url}")
-                                async with session.post(alt_add_url, headers=headers, json=payload, timeout=10) as r_alt:
-                                    add_resp = await r_alt.text()
-                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат резервного addClient 3x-ui: Статус HTTP={r_alt.status}, Ответ='{add_resp}'")
-                            else:
-                                logging.info(f"[ЛОГ КЛИЕНТА] Результат client/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
@@ -1395,27 +1385,18 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # Официальный эндпоинт обновления в 3x-ui
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/update/{client_uuid}"
+                        # Обновление существующего клиента в 3x-ui (тоже со слэшем на конце)
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "id": str(srv['inbound_id']),
+                            "id": int(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            
-                            # Резервный эндпоинт если /client/update выдал 404
-                            if r.status == 404:
-                                alt_update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
-                                logging.info(f"[ЛОГ КЛИЕНТА] 404 на /client/update, пробуем резервный {alt_update_url}")
-                                async with session.post(alt_update_url, headers=headers, json=payload, timeout=10) as r_alt:
-                                    update_resp = await r_alt.text()
-                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат резервного updateClient 3x-ui: Статус HTTP={r_alt.status}, Ответ='{update_resp}'")
-                            else:
-                                logging.info(f"[ЛОГ КЛИЕНТА] Результат client/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
