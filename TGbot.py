@@ -1302,79 +1302,112 @@ async def get_vpn_config_clean(user_id, username=""):
                 # --- 3. ДОБАВЛЕНИЕ ИЛИ ОБНОВЛЕНИЕ КЛИЕНТА ---
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
-                    sub_id = secrets.token_hex(8)
+                    sub_id = secrets.token_hex(16)  # В 3x-ui лучше использовать 16 символов для subId
                     
-                    client_payload = {
-                        "id": client_uuid, 
-                        "email": email_for_panel, 
-                        "limitIp": 2, 
-                        "totalGB": 0,
-                        "expiryTime": 0, 
-                        "enable": True, 
-                        "tgId": str(user_id), 
-                        "subId": sub_id,
-                        "alterId": 0,
-                        "flow": srv_flow
-                    }
+                    if srv.get("version") == "3x-ui" or has_token:
+                        # Строгий формат объекта клиента для Go-бэкенда 3x-ui
+                        client_payload = {
+                            "id": client_uuid,
+                            "alterId": 0,
+                            "email": email_for_panel,
+                            "page": 0,  # Обязательный внутренний параметр для некоторых версий 3x-ui
+                            "totalGB": 0,
+                            "expiryTime": 0,
+                            "enable": True,
+                            "flow": srv_flow,
+                            "tgId": str(user_id),
+                            "subId": sub_id,
+                            "limitIp": 2
+                        }
+                    else:
+                        # Старый формат для обычного x-ui
+                        client_payload = {
+                            "id": client_uuid, 
+                            "email": email_for_panel, 
+                            "limitIp": 2, 
+                            "totalGB": 0,
+                            "expiryTime": 0, 
+                            "enable": True, 
+                            "tgId": user_id, 
+                            "subId": sub_id,
+                            "alterId": 0,
+                            "flow": srv_flow
+                        }
 
                     add_url = f"{base_url}/panel/api/inbounds/addClient"
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        # Корректный JSON payload для 3x-ui v3.11.0+
                         headers["Content-Type"] = "application/json"
+                        # Важно: 3x-ui ждет settings как СТРОКУ, содержащую JSON
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
                             logging.info(f"Ответ 3x-ui на addClient: {add_resp}")
                     else:
-                        # Для старых панелей через form-urlencoded
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
                             "id": str(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
-                            await r.text()
+                            add_resp = await r.text()
+                            logging.info(f"Ответ старой x-ui на addClient: {add_resp}")
                     expiry_time_ms = 0
                 else:
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    sub_id = current_client.get("subId", secrets.token_hex(8))
+                    sub_id = current_client.get("subId", secrets.token_hex(16))
                         
-                    client_payload = {
-                        "id": client_uuid, 
-                        "email": email_for_panel, 
-                        "limitIp": int(current_client.get("limitIp", 2)),
-                        "totalGB": int(current_client.get("totalGB", 0)), 
-                        "expiryTime": int(expiry_time_ms), 
-                        "enable": bool(current_client.get("enable", True)), 
-                        "tgId": str(user_id), 
-                        "subId": sub_id,
-                        "alterId": 0,
-                        "flow": srv_flow
-                    }
-
-                    # Логика обновления существующего клиента
                     if srv.get("version") == "3x-ui" or has_token:
-                        update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
+                        client_payload = {
+                            "id": client_uuid,
+                            "alterId": 0,
+                            "email": email_for_panel,
+                            "page": 0,
+                            "totalGB": int(current_client.get("totalGB", 0)), 
+                            "expiryTime": int(expiry_time_ms), 
+                            "enable": bool(current_client.get("enable", True)), 
+                            "flow": srv_flow,
+                            "tgId": str(user_id), 
+                            "subId": sub_id,
+                            "limitIp": int(current_client.get("limitIp", 2))
+                        }
+                    else:
+                        client_payload = {
+                            "id": client_uuid, 
+                            "email": email_for_panel, 
+                            "limitIp": int(current_client.get("limitIp", 2)),
+                            "totalGB": int(current_client.get("totalGB", 0)), 
+                            "expiryTime": int(expiry_time_ms), 
+                            "enable": bool(current_client.get("enable", True)), 
+                            "tgId": user_id, 
+                            "subId": sub_id,
+                            "alterId": 0,
+                            "flow": srv_flow
+                        }
+
+                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
+                    
+                    if srv.get("version") == "3x-ui" or has_token:
                         headers["Content-Type"] = "application/json"
                         payload = {
                             "id": int(srv['inbound_id']),
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
-                            await r.text()
+                            update_resp = await r.text()
+                            logging.info(f"Ответ 3x-ui на updateClient: {update_resp}")
                     else:
-                        update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
                             "id": str(srv['inbound_id']),
-                            "settings": json.dumps({"clients": [client_payload]})
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                            await r.text()
+                            update_resp = await r.text()
+
 
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
@@ -3348,7 +3381,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
         # 2. Формируем текст сообщения
         text1 = (
-            f"<b>👋 Привет, {user_mention}, добро пожаловать в наш VPN сервис</b>\n\n"
+            f"<b>👋 Привет, {user_mention} добро пожаловать в наш VPN сервис</b>\n\n"
             "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
             "📖 Выберите действие:\n\n"
             "<pre>Сейчас бот находится на тех. работах</pre>"
@@ -3412,7 +3445,7 @@ async def process_captcha(callback: types.CallbackQuery):
         except Exception: pass
         return
 
-    await callback.answer("✅ Проверка пройдена!")
+    await callback.answer("✅ Проверка пройдена! Нажмите /start")
     
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
