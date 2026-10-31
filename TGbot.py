@@ -1326,30 +1326,29 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Роут, который чаще всего используется в REST API скриптах для MHSanaei
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
+                        # Точный роут для глобального API клиентов в 3x-ui (БЕЗ префикса inbounds)
+                        add_url = f"{panel_url}/{base_path}/panel/api/client/add" if base_path else f"{panel_url}/panel/api/client/add"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # Передаем 'settings' как ОБЪЕКТ (чистый JSON), а не заэкранированную строку!
+                        # Передаем ID инбаунда как целое число в поле id, а settings — строкой JSON
                         payload = {
                             "id": int(srv['inbound_id']), 
-                            "settings": {"clients": [client_payload]}
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка чистого JSON на {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка JSON на глобальный API клиентов 3x-ui: {add_url}")
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
                             status_code = r.status
                             
-                            # Перебор альтернативных роутов во множественном числе (clients), если первый дал 404
-                            if status_code == 404:
-                                alt_url = f"{base_url.rstrip('/')}/panel/api/inbounds/clients/add"
-                                logging.info(f"[ЛОГ КЛИЕНТА] 404, пробуем новый REST роут: {alt_url}")
+                            # Резервный вариант: если бэкенд требует именования inboundId вместо id
+                            if status_code == 404 or "failed validation" in add_resp:
+                                logging.info("[ЛОГ КЛИЕНТА] Пробуем альтернативный ключ inboundId...")
                                 alt_payload = {
                                     "inboundId": int(srv['inbound_id']),
-                                    "clients": [client_payload]
+                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                                 }
-                                async with session.post(alt_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
+                                async with session.post(add_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
                                     add_resp = await r_alt.text()
                                     status_code = r_alt.status
 
@@ -1396,26 +1395,25 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
+                        # Роут глобального API обновления клиентов в 3x-ui
+                        update_url = f"{panel_url}/{base_path}/panel/api/client/update/{client_uuid}" if base_path else f"{panel_url}/panel/api/client/update/{client_uuid}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
                             "id": int(srv['inbound_id']),
-                            "settings": {"clients": [client_payload]}
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
                             status_code = r.status
                             
-                            if status_code == 404:
-                                alt_update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/clients/update/{client_uuid}"
-                                logging.info(f"[ЛОГ КЛИЕНТА] 404 на обновление, пробуем REST роут: {alt_update_url}")
+                            if status_code == 404 or "failed validation" in update_resp:
                                 alt_payload = {
                                     "inboundId": int(srv['inbound_id']),
-                                    "clients": [client_payload]
+                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                                 }
-                                async with session.post(alt_update_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
+                                async with session.post(update_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
                                     update_resp = await r_alt.text()
                                     status_code = r_alt.status
                                     
