@@ -1296,34 +1296,33 @@ async def get_vpn_config_clean(user_id, username=""):
                     logging.info(f"[ЛОГ КЛИЕНТА] Пользователь не найден. Генерируем новый UUID: {client_uuid}, subId: {sub_id}")
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        client_payload = {
-                            "id": client_uuid,
-                            "alterId": 0,
-                            "email": email_for_panel,
-                            "totalGB": 0,
-                            "expiryTime": 0,
-                            "enable": True,
-                            "flow": srv_flow,
-                            "tgId": str(user_id),
-                            "subId": sub_id,
-                            "limitIp": 2
-                        }
+                        # Точный роут добавления из вашей Swagger-документации (image_Zdovsi.png)
+                        add_url = f"{panel_url}/{base_path}/panel/api/clients/add" if base_path else f"{panel_url}/panel/api/clients/add"
+                        headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # В режиме активной куки сессии 3x-ui идеально принимает классическую форму
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        
+                        # Точная структура JSON-тела из примера документации Swagger (image_Zdovsi.png)
                         payload = {
-                            "id": str(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            "client": {
+                                "email": email_for_panel,
+                                "totalGB": 0,
+                                "expiryTime": 0,
+                                "tgId": int(user_id) if str(user_id).isdigit() else 0,
+                                "limitIp": 2,
+                                "limitHwid": 0,
+                                "enable": True,
+                                "id": client_uuid,
+                                "flow": srv_flow,
+                                "subId": sub_id
+                            },
+                            "inboundIds": [int(srv['inbound_id'])]
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Запись в 3x-ui под защищенной сессией кук на {add_url}")
-                        async with session.post(add_url, headers=headers, data=payload, timeout=10) as r:
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка Swagger-JSON добавления на {add_url}")
+                        async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат защищенного addClient 3x-ui: Статус HTTP={r.status}, Ответ='{add_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат /clients/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
-                        # Старая панель x-ui (без лишних параметров вроде limitIp)
+                        # Старая панель x-ui (работает через urlencoded форму)
                         client_payload = {
                             "id": client_uuid, 
                             "email": email_for_panel, 
@@ -1338,7 +1337,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
-                            "id": str(srv['inbound_id']), 
+                            "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
@@ -1350,46 +1349,48 @@ async def get_vpn_config_clean(user_id, username=""):
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        client_payload = {
-                            "id": client_uuid, 
-                            "alterId": 0, 
-                            "email": email_for_panel,
-                            "totalGB": int(current_client.get("totalGB", 0)), 
-                            "expiryTime": int(expiry_time_ms),
-                            "enable": bool(current_client.get("enable", True)), 
-                            "flow": srv_flow,
-                            "tgId": str(user_id), 
-                            "subId": current_client.get("subId", secrets.token_hex(16)), 
-                            "limitIp": int(current_client.get("limitIp", 2))
-                        }
+                        # Из вашей Swagger-документации (image_zfRadq.png): роут обновления требует email в конце URL пути
+                        update_url = f"{panel_url}/{base_path}/panel/api/clients/update/{email_for_panel}" if base_path else f"{panel_url}/panel/api/clients/update/{email_for_panel}"
+                        headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
                         payload = {
-                            "id": str(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            "client": {
+                                "email": email_for_panel,
+                                "totalGB": int(current_client.get("totalGB", 0)),
+                                "expiryTime": int(expiry_time_ms),
+                                "tgId": int(user_id) if str(user_id).isdigit() else 0,
+                                "limitIp": int(current_client.get("limitIp", 2)),
+                                "limitHwid": int(current_client.get("limitHwid", 0)),
+                                "enable": bool(current_client.get("enable", True)),
+                                "id": client_uuid,
+                                "flow": srv_flow,
+                                "subId": current_client.get("subId", secrets.token_hex(16))
+                            },
+                            "inboundIds": [int(srv['inbound_id'])]
                         }
                         
-                        async with session.post(update_url, headers=headers, data=payload, timeout=10) as r:
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка Swagger-JSON обновления на {update_url}")
+                        async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат защищенного updateClient 3x-ui: Статус HTTP={r.status}, Ответ='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат /clients/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
-                        # Старая панель x-ui (без limitIp во избежание 500 ошибки)
+                        # Старая панель x-ui
                         client_payload = {
-                            "id": client_uuid, 
-                            "email": email_for_panel, 
-                            "totalGB": int(current_client.get("totalGB", 0)), 
+                            "id": client_uuid,
+                            "email": email_for_panel,
+                            "limitIp": int(current_client.get("limitIp", 2)),
+                            "totalGB": int(current_client.get("totalGB", 0)),
                             "expiryTime": int(expiry_time_ms),
-                            "enable": bool(current_client.get("enable", True)), 
-                            "tgId": user_id, 
-                            "subId": current_client.get("subId", secrets.token_hex(16)), 
-                            "alterId": 0, 
+                            "enable": bool(current_client.get("enable", True)),
+                            "tgId": user_id,
+                            "subId": current_client.get("subId", secrets.token_hex(16)),
+                            "alterId": 0,
                             "flow": srv_flow
                         }
                         update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
                         client_data = {
-                            "id": str(srv['inbound_id']), 
+                            "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
@@ -1406,7 +1407,6 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 pbk = reality_settings.get("publicKey", srv.get("pbk", ""))
                 
-                # Безопасно вытаскиваем строковые значения из массивов shortIds и serverNames
                 short_ids = reality_settings.get("shortIds", [])
                 if isinstance(short_ids, list) and short_ids:
                     sid = short_ids[0]
@@ -1443,6 +1443,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
