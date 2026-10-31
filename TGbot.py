@@ -1326,17 +1326,17 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # ИСПРАВЛЕНО: Объявление add_url перенесено НАВЕРХ блока 3x-ui до использования!
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/add"
-                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        # Передаем как x-www-form-urlencoded со слэшем на конце для обхода бага валидации протокола
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/"
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
                         payload = {
-                            "id": int(srv['inbound_id']), 
+                            "id": str(srv['inbound_id']), 
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
-                        raw_payload_str = json.dumps(payload, ensure_ascii=False)
-                        logging.info(f"[ЛОГ КЛИЕНТА] JSON Тело запроса для 3x-ui: {raw_payload_str}")
                         
-                        async with session.post(add_url, headers=headers, data=raw_payload_str, timeout=10) as r:
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка формы добавления для 3x-ui на {add_url}")
+                        async with session.post(add_url, headers=headers, data=payload, timeout=10) as r:
                             add_resp = await r.text()
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
@@ -1353,8 +1353,9 @@ async def get_vpn_config_clean(user_id, username=""):
                             "flow": srv_flow
                         }
                         
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/add"
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
                         client_data = {
                             "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
@@ -1382,14 +1383,16 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
+                        # Для обновления в 3x-ui также используем форму со слэшем для стабильности парсинга
                         update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
-                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
                         payload = {
-                            "id": int(srv['inbound_id']),
+                            "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
+                        async with session.post(update_url, headers=headers, data=payload, timeout=10) as r:
                             update_resp = await r.text()
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
@@ -1408,6 +1411,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         
                         update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        
                         client_data = {
                             "id": str(srv['inbound_id']),
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
@@ -1457,6 +1461,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
