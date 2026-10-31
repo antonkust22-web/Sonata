@@ -1326,21 +1326,29 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Для новых 3x-ui роут строго /client/add, контент JSON, а ID инбаунда передается как inboundId
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/add"
+                        # Возвращаем addClient, но передаем ID инбаунда СТРОКОЙ внутри JSON payload
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "inboundId": int(srv['inbound_id']), 
+                            "id": str(srv['inbound_id']), # Важно: в JSON для 3x-ui ID инбаунда должен быть строкой
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка JSON на новый API 3x-ui: {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка API-JSON на 3x-ui: {add_url}")
                         async with session.post(add_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                            
+                            # На случай если на сервере включен строгий роутинг со слэшем
+                            if r.status == 404:
+                                logging.info("[ЛОГ КЛИЕНТА] 404 без слэша, пробуем со слэшем /addClient/")
+                                async with session.post(f"{add_url}/", headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r_slash:
+                                    add_resp = await r_slash.text()
+                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient/ 3x-ui: Статус HTTP={r_slash.status}, Ответ='{add_resp}'")
+                            else:
+                                logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
-                        # Старая панель x-ui (убираем лимит IP из структуры, чтобы не вызывать ошибку 500)
+                        # Старая панель x-ui
                         client_payload = {
                             "id": client_uuid, 
                             "email": email_for_panel, 
@@ -1383,23 +1391,29 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # В новой 3x-ui эндпоинт обновления — /client/update/{uuid}
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/update/{client_uuid}"
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "inboundId": int(srv['inbound_id']),
+                            "id": str(srv['inbound_id']), # Строковой ID инбаунда для JSON апдейта
                             "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
                         
                         async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            
+                            if r.status == 404:
+                                async with session.post(f"{update_url}/", headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r_slash:
+                                    update_resp = await r_slash.text()
+                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient/ 3x-ui: Статус HTTP={r_slash.status}, Ответ='{update_resp}'")
+                            else:
+                                logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
-                        # Старая панель x-ui (чистим структуру от параметров, которые вызывают ошибку 500)
+                        # Старая панель x-ui
                         client_payload = {
                             "id": client_uuid,
                             "email": email_for_panel,
+                            "limitIp": int(current_client.get("limitIp", 2)),
                             "totalGB": int(current_client.get("totalGB", 0)),
                             "expiryTime": int(expiry_time_ms),
                             "enable": bool(current_client.get("enable", True)),
@@ -1461,6 +1475,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
 
 
