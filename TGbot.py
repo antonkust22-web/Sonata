@@ -1326,40 +1326,20 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # В REST API (по токену) слово /panel/ ИСКЛЮЧАЕТСЯ из пути добавления/обновления!
-                        # Правильный роут: /api/client/add
-                        add_url = f"{panel_url}/{base_path}/api/client/add" if base_path else f"{panel_url}/api/client/add"
+                        # Официальный роут MHSanaei со слэшем на конце для JSON-контроллера
+                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/add/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
+                        # Точная структура JSON под валидатор Go (inboundId числом + чистый объект client)
                         payload = {
-                            "id": int(srv['inbound_id']), 
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            "inboundId": int(srv['inbound_id']),
+                            "client": client_payload
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка JSON на истинный REST API 3x-ui: {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка чистого REST JSON для 3x-ui на {add_url}")
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            status_code = r.status
-                            
-                            # Если бэкенд требует inboundId вместо id
-                            if status_code == 404 or "failed validation" in add_resp:
-                                logging.info("[ЛОГ КЛИЕНТА] Пробуем альтернативный ключ inboundId или легаси-роут...")
-                                alt_payload = {
-                                    "inboundId": int(srv['inbound_id']),
-                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                                }
-                                async with session.post(add_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
-                                    if r_alt.status != 404:
-                                        add_resp = await r_alt.text()
-                                        status_code = r_alt.status
-                                    else:
-                                        # Если и тут 404, пробуем чистый легаси /api/inbounds/addClient
-                                        legacy_url = f"{panel_url}/{base_path}/api/inbounds/addClient" if base_path else f"{panel_url}/api/inbounds/addClient"
-                                        async with session.post(legacy_url, headers=headers, json=payload, timeout=10) as r_leg:
-                                            add_resp = await r_leg.text()
-                                            status_code = r_leg.status
-
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат добавления 3x-ui: Статус HTTP={status_code}, Ответ='{add_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/add/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
@@ -1402,35 +1382,18 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # Истинный REST роут обновления: /api/client/update/{uuid}
-                        update_url = f"{panel_url}/{base_path}/api/client/update/{client_uuid}" if base_path else f"{panel_url}/api/client/update/{client_uuid}"
+                        # Официальный роут обновления MHSanaei со слэшем на конце
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/update/{client_uuid}/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
-                            "id": int(srv['inbound_id']),
-                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                            "inboundId": int(srv['inbound_id']),
+                            "client": client_payload
                         }
                         
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            status_code = r.status
-                            
-                            if status_code == 404 or "failed validation" in update_resp:
-                                alt_payload = {
-                                    "inboundId": int(srv['inbound_id']),
-                                    "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                                }
-                                async with session.post(update_url, headers=headers, json=alt_payload, timeout=10) as r_alt:
-                                    if r_alt.status != 404:
-                                        update_resp = await r_alt.text()
-                                        status_code = r_alt.status
-                                    else:
-                                        legacy_up_url = f"{panel_url}/{base_path}/api/inbounds/updateClient/{client_uuid}" if base_path else f"{panel_url}/api/inbounds/updateClient/{client_uuid}"
-                                        async with session.post(legacy_up_url, headers=headers, json=payload, timeout=10) as r_leg:
-                                            update_resp = await r_leg.text()
-                                            status_code = r_leg.status
-                                    
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат обновления 3x-ui: Статус HTTP={status_code}, Ответ='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/update/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
