@@ -1326,20 +1326,19 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Официальный роут MHSanaei со слэшем на конце для JSON-контроллера
-                        add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/add/"
+                        # ИСТИННЫЙ РОУТ 3X-UI: panel/api/client/add (inbounds ПОЛНОСТЬЮ убрано)
+                        add_url = f"{panel_url}/{base_path}/panel/api/client/add" if base_path else f"{panel_url}/panel/api/client/add"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # Точная структура JSON под валидатор Go (inboundId числом + чистый объект client)
                         payload = {
                             "inboundId": int(srv['inbound_id']),
                             "client": client_payload
                         }
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка чистого REST JSON для 3x-ui на {add_url}")
+                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка на изолированный REST API 3x-ui: {add_url}")
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/add/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат глобального client/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
@@ -1382,8 +1381,8 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # Официальный роут обновления MHSanaei со слэшем на конце
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/client/update/{client_uuid}/"
+                        # ИСТИННЫЙ РОУТ ОБНОВЛЕНИЯ 3X-UI: panel/api/client/update/{uuid}
+                        update_url = f"{panel_url}/{base_path}/panel/api/client/update/{client_uuid}" if base_path else f"{panel_url}/panel/api/client/update/{client_uuid}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
@@ -1393,7 +1392,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/update/ 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат глобального client/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
