@@ -1252,11 +1252,12 @@ async def get_vpn_config_clean(user_id, username=""):
 
                 # --- 2. ПОЛУЧЕНИЕ ДАННЫХ ИНБАУНДА ---
                 if srv.get("version") == "3x-ui" or has_token:
-                    get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list"
+                    # Для стабильности в 3x-ui эндпоинт списка инбаундов тоже лучше запрашивать со слэшем на конце
+                    get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list/"
                     logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Запрос списка инбаундов 3x-ui: {get_url}")
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
-                        logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Ответ /list: Статус={resp.status}")
+                        logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Ответ /list/: Статус={resp.status}")
                         if resp.status == 401 or resp.status == 403:
                             logging.error(f"[ЛОГ ОШИБКИ] Отказано в доступе (401/403) на сервере {srv['id']}.")
                             continue
@@ -1339,9 +1340,6 @@ async def get_vpn_config_clean(user_id, username=""):
                             "flow": srv_flow
                         }
 
-                    add_url = f"{base_url.rstrip('/')}/panel/api/inbounds/addClient"
-                    logging.info(f"[ЛОГ КЛИЕНТА] Отправка запроса добавления на {add_url}")
-                    
                     if srv.get("version") == "3x-ui" or has_token:
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         payload = {
@@ -1350,6 +1348,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         }
                         raw_payload_str = json.dumps(payload, ensure_ascii=False)
                         logging.info(f"[ЛОГ КЛИЕНТА] JSON Тело запроса для 3x-ui: {raw_payload_str}")
+
                         
                         async with session.post(add_url, headers=headers, data=raw_payload_str, timeout=10) as r:
                             add_resp = await r.text()
@@ -1406,9 +1405,9 @@ async def get_vpn_config_clean(user_id, username=""):
                                 "id": int(srv['inbound_id']),
                                 "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                             }
-                            async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
-                                update_resp = await r.text()
-                                logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                                async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
+                                    update_resp = await r.text()
+                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
                         else:
                             headers["Content-Type"] = "application/x-www-form-urlencoded"
                             client_data = {
@@ -1418,7 +1417,9 @@ async def get_vpn_config_clean(user_id, username=""):
                             async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                                 update_resp = await r.text()
                                 logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
- 
+
+                # Безопасно получаем время истечения (для новых клиентов current_client равен None)
+                expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
                 if expiry_time_ms > 0:
                     final_expiry_time_ms = expiry_time_ms
 
@@ -1430,13 +1431,12 @@ async def get_vpn_config_clean(user_id, username=""):
                 
                 # Если в настройках инбаунда pbk/sid/sni пустые, берем дефолты из конфига SERVERS
                 pbk = reality_settings.get("publicKey", srv.get("pbk", ""))
-                sid = srv.get("sid", "")
+                
                 if isinstance(reality_settings.get("shortIds"), list) and reality_settings["shortIds"]:
                     sid = reality_settings["shortIds"][0]
                 else:
                     sid = srv.get("sid", "")
                     
-                sni = srv.get("sni", "google.com")
                 server_names = reality_settings.get("serverNames", [])
                 if server_names:
                     sni = server_names[0]
@@ -1470,6 +1470,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
 
   
 
