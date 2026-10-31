@@ -1399,16 +1399,17 @@ async def get_vpn_config_clean(user_id, username=""):
                         update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
                         logging.info(f"[ЛОГ КЛИЕНТА] Отправка запроса обновления на {update_url}")
                         
-                        if srv.get("version") == "3x-ui" or has_token:
-                            headers["Content-Type"] = "application/json; charset=utf-8"
-                            payload = {
-                                "id": int(srv['inbound_id']),
-                                "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                            }
-                                async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
-                                    update_resp = await r.text()
-                                    logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
-                        else:
+                    if srv.get("version") == "3x-ui" or has_token:
+                        headers["Content-Type"] = "application/json; charset=utf-8"
+                        payload = {
+                            "id": int(srv['inbound_id']),
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
+                        }
+                        # ИСПРАВЛЕНО: Убран лишний отступ. Теперь блок стоит на уровне с payload
+                        async with session.post(update_url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=10) as r:
+                            update_resp = await r.text()
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                    else:
                             headers["Content-Type"] = "application/x-www-form-urlencoded"
                             client_data = {
                                 "id": str(srv['inbound_id']),
@@ -3387,12 +3388,10 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
         # 1. Сначала создаем синюю ссылку на профиль пользователя
         user_name = message.from_user.first_name
-        user_id = message.from_user.id
-        user_mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
         # 2. Формируем текст сообщения
         text1 = (
-            f"<b>👋 Привет, {user_mention} добро пожаловать в наш VPN сервис</b>\n\n"
+            f"<b>👋 Привет {user_name}, добро пожаловать в наш VPN сервис</b>\n\n"
             "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
             "📖 Выберите действие:\n\n"
             "<pre>Сейчас бот находится на тех. работах</pre>"
