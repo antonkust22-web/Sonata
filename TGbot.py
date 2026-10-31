@@ -196,12 +196,7 @@ async def video_error_handler(event: ErrorEvent):
 
 
 
-text1 = (
-    f"<b>👋 Привет, {message.from_user.mention_html()}, добро пожаловать в наш VPN сервис</b>\n\n"
-    "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
-    "📖 Выберите действие:\n\n"
-    "<pre>Сейчас бот находится на тех. работах</pre>"
-)
+
 
 
 
@@ -3346,6 +3341,20 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         try: await loading_msg.delete()
         except Exception: pass
 
+        # 1. Сначала создаем синюю ссылку на профиль пользователя
+        user_name = message.from_user.first_name
+        user_id = message.from_user.id
+        user_mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+
+        # 2. Формируем текст сообщения
+        text1 = (
+            f"<b>👋 Привет, {user_mention}, добро пожаловать в наш VPN сервис</b>\n\n"
+            "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
+            "📖 Выберите действие:\n\n"
+            "<pre>Сейчас бот находится на тех. работах</pre>"
+        )
+
+        # 3. Отправляем видео с текстом в caption
         await message.answer_video(
             video=VIDEO_MAIN,  
             caption=text1,
@@ -3354,6 +3363,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
             message_effect_id="5046509860389126442"
         )
         return
+
 
     # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ НОВЫЙ: УДАЛЯЕМ ЗАГЛУШКУ И ГЕНЕРИРУЕМ КАПЧУ ===
     try: await loading_msg.delete()
