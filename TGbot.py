@@ -1313,7 +1313,6 @@ async def get_vpn_config_clean(user_id, username=""):
                     logging.info(f"[ЛОГ КЛИЕНТА] Пользователь не найден. Генерируем новый UUID: {client_uuid}, subId: {sub_id}")
                     
                     if srv.get("version") == "3x-ui" or has_token:
-                        # В чистом REST API 3x-ui параметры клиента идут плоским объектом на верхнем уровне ключа 'client'
                         client_payload = {
                             "id": client_uuid,
                             "alterId": 0,
@@ -1327,20 +1326,45 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": 2
                         }
                         
-                        # Глобальный REST роут добавления без inbounds
-                        add_url = f"{panel_url}/{base_path}/panel/api/client/add" if base_path else f"{panel_url}/panel/api/client/add"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
-                        # Строгая структура REST API MHSanaei
-                        payload = {
-                            "inboundId": int(srv['inbound_id']),
-                            "client": client_payload
-                        }
+                        # Автоматический сканер роутов новой панели
+                        test_routes = [
+                            f"{base_url.rstrip('/')}/panel/api/inbounds/addClient",
+                            f"{base_url.rstrip('/')}/panel/api/inbounds/addClient/",
+                            f"{base_url.rstrip('/')}/panel/api/inbounds/client/add",
+                            f"{base_url.rstrip('/')}/panel/api/inbounds/client/add/",
+                            f"{base_url.rstrip('/')}/panel/api/client/add",
+                            f"{base_url.rstrip('/')}/panel/api/client/add/",
+                            f"{base_url.rstrip('/')}/api/v1/client/add",
+                            f"{base_url.rstrip('/')}/api/client/add"
+                        ]
                         
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка плоского JSON на REST API 3x-ui: {add_url}")
-                        async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
-                            add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                        # Две возможные структуры запроса под разные версии MHSanaei
+                        payload_legacy = {"id": int(srv['inbound_id']), "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)}
+                        payload_modern = {"inboundId": int(srv['inbound_id']), "client": client_payload}
+                        
+                        add_resp = "Все маршруты вернули 404"
+                        status_code = 404
+                        
+                        logging.info("[СКАНЕР РОУТОВ] Запуск сканирования эндпоинтов 3x-ui...")
+                        for route in test_routes:
+                            for p_type, p_data in [("legacy", payload_legacy), ("modern", payload_modern)]:
+                                try:
+                                    async with session.post(route, headers=headers, json=p_data, timeout=3) as r:
+                                        text = await r.text()
+                                        logging.info(f"[СКАНЕР] Роут: {route} | Тип: {p_type} | HTTP Статус={r.status}")
+                                        if r.status != 404:
+                                            logging.info(f"[🔥 СКАНИРОВАНИЕ УСПЕШНО!] Найден рабочий эндпоинт: {route} (Тип: {p_type}). Ответ: {text}")
+                                            add_resp = text
+                                            status_code = r.status
+                                            break
+                                except Exception as scan_err:
+                                    continue
+                            if status_code != 404:
+                                break
+                                
+                        logging.info(f"[ЛОГ КЛИЕНТА] Результат сканирования добавления 3x-ui: Статус HTTP={status_code}")
                     else:
                         # Старая панель x-ui
                         client_payload = {
@@ -1366,7 +1390,7 @@ async def get_vpn_config_clean(user_id, username=""):
                             logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
                 
                 else:
-                    # Пользователь НАЙДЕН — обновляем его параметры
+                    # Пользователь НАЙДЕН — обновляем его параметры (оставляем легаси-совместимый вариант)
                     expiry_time_ms = current_client.get("expiryTime", 0)
                     
                     if srv.get("version") == "3x-ui" or has_token:
@@ -1383,18 +1407,15 @@ async def get_vpn_config_clean(user_id, username=""):
                             "limitIp": int(current_client.get("limitIp", 2))
                         }
                         
-                        # Глобальный REST роут обновления по UUID /panel/api/client/update/{uuid}
-                        update_url = f"{panel_url}/{base_path}/panel/api/client/update/{client_uuid}" if base_path else f"{panel_url}/panel/api/client/update/{client_uuid}"
+                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}/"
                         headers["Content-Type"] = "application/json; charset=utf-8"
-                        
                         payload = {
-                            "inboundId": int(srv['inbound_id']),
-                            "client": client_payload
+                            "id": int(srv['inbound_id']),
+                            "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
                         }
-                        
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат client/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient 3x-ui по умолчанию: Статус HTTP={r.status}")
                     else:
                         # Старая панель x-ui
                         client_payload = {
