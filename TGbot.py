@@ -1258,9 +1258,10 @@ async def get_vpn_config_clean(user_id, username=""):
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
                         if resp.status in:
-                            logging.error(f"Ошибка авторизации на сервере {srv['id']}.")
+                            logging.error(f"Ошибка авторизации на сервере {srv['id']}. Код: {resp.status}")
                             continue
                         res_json = json.loads(resp_text)
+
                     
                     if not res_json.get("success"):
                         continue
