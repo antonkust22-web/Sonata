@@ -102,45 +102,162 @@ dp = Dispatcher()
 
  
 
-DB_FILE = "bot_data.json"
+# ======================================================================
+# 🎬 ВИДЕО ДЛЯ КАЖДОГО ЭКРАНА (хранится в bot_data.json рядом с БД, на Amvera — в /data)
+# ======================================================================
+DB_FILE = os.path.join(os.path.dirname(DB_PATH), "bot_data.json")
+MSG_EFFECT = "5046509860389126442"
+_OLD_DEFAULT_MAIN = "BAACAgIAAxkBAAIOpWqgNjSsk8bIJe5cwxpzRMEnoQABbQACN6UAAuJaAAFJOmUXBuvE6gk9BA"
 
-# Функция автоматической загрузки ID при старте бота
-def load_startup_video_id() -> str:
-    if not os.path.exists(DB_FILE):
-        # Твой изначальный ID, пока файла еще нет на сервере
-        return "BAACAgIAAxkBAAIOpWqgNjSsk8bIJe5cwxpzRMEnoQABbQACN6UAAuJaAAFJOmUXBuvE6gk9BA"
-    with open(DB_FILE, "r") as f:
-        data = json.load(f)
-        return data.get("video_main", "BAACAgIAAxkBAAIOpWqgNjSsk8bIJe5cwxpzRMEnoQABbQACN6UAAuJaAAFJOmUXBuvE6gk9BA")
+# (ключ, подпись для админа) — порядок = порядок вопросов в /setvideos
+VIDEO_SLOTS = [
+    ("welcome", "👋 Приветствие (самое длинное, после капчи)"),
+    ("main",    "🏠 Главное меню (/start и кнопка «Назад»)"),
+    ("connect", "📲 Подключиться (верхняя вставка)"),
+    ("cabinet", "👤 Личный кабинет"),
+    ("promo",   "🎟 Активация промокода"),
+    ("buy",     "💳 Покупка подписки / тарифы"),
+    ("info",    "📖 Информация и поддержка"),
+]
+VIDEO_TITLES = dict(VIDEO_SLOTS)
 
-# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ — теперь это ОБЫЧНАЯ строка str, Pydantic её примет везде
-VIDEO_MAIN = load_startup_video_id()
+VIDEOS: dict = {}   # {"main": {"id": "...", "kind": "video"|"animation"}, ...}
 
-# Функция сохранения нового ID (обновляет и файл, и переменную в оперативной памяти)
-def save_new_video_id(new_id: str):
-    global VIDEO_MAIN
-    VIDEO_MAIN = new_id  # Мгновенно меняем значение во всем боте (для всех кнопок и /start)
-    with open(DB_FILE, "w") as f:
-        json.dump({"video_main": new_id}, f)
+def load_videos():
+    global VIDEOS
+    VIDEOS = {}
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            VIDEOS = dict(data.get("videos", {}))
+            if "main" not in VIDEOS and data.get("video_main"):   # миграция со старого формата
+                VIDEOS["main"] = {"id": data["video_main"], "kind": "video"}
+        except Exception as e:
+            logging.error(f"Не удалось прочитать {DB_FILE}: {e}")
+    if "main" not in VIDEOS:
+        VIDEOS["main"] = {"id": _OLD_DEFAULT_MAIN, "kind": "video"}
+
+def save_videos():
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump({"videos": VIDEOS}, f, ensure_ascii=False, indent=2)
+
+def set_video(key: str, file_id: str, kind: str = "video"):
+    VIDEOS[key] = {"id": file_id, "kind": kind}
+    save_videos()
+
+def get_video(key: str):
+    """Видео экрана; если для него ещё не загружено — берём видео главного меню."""
+    return VIDEOS.get(key) or VIDEOS.get("main")
+
+load_videos()
+
+from aiogram.types import InputMediaVideo, InputMediaAnimation
+
+async def send_screen(chat_id: int, key: str, text: str, kb=None, effect: bool = False):
+    """Отправляет НОВОЕ сообщение с видео экрана key (или просто текст, если видео не отправилось)."""
+    v = get_video(key)
+    extra = {"message_effect_id": MSG_EFFECT} if effect else {}
+    if v:
+        try:
+            if v["kind"] == "animation":
+                await bot.send_animation(chat_id, v["id"], caption=text, reply_markup=kb, parse_mode="HTML", **extra)
+            else:
+                await bot.send_video(chat_id, v["id"], caption=text, reply_markup=kb, parse_mode="HTML", **extra)
+            return
+        except Exception as e:
+            logging.error(f"Ошибка отправки видео '{key}': {e}")
+    await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML", **extra)
+
+async def show_screen(callback: types.CallbackQuery, key: str, text: str, kb=None):
+    """Показывает экран: меняет видео+подпись в том же сообщении, иначе удаляет старое и шлёт новое."""
+    msg = callback.message
+    v = get_video(key)
+    if v and (msg.video or msg.animation):
+        media_cls = InputMediaAnimation if v["kind"] == "animation" else InputMediaVideo
+        try:
+            await msg.edit_media(media=media_cls(media=v["id"], caption=text, parse_mode="HTML"), reply_markup=kb)
+            return
+        except TelegramBadRequest as e:
+            if "not modified" in str(e).lower():
+                return
+            logging.warning(f"edit_media '{key}' не удался, шлю заново: {e}")
+        except Exception as e:
+            logging.warning(f"edit_media '{key}' ошибка: {e}")
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await send_screen(msg.chat.id, key, text, kb)
 
 
+# ---------- Команда /setvideos: бот по очереди просит видео на каждую кнопку ----------
+class VideoSetup(StatesGroup):
+    waiting = State()
 
+def _slot_prompt(i: int) -> str:
+    key, title = VIDEO_SLOTS[i]
+    return (f"🎬 <b>Видео {i + 1} из {len(VIDEO_SLOTS)}</b>\n{title}\n\n"
+            "Пришли видео (как видео, не файлом).\n"
+            "/skip — оставить как есть, /cancel_videos — выйти.")
 
+async def _next_slot(message: types.Message, state: FSMContext, idx: int):
+    if idx >= len(VIDEO_SLOTS):
+        await state.clear()
+        await message.answer("✅ <b>Готово!</b> Все видео сохранены. Проверь: /videos", parse_mode="HTML")
+        return
+    await state.update_data(idx=idx)
+    await message.answer(_slot_prompt(idx), parse_mode="HTML")
 
-# 1. ХЕНДЛЕР ПРИЕМА НОВОГО ВИДЕО (Ловит видео только от тебя)
-@dp.message(F.video)
-async def auto_replace_video_id(message: types.Message):
+@dp.message(Command("setvideos"))
+async def cmd_setvideos(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        return # Обычные пользователи мимо
-        
-    new_file_id = message.video.file_id
-    save_new_video_id(new_file_id) # Перезаписывает файл и переменную VIDEO_MAIN в памяти
-    
-    await message.reply(
-        f"✅ <b>ID видео успешно обновлен везде (включая кнопку Назад)!</b>\n\n"
-        f"Новый активный ID: <code>{new_file_id}</code>",
-        parse_mode="HTML"
-    )
+        return
+    await state.set_state(VideoSetup.waiting)
+    await message.answer("Начинаем загрузку видео для экранов. Присылай по одному — после каждого я спрошу следующее.")
+    await _next_slot(message, state, 0)
+
+@dp.message(Command("videos"))
+async def cmd_videos(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    lines = [f"{'✅' if k in VIDEOS else '❌'} {t}" for k, t in VIDEO_SLOTS]
+    await message.answer("<b>Видео экранов:</b>\n" + "\n".join(lines) + "\n\n/setvideos — загрузить заново", parse_mode="HTML")
+
+@dp.message(VideoSetup.waiting, Command("cancel_videos"))
+async def cmd_cancel_videos(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Загрузка видео отменена.")
+
+@dp.message(VideoSetup.waiting, Command("skip"))
+async def cmd_skip_video(message: types.Message, state: FSMContext):
+    idx = (await state.get_data()).get("idx", 0)
+    await _next_slot(message, state, idx + 1)
+
+@dp.message(VideoSetup.waiting, F.video | F.animation)
+async def receive_slot_video(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    idx = (await state.get_data()).get("idx", 0)
+    key = VIDEO_SLOTS[idx][0]
+    if message.video:
+        set_video(key, message.video.file_id, "video")
+    else:
+        set_video(key, message.animation.file_id, "animation")
+    await message.answer(f"✅ Сохранено: {VIDEO_TITLES[key]}")
+    await _next_slot(message, state, idx + 1)
+
+@dp.message(VideoSetup.waiting)
+async def video_setup_wrong_input(message: types.Message):
+    await message.answer("Жду видео (отправь именно как видео, не файлом). /skip — пропустить, /cancel_videos — выйти.")
+
+# Видео вне режима /setvideos — просто подсказка (раньше оно молча заменяло видео главного меню)
+@dp.message(F.video | F.animation)
+async def video_outside_setup(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply("Чтобы обновить видео экранов, используй /setvideos — я буду спрашивать по одному.")
+
 
 # 2. ПЕРЕХВАТЧИК ОШИБОК (Срабатывает, если Telegram не смог отправить старое видео)
 @dp.errors()
@@ -156,9 +273,9 @@ async def video_error_handler(event: ErrorEvent):
             try:
                 await event.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text="⚠️ <b>Внимание! Приветственное видео устарело или удалено!</b>\n\n"
+                    text="⚠️ <b>Внимание! Видео устарело или удалено!</b>\n\n"
                          "Пользователь нажал кнопку или ввел /start, но видео не отправилось.\n"
-                         "Пришли мне новое видео файлом прямо сюда, и я автоматически обновлю ID.",
+                         "Отправь /setvideos и пришли видео заново — я обновлю ID.",
                     parse_mode="HTML"
                 )
             except Exception as admin_err:
@@ -172,7 +289,9 @@ async def video_error_handler(event: ErrorEvent):
                 chat_id = event.update.callback_query.message.chat.id
 
             if chat_id:
-                from TGbot import text1, main_kb  # Подгружаем твои тексты и кнопки панели
+                text1 = ("<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
+                         "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
+                         "📖 Выберите действие:")
                 try:
                     await event.bot.send_message(
                         chat_id=chat_id,
@@ -1850,6 +1969,7 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/find_user [username]</code> — 🔍 Найти информацию о клиенте по юзернейму пользователя\n"
         "├ <code>/status_db</code> — Узнать статус Базы Данных\n"
         "├ <code>/top</code> — Список людей которые привели больше всех рефераллов\n"
+        "├ <code>/setvideos</code> — Выставление новых файлов видео\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -3506,13 +3626,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
         )
 
         # 3. Отправляем видео с текстом в caption
-        await message.answer_video(
-            video=VIDEO_MAIN,  
-            caption=text1,
-            reply_markup=main_kb(), 
-            parse_mode="HTML",
-            message_effect_id="5046509860389126442"
-        )
+        await send_screen(message.chat.id, "main", text1, main_kb(), effect=True)
         return
 
 
@@ -3718,14 +3832,7 @@ async def process_captcha(callback: types.CallbackQuery):
 
     # 4. Отправка главного сообщения с медиа-эффектом через bot.send_video
     final_caption = f"{ref_bonus_text}{text1}"
-    await callback.bot.send_video(
-        chat_id=user_id,
-        video=VIDEO_MAIN,  
-        caption=final_caption,
-        reply_markup=main_kb(), 
-        parse_mode="HTML",
-        message_effect_id="5046509860389126442"
-    )
+    await send_screen(user_id, "welcome", final_caption, main_kb(), effect=True)
 
 
 
@@ -3756,10 +3863,7 @@ async def enter_promo_callback(callback: types.CallbackQuery, state: FSMContext)
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
     
-    if callback.message.caption:
-        await callback.message.edit_caption(caption=text, reply_markup=back_kb, parse_mode="HTML")
-    else:
-        await callback.message.edit_text(text=text, reply_markup=back_kb, parse_mode="HTML")
+    await show_screen(callback, "promo", text, back_kb)
 
 
 
@@ -3882,10 +3986,7 @@ async def cabinet(callback: types.CallbackQuery):
         kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
 
     try:
-        if callback.message.caption:
-            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+        await show_screen(callback, "cabinet", text, kb)
     except TelegramBadRequest:
         pass
 
@@ -4233,6 +4334,9 @@ async def connect(callback: types.CallbackQuery):
         # Если до конца подписки осталось больше 360 дней — принудительно ставим Безлимит (999)
         if (expiry_seconds - current_time_now) > (360 * 24 * 60 * 60):
             calculated_device_limit = 999
+        elif expiry_seconds <= current_time_now and not _is_limit_exempt(user_id, db_data[5] if (db_data and len(db_data) > 5) else None):
+            # Подписка закончилась — лимит откатываем к стандартному (5), 999/докупленные слоты больше не действуют
+            calculated_device_limit = DEFAULT_DEVICE_LIMIT
         else:
             # Иначе берем из БД лимит устройств (индекс 10 по вашей структуре), чтобы не сбросить купленные слоты
             calculated_device_limit = db_data[10] if (db_data and len(db_data) > 10 and db_data[10] is not None) else 5
@@ -4288,7 +4392,7 @@ async def connect(callback: types.CallbackQuery):
             "<b>Нажмите один раз для продолжения.</b>"
         )
 
-        await callback.message.answer(text=text_os, reply_markup=kb_os, parse_mode="HTML")
+        await send_screen(callback.message.chat.id, "connect", text_os, kb_os)
             
     except Exception as e:
         logging.error(f"Критическая ошибка в connect: {e}", exc_info=True)
@@ -4764,23 +4868,8 @@ async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext = N
         pass  # Если сообщение старое и удалить нельзя, просто идем дальше
         
     # 2. Отправляем главное меню заново точно так же, как в команде /start
-    try:
-        await callback.message.answer_video(
-            video=VIDEO_MAIN,  # Используется ваша переменная с file_id или URL видео
-            caption=text,
-            reply_markup=main_kb(),
-            parse_mode="HTML",
-            message_effect_id="5046509860389126442"
-        )
-    except Exception as e:
-        logging.error(f"Ошибка отправки видео при возврате в меню: {e}")
-        # Запасной вариант: если видео упадет, отправляем хотя бы текст с кнопками
-        await callback.message.answer(
-            text=text,
-            reply_markup=main_kb(),
-            parse_mode="HTML",
-            message_effect_id="5046509860389126442"
-        )
+    # send_screen сам откатывается на текст, если видео не отправилось
+    await send_screen(callback.message.chat.id, "main", text, main_kb(), effect=True)
 
 
 
@@ -4808,7 +4897,7 @@ async def info(callback: types.CallbackQuery):
     ])
     
     try:
-        await callback.message.edit_caption(caption=text, reply_markup=info_kb, parse_mode="HTML")
+        await show_screen(callback, "info", text, info_kb)
     except Exception:
         pass
 
@@ -4901,10 +4990,7 @@ async def show_buy_options(callback: types.CallbackQuery):
         "<blockquote>• <b>Расширить лимит</b> — покупка дополнительных слотов для одновременного подключения новых устройств.</blockquote>"
     )
     
-    try:
-        await callback.message.edit_text(text=text, reply_markup=kb_buy, parse_mode="HTML")
-    except Exception:
-        await callback.message.answer(text=text, reply_markup=kb_buy, parse_mode="HTML")
+    await show_screen(callback, "buy", text, kb_buy)
 
 
 
@@ -5121,8 +5207,6 @@ async def subscription(callback: types.CallbackQuery):
     await callback.answer()
     
     user_id = callback.from_user.id
-    old_video = callback.message.video.file_id if callback.message.video else None
-    
     try:
         await callback.message.delete()
     except Exception:
@@ -5201,14 +5285,7 @@ async def subscription(callback: types.CallbackQuery):
     )
     
     # --- 5. ОТПРАВКА С ВИДЕО ИЛИ ОБЫЧНЫМ ТЕКСТОМ ---
-    if old_video:
-        try:
-            await callback.message.answer_video(video=old_video, caption=caption_text, reply_markup=buy_kb, parse_mode="HTML")
-            return
-        except Exception as e:
-            logging.error(f"Не удалось отправить старое video в меню тарифов: {e}")
-            
-    await callback.message.answer(text=caption_text, reply_markup=buy_kb, parse_mode="HTML")
+    await send_screen(callback.message.chat.id, "buy", caption_text, buy_kb)
 
 
 
@@ -5455,6 +5532,15 @@ async def process_successful_payment(message: types.Message):
             user_data_before = get_user_from_db(user_id)
             # Извлекаем текущий лимит из 10-й колонки SQLite
             current_db_limit = user_data_before[10] if (user_data_before and len(user_data_before) > 10 and user_data_before[10] is not None) else 5
+
+            # 🔄 Если к моменту оплаты прошлая подписка уже истекла — старый лимит (999/докупленные слоты) не сохраняем
+            try:
+                _old_exp = int(user_data_before[4]) if (user_data_before and user_data_before[4] is not None) else 0
+            except (ValueError, TypeError):
+                _old_exp = 0
+            _old_role = user_data_before[5] if (user_data_before and len(user_data_before) > 5) else None
+            if _old_exp > 0 and _old_exp <= int(time.time()) and not _is_limit_exempt(user_id, _old_role):
+                current_db_limit = DEFAULT_DEVICE_LIMIT
             
             # 🔥 ЗАЩИТА: Если у пользователя уже безлимит (999) or лимит выше, оставляем его!
             if current_db_limit >= 999 or current_db_limit > device_limit:
@@ -6796,6 +6882,51 @@ async def scheduler(bot):
 
 
 
+# =====================================================================
+# 🔄 ОТКАТ ЛИМИТА УСТРОЙСТВ ПОСЛЕ ОКОНЧАНИЯ ПОДПИСКИ (999 / докупленные слоты -> 5)
+# =====================================================================
+DEFAULT_DEVICE_LIMIT = 5
+LIMIT_EXEMPT_ROLES = ("creator", "admin", "ambassador", "partner")   # этим ролям лимит не трогаем
+
+def _is_limit_exempt(user_id, role) -> bool:
+    return user_id == ADMIN_ID or (role or "user") in LIMIT_EXEMPT_ROLES
+
+async def reset_expired_device_limits() -> int:
+    """Всем, у кого подписка закончилась, а лимит устройств не равен 5 — возвращает 5 (в БД и на сайте)."""
+    now = int(time.time())
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT user_id, github_raw_url, expiry_time, role FROM users "
+        "WHERE expiry_time > 0 AND expiry_time <= ? AND device_limit IS NOT NULL AND device_limit != ?",
+        (now, DEFAULT_DEVICE_LIMIT)
+    )
+    rows = [r for r in cursor.fetchall() if not _is_limit_exempt(r[0], r[3])]
+    for user_id, _sub, _exp, _role in rows:
+        cursor.execute("UPDATE users SET device_limit = ? WHERE user_id = ?", (DEFAULT_DEVICE_LIMIT, user_id))
+    conn.commit()
+    conn.close()
+
+    for user_id, sub_id, expiry, _role in rows:
+        logging.info(f"🔄 [ЛИМИТ] Подписка {user_id} истекла — лимит устройств сброшен до {DEFAULT_DEVICE_LIMIT}")
+        if sub_id:
+            try:
+                await send_sub_to_website(sub_id, "", expiry, device_limit=DEFAULT_DEVICE_LIMIT)
+            except Exception as e:
+                logging.error(f"Не удалось передать сброшенный лимит на сайт для {user_id}: {e}")
+    return len(rows)
+
+async def device_limit_watchdog():
+    """Проверка каждые 15 минут (и сразу после запуска бота)."""
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await reset_expired_device_limits()
+        except Exception as e:
+            logging.error(f"Ошибка отката лимитов устройств: {e}")
+        await asyncio.sleep(15 * 60)
+
+
 from db_partners import init_partner_db
 
 # Вызывать строго ПЕРЕД запуском бота (перед start_polling)
@@ -6827,6 +6958,7 @@ async def main():
     # 2. ЗАПУСК ПЛАНИРОВЩИКА (Сначала запускаем фоновую задачу)
     asyncio.create_task(scheduler(bot))
     logging.info("Фоновый планировщик успешно запущен")
+    asyncio.create_task(device_limit_watchdog())   # откат лимита устройств после окончания подписки
 
 
 
@@ -6853,5 +6985,3 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
