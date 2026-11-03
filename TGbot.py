@@ -1969,7 +1969,6 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/find_user [username]</code> — 🔍 Найти информацию о клиенте по юзернейму пользователя\n"
         "├ <code>/status_db</code> — Узнать статус Базы Данных\n"
         "├ <code>/top</code> — Список людей которые привели больше всех рефераллов\n"
-        "├ <code>/setvideos</code> — Выставление новых файлов видео\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -4457,10 +4456,7 @@ async def process_os_choice(callback: types.CallbackQuery):
             "<b>Рекомендуется INCY или Happ.</b>"
         )
         
-        try:
-            await callback.message.edit_text(text=text_apps, reply_markup=kb_apps, parse_mode="HTML")
-        except Exception:
-            await callback.message.answer(text=text_apps, reply_markup=kb_apps, parse_mode="HTML")
+        await show_screen(callback, "connect", text_apps, kb_apps)   # то же видео «Подключиться»
             
     except Exception as e:
         logging.error(f"Критическая ошибка в process_os_choice: {e}", exc_info=True)
@@ -4520,10 +4516,7 @@ async def save_user_preferences(callback: types.CallbackQuery, state: FSMContext
             "3. Экран телевизора покажет <b>5-значный код</b>.\n\n"
             "✍️ <b>Просто напишите этот код сообщением в чат:</b>"
         )
-        try:
-            await callback.message.edit_text(text=text_atv, reply_markup=kb_cancel, parse_mode="HTML")
-        except Exception:
-            await callback.message.answer(text=text_atv, reply_markup=kb_cancel, parse_mode="HTML")
+        await show_screen(callback, "connect", text_atv, kb_cancel)
         return  # Завершаем выполнение хендлера фоном, ждем текст
 
     # 🤖 ВЕТКА ANDROID TV
@@ -4538,10 +4531,7 @@ async def save_user_preferences(callback: types.CallbackQuery, state: FSMContext
             "3. На ТВ сгенерируется <b>5-значный код сопряжения</b>.\n\n"
             "✍️ <b>Напишите этот код сообщением в чат:</b>"
         )
-        try:
-            await callback.message.edit_text(text=text_antv, reply_markup=kb_cancel, parse_mode="HTML")
-        except Exception:
-            await callback.message.answer(text=text_antv, reply_markup=kb_cancel, parse_mode="HTML")
+        await show_screen(callback, "connect", text_antv, kb_cancel)
         return  # Завершаем выполнение хендлера фоном, ждем текст
 
     # Для всех остальных устройств (iOS, Android, Windows, macOS, Linux) вызываем стандартный финальный экран
@@ -4667,7 +4657,7 @@ async def process_final_screen(callback: types.CallbackQuery, user_id, username,
     except Exception: 
         pass
         
-    await callback.message.answer(text=text, reply_markup=kb, parse_mode="HTML")
+    await send_screen(callback.message.chat.id, "connect", text, kb)
 
 
 
@@ -6985,3 +6975,5 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+
