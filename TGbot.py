@@ -1304,7 +1304,7 @@ SERVERS = [
         "panel_user": "Asad",  
         "panel_password": "5420",  
         "inbound_id": 1,  
-        "my_ip": "51.250.89.217",  
+        "my_ip": "51.250.65.49",  
         "pbk": "Dfr_ZiYS76nGhCyu3OpWJPYqwr4An2e5qwKG_5KwixA",  
         "sid": "2c87d277",  
         "sni": "s.microsoft.com",  
