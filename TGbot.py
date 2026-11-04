@@ -1942,9 +1942,9 @@ async def creator_panel_help(message: types.Message):
     
     help_text = (
         "👑 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ВЛАДЕЛЬЦА (CREATOR)</b>\n"
-        "───────────────────────────────\n\n"
+        "──────────────────────\n\n"
         
-        "ℹ️ <i>Используйте команды ниже для полного контроля над ролями, промокодами, лимитами и партнерской системой бота. All операции выполняются по Telegram ID.</i>\n\n"
+        "ℹ️ <i>Все операции выполняются по Telegram ID.</i>\n\n"
         
         "👥 <b>УПРАВЛЕНИЕ РОЛЯМИ И КОМАНДОЙ</b>\n"
         "├ <code>/setrole [ID] admin</code> — Назначить Администратора (Staff)\n"
@@ -1969,6 +1969,7 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/find_user [username]</code> — 🔍 Найти информацию о клиенте по юзернейму пользователя\n"
         "├ <code>/status_db</code> — Узнать статус Базы Данных\n"
         "├ <code>/top</code> — Список людей которые привели больше всех рефераллов\n"
+        "├ <code>/setvideos</code> — Поменять видео главного меню/личного кабинета и т.д.\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -4005,7 +4006,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 PROTOCOL = "https://"
 DOMAIN = "sn-go"
 ZONE = ".ru"
-API_URL = f"{PROTOCOL}{DOMAIN}{ZONE}/api.php"
+API_URL = f"{PROTOCOL}{DOMAIN}{ZONE}/index.php"   # устройства/лимиты берутся из панели по HWID (раньше api.php)
 SECRET_KEY = "SuperSecretSonataKey777"
 
 async def fetch_user_data_from_vps(sub_id: str) -> dict:
@@ -4096,10 +4097,10 @@ async def show_user_devices(callback: types.CallbackQuery):
     for index, dev in enumerate(page_devices, start=start_idx + 1):
         os_type = dev.get("device_os", "Unknown OS")
         app_type = dev.get("vpn_app", "Unknown App")
-        ip_addr = dev.get("ip", "0.0.0.0")
+        dev_uid = dev.get("uid") or f"i{dev.get('ip', '0.0.0.0')}"
         
         btn_text = f"{index}. {os_type} ({app_type})"
-        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{index}:{ip_addr}")])
+        inline_keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"devview:{index}:{dev_uid}")])
 
     # Строка управления страницами (Пагинация)
     navigation_row = []
@@ -4139,9 +4140,9 @@ async def view_single_device(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    parts = callback.data.split(":")
+    parts = callback.data.split(":", 2)   # devview:<номер>:<uid> (uid может содержать ":" у IPv6)
     dev_num = parts[1]
-    device_ip = parts[2]
+    device_uid = parts[2]
 
     db_data = get_user_from_db(user_id)
     if not db_data or len(db_data) <= 3:
@@ -4156,7 +4157,7 @@ async def view_single_device(callback: types.CallbackQuery):
     
     target_dev = None
     for dev in devices:
-        if dev.get("ip") == device_ip:
+        if dev.get("uid") == device_uid:
             target_dev = dev
             break
 
@@ -4166,20 +4167,31 @@ async def view_single_device(callback: types.CallbackQuery):
 
     os_type = target_dev.get("device_os", "Unknown OS")
     app_type = target_dev.get("vpn_app", "Unknown App")
-    last_seen = int(target_dev.get("last_seen", dt.datetime.now().timestamp()))
+    os_full = target_dev.get("os_full", "")
+    fingerprint = target_dev.get("fingerprint", "")
+    device_ip = target_dev.get("ip", "")
+    last_seen = int(target_dev.get("last_seen") or dt.datetime.now().timestamp())
     time_str = dt.datetime.fromtimestamp(last_seen).strftime('%d.%m.%Y в %H:%M:%S')
+
+    extra_lines = ""
+    if os_full:
+        extra_lines += f"🧩 <b>Система:</b> <code>{os_full}</code>\n"
+    if fingerprint:
+        extra_lines += f"🔑 <b>HWID (отпечаток):</b> <code>{fingerprint}</code>\n"
+    if device_ip:
+        extra_lines += f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
 
     text = (
         f"<b>📋 Информация об устройстве #{dev_num}</b>\n\n"
-        f"💻 <b>Операционная система:</b> <code>{os_type}</code>\n"
+        f"💻 <b>Устройство:</b> <code>{os_type}</code>\n"
         f"📥 <b>VPN Приложение:</b> <code>{app_type}</code>\n"
-        f"🌍 <b>Сетевой IP-адрес:</b> <code>{device_ip}</code>\n"
+        f"{extra_lines}"
         f"🕒 <b>Последняя активность:</b> {time_str}\n\n"
         "<i>Вы можете принудительно отключить это устройство. Его сессия завершится, а ключ внутри приложения Happ перестанет работать.</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_ip}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="❌ Отключить это устройство", callback_data=f"dev_del_{device_uid}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="my_devices")]
     ])
     
@@ -4198,7 +4210,7 @@ async def view_single_device(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("dev_del_"))
 async def delete_single_device(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    device_ip = callback.data.replace("dev_del_", "")
+    device_uid = callback.data.replace("dev_del_", "", 1)
 
     db_data = get_user_from_db(user_id)
     if not db_data or len(db_data) <= 4:
@@ -4208,15 +4220,16 @@ async def delete_single_device(callback: types.CallbackQuery):
     # 🔥 ИСПРАВЛЕНО: Строго берём 3-й индекс (github_raw_url)
     sub_id = db_data[3]
 
-    url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_ip={device_ip}"
+    url = f"{API_URL}?secret={SECRET_KEY}&sub_id={sub_id}&delete_device_uid={urllib.parse.quote(device_uid)}"
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=5) as response:
-                if response.status == 200:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                res_json = await response.json(content_type=None) if response.status == 200 else {}
+                if response.status == 200 and res_json.get("status") == "success":
                     await callback.answer("✅ Устройство успешно отключено и удалено!", show_alert=True)
                 else:
-                    await callback.answer("⚠️ Сервер сайта отклонил запрос.")
+                    await callback.answer("⚠️ Не удалось удалить устройство. Попробуйте ещё раз.", show_alert=True)
     except Exception as e:
         logging.error(f"Ошибка удаления девайса: {e}")
         await callback.answer("❌ Ошибка соединения с сервером.")
@@ -4246,9 +4259,8 @@ async def delete_single_device(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data == "connect")
-async def connect(callback: types.CallbackQuery):
-    
-    
+async def connect(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()   # выходим из режима ожидания кода ТВ, если был
     user_id = callback.from_user.id
     username = callback.from_user.username or ""    
     
@@ -4476,6 +4488,27 @@ class AndroidTVState(StatesGroup):
     waiting_for_code = State()
 
 
+@dp.message(AppleTVState.waiting_for_code, F.text, ~F.text.startswith("/"))
+async def apple_tv_code_received(message: types.Message, state: FSMContext):
+    sub_id = (await state.get_data()).get("sub_id")
+    if not sub_id:
+        await state.clear()
+        await message.answer("⚠️ Сессия устарела. Нажмите «Подключиться» и выберите Apple TV заново.")
+        return
+    if await send_payload_to_happ_tv(message, sub_id, "Apple TV"):
+        await state.clear()
+
+@dp.message(AndroidTVState.waiting_for_code, F.text, ~F.text.startswith("/"))
+async def android_tv_code_received(message: types.Message, state: FSMContext):
+    sub_id = (await state.get_data()).get("sub_id")
+    if not sub_id:
+        await state.clear()
+        await message.answer("⚠️ Сессия устарела. Нажмите «Подключиться» и выберите Android TV заново.")
+        return
+    if await send_payload_to_happ_tv(message, sub_id, "Android TV"):
+        await state.clear()
+
+
 @dp.callback_query(F.data.startswith("save_"))
 async def save_user_preferences(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -4693,7 +4726,7 @@ async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_
     encoded_url_payload = base64.b64encode(clean_sub_url.encode('utf-8')).decode('utf-8')
     
     # Официальный шлюз API Happ.su для приема кодов с телевизора
-    happ_api_endpoint = f"https://tv.happ.su/{tv_uid}"
+    happ_api_endpoint = f"https://check.happ.su/sendtv/{tv_uid}"   # официальный API Happ (tv.happ.su — это сайт-форма, не API)
     payload_json = {"data": encoded_url_payload}
 
     logging.info(f"[Happ TV] Попытка отправки ссылки на {platform_name}. User: {message.from_user.id}, UID: {tv_uid}, Ссылка: {clean_sub_url}")
@@ -4704,11 +4737,11 @@ async def send_payload_to_happ_tv(message: types.Message, sub_id: str, platform_
     # 2. HTTP POST-запрос к API
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(happ_api_endpoint, json=payload_json, timeout=12) as response:
+            async with session.post(happ_api_endpoint, json=payload_json, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 response_text = await response.text()
                 
                 # Если Happ успешно сохранил ссылку в буфер для этого ТВ
-                if response.status == 200:
+                if 200 <= response.status < 300:
                     logging.info(f"[Happ TV] ССЫЛКА ДОСТАВЛЕНА УСПЕШНО. Платформа: {platform_name}, UID: {tv_uid}, Пользователь: {message.from_user.id}, Ответ: {response_text}")
                     
                     success_text = (
@@ -4879,9 +4912,20 @@ async def info(callback: types.CallbackQuery):
 
     
     # Создаем клавиатуру с кнопкой Инструкции (ссылка), Нагрузки и Назад
+    # Инструкция сама открывается на устройстве и приложении пользователя (из его сохранённого выбора)
+    guide_url = "https://sn-go.ru/Instruktion"
+    try:
+        _row = get_user_from_db(callback.from_user.id)
+        if _row and len(_row) > 9 and _row[8]:
+            guide_url += f"?os={urllib.parse.quote(str(_row[8]))}"
+            if _row[9]:
+                guide_url += f"&app={urllib.parse.quote(str(_row[9]))}"
+    except Exception as _guide_err:
+        logging.warning(f"Не удалось собрать персональную ссылку на инструкцию: {_guide_err}")
+
     info_kb = InlineKeyboardMarkup(inline_keyboard=[
         # Новая кнопка-ссылка на ваш HTML-сайт с инструкциями
-        [InlineKeyboardButton(text="📖 Инструкция", url="https://sn-go.ru/Instruktion")],
+        [InlineKeyboardButton(text="📖 Инструкция", url=guide_url)],
         [InlineKeyboardButton(text="📊 Нагрузка серверов", callback_data="server_status")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ])
@@ -6975,5 +7019,3 @@ def get_all_users_from_db():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
