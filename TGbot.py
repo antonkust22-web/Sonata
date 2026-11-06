@@ -1304,7 +1304,7 @@ SERVERS = [
         "panel_user": "Asad",  
         "panel_password": "5420",  
         "inbound_id": 1,  
-        "my_ip": "51.250.65.49",  
+        "my_ip": "51.250.89.217",  
         "pbk": "Dfr_ZiYS76nGhCyu3OpWJPYqwr4An2e5qwKG_5KwixA",  
         "sid": "2c87d277",  
         "sni": "s.microsoft.com",  
@@ -1942,9 +1942,9 @@ async def creator_panel_help(message: types.Message):
     
     help_text = (
         "👑 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ВЛАДЕЛЬЦА (CREATOR)</b>\n"
-        "──────────────────────\n\n"
+        "───────────────────────────────\n\n"
         
-        "ℹ️ <i>Все операции выполняются по Telegram ID.</i>\n\n"
+        "ℹ️ <i>Используйте команды ниже для полного контроля над ролями, промокодами, лимитами и партнерской системой бота. All операции выполняются по Telegram ID.</i>\n\n"
         
         "👥 <b>УПРАВЛЕНИЕ РОЛЯМИ И КОМАНДОЙ</b>\n"
         "├ <code>/setrole [ID] admin</code> — Назначить Администратора (Staff)\n"
@@ -1969,7 +1969,6 @@ async def creator_panel_help(message: types.Message):
         "├ <code>/find_user [username]</code> — 🔍 Найти информацию о клиенте по юзернейму пользователя\n"
         "├ <code>/status_db</code> — Узнать статус Базы Данных\n"
         "├ <code>/top</code> — Список людей которые привели больше всех рефераллов\n"
-        "├ <code>/setvideos</code> — Поменять видео главного меню/личного кабинета и т.д.\n"
         "└ <code>/update_servers</code> - Обновить сервера у всех пользователей\n\n"
 
         "🟣 <b>ПАРТНЕРСКАЯ СИСТЕМА И ВЫВОДЫ</b>\n"
@@ -3660,6 +3659,753 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
 
 
 # =========================================================================
+# 📧 РЕФЕРАЛЫ С ПОДТВЕРЖДЕНИЕМ E-MAIL (защита от накрутки аккаунтов)
+#
+# Схема:
+#   1. Новый пользователь пришёл по ссылке ?start=ref<ID> и прошёл капчу -> запись "pending" (дни НЕ начисляются).
+#   2. Он нажимает «Подтвердить почту», вводит e-mail -> бот шлёт 6-значный код.
+#   3. Вводит код -> в ОДНОЙ транзакции БД проверяются все условия и запись переходит в "rewarded".
+#   4. Только после этого начисляются +3 дня ему и пригласившему (роли partner/ambassador/admin/creator дней не получают).
+# Защиты: один e-mail = один аккаунт (с нормализацией gmail-точек и +тегов), одноразовые/временные
+# домены блокируются, код хранится только как HMAC-хэш, TTL 10 мин, 5 попыток, кулдаун 60 сек,
+# лимиты отправок на пользователя/адрес/сутки, дневной потолок наград на пригласившего,
+# награда выдаётся ровно один раз (идемпотентно), срок жизни приглашения 7 дней.
+# =========================================================================
+import hmac as _hmac
+import ssl as _ssl
+import smtplib as _smtplib
+import html as _html
+from email.message import EmailMessage as _EmailMessage
+from email.utils import formataddr as _formataddr, make_msgid as _make_msgid, formatdate as _formatdate
+
+# ---------- НАСТРОЙКИ ПОЧТЫ ----------
+# 👇 ЗАПОЛНИТЕ ДВЕ ПЕРЕМЕННЫЕ — и подтверждение по e-mail включится САМО (после перезапуска бота).
+#    Пока хотя бы одна пустая/неверная — рефералы работают по-старому (дни начисляются сразу).
+GMAIL_ADDRESS = ""            # Gmail, с которого будут уходить коды, например: "sonatavpn.noreply@gmail.com"
+GMAIL_APP_PASSWORD = ""       # 16-значный «пароль приложения» Google, например: "abcd efgh ijkl mnop" (пробелы можно оставлять)
+# (можно не править код, а задать переменными окружения GMAIL_ADDRESS и GMAIL_APP_PASSWORD на хостинге)
+GMAIL_ADDRESS = (GMAIL_ADDRESS or os.getenv("GMAIL_ADDRESS", "")).strip()
+GMAIL_APP_PASSWORD = re.sub(r"\s+", "", (GMAIL_APP_PASSWORD or os.getenv("GMAIL_APP_PASSWORD", "")))
+
+EMAIL_VERIFY_SWITCH = True    # главный рубильник: False — принудительно вернуть старую схему даже при заполненной почте
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465               # SSL
+SMTP_USER = GMAIL_ADDRESS
+SMTP_PASSWORD = GMAIL_APP_PASSWORD
+SMTP_FROM = GMAIL_ADDRESS
+SMTP_FROM_NAME = "Sonata VPN"
+
+REF_BONUS_DAYS = 3
+EMAIL_CODE_TTL = 10 * 60                 # код живёт 10 минут
+EMAIL_CODE_MAX_ATTEMPTS = 5              # неверных вводов до сгорания кода
+EMAIL_RESEND_COOLDOWN = 60               # пауза между отправками, сек
+EMAIL_MAX_SENDS_PER_HOUR_USER = 3        # писем в час на одного пользователя
+EMAIL_MAX_SENDS_PER_DAY_ADDRESS = 3      # писем в сутки на один адрес (даже от разных аккаунтов)
+EMAIL_MAX_SENDS_PER_DAY_GLOBAL = 400     # общий потолок в сутки (защита лимитов SMTP-провайдера)
+REF_PENDING_TTL = 7 * 24 * 3600          # приглашение действует 7 дней
+REF_INVITER_DAILY_CAP = 10               # не более N наград пригласившему за 24 часа
+REF_EXEMPT_ROLES = ("partner", "ambassador", "admin", "creator")   # у них денежная программа — дни не начисляем
+
+DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com", "guerrillamail.com", "guerrillamail.net", "guerrillamail.org", "guerrillamail.biz", "sharklasers.com",
+    "grr.la", "guerrillamailblock.com", "10minutemail.com", "10minutemail.net", "20minutemail.com", "tempmail.com",
+    "temp-mail.org", "temp-mail.io", "tempmail.net", "tempmailo.com", "tempail.com", "yopmail.com", "yopmail.net",
+    "yopmail.fr", "trashmail.com", "trashmail.net", "trashmail.de", "getnada.com", "nada.email", "dispostable.com",
+    "maildrop.cc", "fakeinbox.com", "mohmal.com", "emailondeck.com", "throwawaymail.com", "mintemail.com",
+    "spamgourmet.com", "mailnesia.com", "mailcatch.com", "mytemp.email", "burnermail.io", "discard.email",
+    "moakt.com", "moakt.cc", "tmpmail.org", "tmpmail.net", "tmail.ws", "dropmail.me", "emltmp.com", "fexpost.com",
+    "inboxkitten.com", "luxusmail.org", "mail.tm", "mailpoof.com", "minuteinbox.com", "owlymail.com", "spambox.us",
+    "tempinbox.com", "tempr.email", "temporary-mail.net", "throwam.com", "wegwerfmail.de", "zeroe.ml", "1secmail.com",
+    "1secmail.net", "1secmail.org", "etranquil.com", "kzccv.com", "qiott.com", "vjuum.com", "laafd.com", "txcct.com",
+    "rteet.com", "esiix.com", "wwjmp.com", "xojxe.com", "yoggm.com", "icznn.com", "ezztt.com", "spamavert.com",
+    "rhyta.com", "armyspy.com", "cuvox.de", "dayrep.com", "einrot.com", "fleckens.hu", "gustr.com", "jourrapide.com",
+    "superrito.com", "teleworm.us",
+}
+
+_EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]{1,64}@([a-z0-9\-]+\.)+[a-z]{2,24}$")
+_YANDEX_ALIASES = {"ya.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.ua", "yandex.uz"}
+
+
+def normalize_email(raw):
+    """Возвращает (адрес_для_отправки, нормализованный_ключ) или None, если адрес некорректен."""
+    e = (raw or "").strip().lower()
+    if len(e) > 254 or " " in e or e.count("@") != 1 or not _EMAIL_RE.match(e):
+        return None
+    local, domain = e.split("@", 1)
+    if ".." in local or local.startswith(".") or local.endswith(".") or ".." in domain or domain.startswith("-"):
+        return None
+    if domain == "googlemail.com":
+        domain = "gmail.com"
+    if domain in _YANDEX_ALIASES:
+        domain = "yandex.ru"
+    key_local = local.split("+", 1)[0]          # name+tag@ -> name@
+    if domain == "gmail.com":
+        key_local = key_local.replace(".", "")   # n.a.m.e@gmail.com == name@gmail.com
+    if not key_local:
+        return None
+    return e, f"{key_local}@{domain}"
+
+
+def is_disposable_email(email_norm: str) -> bool:
+    domain = email_norm.split("@", 1)[1]
+    parts = domain.split(".")
+    # проверяем и сам домен, и родительские (x.mailinator.com)
+    return any(".".join(parts[i:]) in DISPOSABLE_EMAIL_DOMAINS for i in range(len(parts) - 1))
+
+
+def mask_email(email: str) -> str:
+    local, domain = email.split("@", 1)
+    shown = local[:1] if len(local) <= 2 else local[:2]
+    return f"{shown}{'*' * max(2, len(local) - len(shown))}@{domain}"
+
+
+# ---------- БАЗА ДАННЫХ ----------
+_RV_READY = False
+
+def _rv_conn():
+    global _RV_READY
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    if not _RV_READY:
+        cur = conn.cursor()
+        cur.execute('''CREATE TABLE IF NOT EXISTS referral_pending (
+            referral_id INTEGER PRIMARY KEY,
+            inviter_id INTEGER NOT NULL,
+            inviter_role TEXT,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            email_norm TEXT,
+            verified_at INTEGER,
+            rewarded_at INTEGER,
+            inviter_rewarded INTEGER NOT NULL DEFAULT 0
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS email_verifications (
+            user_id INTEGER PRIMARY KEY,
+            email TEXT NOT NULL,
+            email_norm TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            sent_at INTEGER NOT NULL
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS verified_emails (
+            email_norm TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            verified_at INTEGER NOT NULL
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS email_send_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            email_norm TEXT NOT NULL,
+            ts INTEGER NOT NULL
+        )''')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_esl_user ON email_send_log(user_id, ts)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_esl_email ON email_send_log(email_norm, ts)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_rp_inviter ON referral_pending(inviter_id, status, rewarded_at)')
+        conn.commit()
+        _RV_READY = True
+    return conn
+
+
+def rv_create_pending(referral_id: int, inviter_id: int, inviter_role: str) -> bool:
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('INSERT OR IGNORE INTO referral_pending (referral_id, inviter_id, inviter_role, created_at) VALUES (?,?,?,?)',
+                    (referral_id, inviter_id, inviter_role or "user", int(time.time())))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def rv_get_pending(user_id: int):
+    """Активное (не просроченное) приглашение пользователя или None. Просроченные помечает expired."""
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT inviter_id, inviter_role, created_at, status FROM referral_pending WHERE referral_id = ?', (user_id,))
+        row = cur.fetchone()
+        if not row or row[3] != 'pending':
+            return None
+        if int(time.time()) - int(row[2]) > REF_PENDING_TTL:
+            cur.execute("UPDATE referral_pending SET status='expired' WHERE referral_id=? AND status='pending'", (user_id,))
+            cur.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+            conn.commit()
+            return None
+        return {"inviter_id": row[0], "inviter_role": row[1], "created_at": row[2]}
+    finally:
+        conn.close()
+
+
+def rv_user_is_verified(user_id: int) -> bool:
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT 1 FROM verified_emails WHERE user_id=? LIMIT 1', (user_id,))
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def rv_send_allowed(user_id: int, email_norm: str):
+    """(можно_ли_слать, причина, ждать_секунд). Все лимиты проверяются ДО отправки."""
+    now = int(time.time())
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT email_norm FROM verified_emails WHERE email_norm=? AND user_id<>?', (email_norm, user_id))
+        if cur.fetchone():
+            return False, "email_taken", 0
+        cur.execute('SELECT MAX(ts) FROM email_send_log WHERE user_id=?', (user_id,))
+        last = cur.fetchone()[0] or 0
+        if now - last < EMAIL_RESEND_COOLDOWN:
+            return False, "cooldown", EMAIL_RESEND_COOLDOWN - (now - last)
+        cur.execute('SELECT COUNT(*) FROM email_send_log WHERE user_id=? AND ts>?', (user_id, now - 3600))
+        if cur.fetchone()[0] >= EMAIL_MAX_SENDS_PER_HOUR_USER:
+            cur.execute('SELECT MIN(ts) FROM email_send_log WHERE user_id=? AND ts>?', (user_id, now - 3600))
+            oldest = cur.fetchone()[0] or now
+            return False, "hour_limit", max(1, oldest + 3600 - now)
+        cur.execute('SELECT COUNT(*) FROM email_send_log WHERE email_norm=? AND ts>?', (email_norm, now - 86400))
+        if cur.fetchone()[0] >= EMAIL_MAX_SENDS_PER_DAY_ADDRESS:
+            return False, "address_limit", 0
+        cur.execute('SELECT COUNT(*) FROM email_send_log WHERE ts>?', (now - 86400,))
+        if cur.fetchone()[0] >= EMAIL_MAX_SENDS_PER_DAY_GLOBAL:
+            return False, "global_limit", 0
+        return True, "", 0
+    finally:
+        conn.close()
+
+
+def _code_hash(user_id: int, email_norm: str, code: str) -> str:
+    return _hmac.new(SECRET_KEY.encode("utf-8"), f"{user_id}:{email_norm}:{code}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def rv_issue_code(user_id: int, email: str, email_norm: str) -> str:
+    """Создаёт новый код (старый становится недействительным), возвращает код. В БД — только HMAC-хэш."""
+    code = f"{secrets.randbelow(10 ** 6):06d}"
+    now = int(time.time())
+    conn = _rv_conn()
+    try:
+        conn.execute('INSERT OR REPLACE INTO email_verifications (user_id, email, email_norm, code_hash, expires_at, attempts, sent_at) VALUES (?,?,?,?,?,0,?)',
+                     (user_id, email, email_norm, _code_hash(user_id, email_norm, code), now + EMAIL_CODE_TTL, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return code
+
+
+def rv_log_send(user_id: int, email_norm: str):
+    conn = _rv_conn()
+    try:
+        conn.execute('INSERT INTO email_send_log (user_id, email_norm, ts) VALUES (?,?,?)', (user_id, email_norm, int(time.time())))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def rv_drop_code(user_id: int):
+    conn = _rv_conn()
+    try:
+        conn.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def rv_get_active_code(user_id: int):
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT email, email_norm, expires_at, attempts FROM email_verifications WHERE user_id=?', (user_id,))
+        row = cur.fetchone()
+        if not row or int(row[2]) < int(time.time()):
+            return None
+        return {"email": row[0], "email_norm": row[1], "expires_at": row[2], "attempts": row[3]}
+    finally:
+        conn.close()
+
+
+def rv_check_code(user_id: int, code: str):
+    """Возвращает ('ok', email_norm) | ('wrong', осталось_попыток) | ('locked', 0) | ('expired', 0) | ('none', 0)."""
+    now = int(time.time())
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT email_norm, code_hash, expires_at, attempts FROM email_verifications WHERE user_id=?', (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return "none", 0
+        email_norm, stored_hash, expires_at, attempts = row
+        if int(expires_at) < now:
+            cur.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+            conn.commit()
+            return "expired", 0
+        if int(attempts) >= EMAIL_CODE_MAX_ATTEMPTS:
+            cur.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+            conn.commit()
+            return "locked", 0
+        if _hmac.compare_digest(stored_hash, _code_hash(user_id, email_norm, code)):
+            return "ok", email_norm
+        attempts += 1
+        if attempts >= EMAIL_CODE_MAX_ATTEMPTS:
+            cur.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+            conn.commit()
+            return "locked", 0
+        cur.execute('UPDATE email_verifications SET attempts=? WHERE user_id=?', (attempts, user_id))
+        conn.commit()
+        return "wrong", EMAIL_CODE_MAX_ATTEMPTS - attempts
+    finally:
+        conn.close()
+
+
+def rv_finalize(user_id: int, email_norm: str) -> dict:
+    """Единая транзакция: проверка всех условий + однократная фиксация награды."""
+    now = int(time.time())
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, isolation_level=None)
+    _rv_conn().close()   # гарантируем создание таблиц
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute('SELECT inviter_id, inviter_role, created_at, status FROM referral_pending WHERE referral_id=?', (user_id,))
+        row = cur.fetchone()
+        if not row or row[3] != 'pending':
+            cur.execute("ROLLBACK"); return {"ok": False, "reason": "not_pending"}
+        inviter_id, inviter_role, created_at, _status = row
+        if now - int(created_at) > REF_PENDING_TTL:
+            cur.execute("UPDATE referral_pending SET status='expired' WHERE referral_id=?", (user_id,))
+            cur.execute("COMMIT"); return {"ok": False, "reason": "expired"}
+        cur.execute('SELECT user_id FROM verified_emails WHERE email_norm=?', (email_norm,))
+        owner = cur.fetchone()
+        if owner and int(owner[0]) != int(user_id):
+            cur.execute("ROLLBACK"); return {"ok": False, "reason": "email_taken"}
+        cur.execute('SELECT 1 FROM verified_emails WHERE user_id=? AND email_norm=?', (inviter_id, email_norm))
+        if cur.fetchone():
+            cur.execute("ROLLBACK"); return {"ok": False, "reason": "self_referral"}
+        cur.execute('INSERT OR IGNORE INTO verified_emails (email_norm, user_id, verified_at) VALUES (?,?,?)', (email_norm, user_id, now))
+        cur.execute("SELECT COUNT(*) FROM referral_pending WHERE inviter_id=? AND status='rewarded' AND inviter_rewarded=1 AND rewarded_at>?", (inviter_id, now - 86400))
+        done_today = cur.fetchone()[0]
+        reward_inviter = (inviter_role or "user") not in REF_EXEMPT_ROLES and done_today < REF_INVITER_DAILY_CAP
+        cap_hit = (inviter_role or "user") not in REF_EXEMPT_ROLES and done_today >= REF_INVITER_DAILY_CAP
+        cur.execute("UPDATE referral_pending SET status='rewarded', email_norm=?, verified_at=?, rewarded_at=?, inviter_rewarded=? WHERE referral_id=? AND status='pending'",
+                    (email_norm, now, now, 1 if reward_inviter else 0, user_id))
+        if cur.rowcount != 1:
+            cur.execute("ROLLBACK"); return {"ok": False, "reason": "not_pending"}
+        cur.execute('DELETE FROM email_verifications WHERE user_id=?', (user_id,))
+        cur.execute("COMMIT")
+        return {"ok": True, "inviter_id": inviter_id, "inviter_role": inviter_role, "reward_inviter": reward_inviter, "cap_hit": cap_hit}
+    except Exception as e:
+        try: cur.execute("ROLLBACK")
+        except Exception: pass
+        logging.error(f"[REF-EMAIL] Ошибка транзакции награды для {user_id}: {e}")
+        return {"ok": False, "reason": "db_error"}
+    finally:
+        conn.close()
+
+
+# ---- ASYNC / TELEGRAM PART ----
+
+_SMTP_ALERT_TS = 0
+
+def _smtp_configured() -> bool:
+    """Адрес — корректный e-mail, пароль приложения Google — ровно 16 латинских букв/цифр."""
+    return bool(GMAIL_ADDRESS and normalize_email(GMAIL_ADDRESS) and re.fullmatch(r"[A-Za-z0-9]{16}", GMAIL_APP_PASSWORD or ""))
+
+
+def email_verify_active() -> bool:
+    """True только когда почта настроена И рубильник включён. Иначе действует старая схема рефералов."""
+    return bool(EMAIL_VERIFY_SWITCH and _smtp_configured())
+
+
+logging.info("[REF-EMAIL] Подтверждение рефералов по e-mail: %s",
+             "ВКЛЮЧЕНО" if email_verify_active() else "выключено (не заполнены GMAIL_ADDRESS / GMAIL_APP_PASSWORD) — работает старая схема")
+
+
+def _smtp_send_sync(to_addr: str, subject: str, text_body: str, html_body: str):
+    msg = _EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = _formataddr((SMTP_FROM_NAME, SMTP_FROM))
+    msg["To"] = to_addr
+    msg["Date"] = _formatdate(localtime=True)
+    msg["Message-ID"] = _make_msgid(domain=SMTP_FROM.split("@")[-1])
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype="html")
+    ctx = _ssl.create_default_context()
+    if SMTP_PORT == 465:
+        with _smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=20) as s:
+            s.login(SMTP_USER, SMTP_PASSWORD)
+            s.send_message(msg)
+    else:
+        with _smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+            s.ehlo(); s.starttls(context=ctx); s.ehlo()
+            s.login(SMTP_USER, SMTP_PASSWORD)
+            s.send_message(msg)
+
+
+def _build_code_email(code: str):
+    spaced = f"{code[:3]} {code[3:]}"
+    text = (f"Sonata VPN — код подтверждения: {spaced}\n\n"
+            f"Введите его в Telegram-боте. Код действует {EMAIL_CODE_TTL // 60} минут.\n"
+            f"Если вы не запрашивали код — просто проигнорируйте это письмо.")
+    html = f'''<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0b0b0c;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0b0b0c;padding:32px 12px;"><tr><td align="center">
+<table width="460" cellpadding="0" cellspacing="0" style="max-width:460px;background:#141416;border:1px solid #2a2a2e;border-radius:20px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;">
+<tr><td style="padding:28px 28px 8px;color:#ffffff;font-size:20px;font-weight:800;letter-spacing:.3px;">Sonata <span style="color:#ffd60a;">VPN</span></td></tr>
+<tr><td style="padding:0 28px;color:#a0a0a8;font-size:14px;line-height:1.5;">Код подтверждения почты для получения бонуса:</td></tr>
+<tr><td align="center" style="padding:22px 28px;"><div style="display:inline-block;background:#ffd60a;color:#111;border-radius:14px;padding:14px 26px;font-size:34px;font-weight:900;letter-spacing:8px;">{spaced}</div></td></tr>
+<tr><td style="padding:0 28px 26px;color:#7d7d85;font-size:12.5px;line-height:1.55;">Код действует {EMAIL_CODE_TTL // 60} минут. Если вы не запрашивали его — просто проигнорируйте это письмо.</td></tr>
+</table></td></tr></table></body></html>'''
+    return text, html
+
+
+async def send_code_email(to_addr: str, code: str) -> bool:
+    global _SMTP_ALERT_TS
+    if not _smtp_configured():
+        logging.error("[REF-EMAIL] SMTP не настроен (SMTP_HOST/SMTP_USER/SMTP_PASSWORD).")
+        return False
+    text, html = _build_code_email(code)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_smtp_send_sync, to_addr, f"Sonata VPN: код подтверждения {code[:3]} {code[3:]}", text, html), timeout=30)
+        return True
+    except Exception as e:
+        logging.error(f"[REF-EMAIL] Не удалось отправить письмо на {mask_email(to_addr)}: {type(e).__name__}: {e}")
+        if time.time() - _SMTP_ALERT_TS > 1800:
+            _SMTP_ALERT_TS = time.time()
+            hint = "\nПроверьте GMAIL_APP_PASSWORD (нужен именно пароль приложения, а в аккаунте включена двухэтапная аутентификация)." if isinstance(e, _smtplib.SMTPAuthenticationError) else ""
+            try: await bot.send_message(ADMIN_ID, f"⚠️ Не отправляются письма с кодами (реферальная проверка).\n<code>{_html.escape(type(e).__name__)}: {_html.escape(str(e))[:300]}</code>{hint}", parse_mode="HTML")
+            except Exception: pass
+        return False
+
+
+class RefMail(StatesGroup):
+    waiting_email = State()
+    waiting_code = State()
+
+
+def _rv_kb(*rows):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows])
+
+RV_KB_CANCEL = _rv_kb([("❌ Отмена", "refv:cancel")])
+RV_KB_CODE = _rv_kb([("🔁 Отправить код снова", "refv:resend")], [("✏️ Изменить почту", "refv:change"), ("❌ Отмена", "refv:cancel")])
+RV_KB_NUDGE = _rv_kb([("📧 Подтвердить почту и получить бонус", "refv:start")])
+
+RV_INTRO = (
+    "📧 <b>Подтверждение e-mail</b>\n\n"
+    f"Пришлите адрес почты — я отправлю на него <b>6-значный код</b>. После ввода кода <b>вы и пригласивший вас</b> получите по <b>+{REF_BONUS_DAYS} дня</b> подписки.\n\n"
+    "<i>Почта нужна только для защиты от фейковых аккаунтов. Один e-mail — один аккаунт.</i>"
+)
+
+
+async def _rv_prompt_email(target: types.Message, state: FSMContext, extra: str = ""):
+    await state.set_state(RefMail.waiting_email)
+    await target.answer(f"{extra}{RV_INTRO}", reply_markup=RV_KB_CANCEL, parse_mode="HTML")
+
+
+async def _rv_prompt_code(target: types.Message, state: FSMContext, email: str, prefix: str = ""):
+    await state.set_state(RefMail.waiting_code)
+    await target.answer(
+        f"{prefix}✉️ Код отправлен на <code>{_html.escape(mask_email(email))}</code>\n\n"
+        f"Введите <b>6 цифр</b> из письма. Код действует {EMAIL_CODE_TTL // 60} минут.\n"
+        "<i>Не пришло? Проверьте папку «Спам».</i>",
+        reply_markup=RV_KB_CODE, parse_mode="HTML")
+
+
+def _rv_wait_text(reason: str, wait: int) -> str:
+    if reason == "cooldown":
+        return f"⏳ Подождите <b>{wait} сек.</b> перед повторной отправкой."
+    if reason == "hour_limit":
+        return f"⏳ Слишком много писем. Попробуйте снова через <b>{max(1, wait // 60)} мин.</b>"
+    if reason == "address_limit":
+        return "⏳ На этот адрес уже отправлено максимум писем за сутки. Попробуйте другой адрес или вернитесь завтра."
+    if reason == "global_limit":
+        return "⚠️ Сервис подтверждения временно перегружен. Попробуйте позже."
+    if reason == "email_taken":
+        return "❌ Эта почта уже привязана к другому аккаунту. Укажите другой адрес."
+    return "⚠️ Не удалось отправить код. Попробуйте позже."
+
+
+async def _rv_send_to(message: types.Message, state: FSMContext, user_id: int, email: str, email_norm: str, resend: bool = False):
+    ok, reason, wait = rv_send_allowed(user_id, email_norm)
+    if not ok:
+        await message.answer(_rv_wait_text(reason, wait), parse_mode="HTML",
+                             reply_markup=(RV_KB_CODE if reason in ("cooldown", "hour_limit") else RV_KB_CANCEL))
+        return
+    code = rv_issue_code(user_id, email, email_norm)
+    if not await send_code_email(email, code):
+        rv_drop_code(user_id)
+        await message.answer("⚠️ Не удалось отправить письмо. Проверьте адрес и попробуйте ещё раз чуть позже.", reply_markup=RV_KB_CANCEL)
+        await state.set_state(RefMail.waiting_email)
+        return
+    rv_log_send(user_id, email_norm)
+    await _rv_prompt_code(message, state, email, prefix=("🔁 Новый код отправлен.\n\n" if resend else ""))
+
+
+async def _rv_entry(message: types.Message, state: FSMContext, user_id: int):
+    """Общая точка входа (кнопка и /verify)."""
+    if not email_verify_active():
+        await message.answer("Подтверждение почты сейчас отключено.")
+        return
+    pending = rv_get_pending(user_id)
+    if not pending:
+        if rv_user_is_verified(user_id):
+            await message.answer("✅ Ваша почта уже подтверждена, бонус за приглашение начислен.")
+        else:
+            await message.answer("ℹ️ Для вашего аккаунта нет активного приглашения с бонусом (оно действует 7 дней после регистрации по реферальной ссылке).")
+        await state.clear()
+        return
+    active = rv_get_active_code(user_id)
+    if active:   # код уже отправлен — просто возвращаемся к вводу кода
+        await _rv_prompt_code(message, state, active["email"])
+        return
+    await _rv_prompt_email(message, state)
+
+
+
+@dp.message(Command("ref_email_status"))
+async def rv_cmd_status(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    conn = _rv_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT status, COUNT(*) FROM referral_pending GROUP BY status")
+        stats = dict(cur.fetchall())
+        cur.execute("SELECT COUNT(*) FROM email_send_log WHERE ts>?", (int(time.time()) - 86400,))
+        sent_24h = cur.fetchone()[0]
+    finally:
+        conn.close()
+    state = "✅ ВКЛЮЧЕНО" if email_verify_active() else "⏸ выключено (работает старая схема)"
+    why = ""
+    if not email_verify_active():
+        if not GMAIL_ADDRESS or not normalize_email(GMAIL_ADDRESS):
+            why += "\n• не задан корректный GMAIL_ADDRESS"
+        if not re.fullmatch(r"[A-Za-z0-9]{16}", GMAIL_APP_PASSWORD or ""):
+            why += "\n• GMAIL_APP_PASSWORD должен быть ровно 16 символов"
+        if not EMAIL_VERIFY_SWITCH:
+            why += "\n• рубильник EMAIL_VERIFY_SWITCH = False"
+    await message.answer(
+        f"<b>📧 Подтверждение рефералов по e-mail</b>\nСтатус: {state}{why}\n\n"
+        f"Ожидают подтверждения: <b>{stats.get('pending', 0)}</b>\nНачислено: <b>{stats.get('rewarded', 0)}</b>\n"
+        f"Истекло: <b>{stats.get('expired', 0)}</b>\nПисем за 24 ч: <b>{sent_24h}</b>\n\n"
+        "Проверка почты: <code>/ref_email_test адрес@пример.ру</code>", parse_mode="HTML")
+
+
+@dp.message(Command("ref_email_test"))
+async def rv_cmd_test(message: types.Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not _smtp_configured():
+        await message.answer("⚠️ Почта не настроена: заполните GMAIL_ADDRESS и GMAIL_APP_PASSWORD (16 символов) и перезапустите бота.")
+        return
+    parsed = normalize_email(command.args or "")
+    if not parsed:
+        await message.answer("Укажите адрес: <code>/ref_email_test name@gmail.com</code>", parse_mode="HTML")
+        return
+    ok = await send_code_email(parsed[0], f"{secrets.randbelow(10 ** 6):06d}")
+    await message.answer("✅ Тестовое письмо отправлено — проверьте ящик (и «Спам»)." if ok else "❌ Не удалось отправить. Подробности — в логе [REF-EMAIL] и в сообщении выше (если пришло).")
+
+
+@dp.callback_query(F.data == "refv:start")
+async def rv_cb_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _rv_entry(callback.message, state, callback.from_user.id)
+
+
+@dp.message(Command("verify"))
+async def rv_cmd_verify(message: types.Message, state: FSMContext):
+    await _rv_entry(message, state, message.from_user.id)
+
+
+@dp.callback_query(F.data == "refv:cancel")
+async def rv_cb_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Отменено")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer("Хорошо. Вернуться к подтверждению можно в любой момент: /verify (приглашение действует 7 дней).")
+
+
+@dp.callback_query(F.data == "refv:change")
+async def rv_cb_change(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if not rv_get_pending(callback.from_user.id):
+        await state.clear()
+        await callback.message.answer("ℹ️ Приглашение недействительно или уже использовано.")
+        return
+    rv_drop_code(callback.from_user.id)
+    await _rv_prompt_email(callback.message, state, extra="✏️ Укажите другой адрес.\n\n")
+
+
+@dp.callback_query(F.data == "refv:resend")
+async def rv_cb_resend(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if not rv_get_pending(user_id):
+        await callback.answer()
+        await state.clear()
+        await callback.message.answer("ℹ️ Приглашение недействительно или уже использовано.")
+        return
+    active = rv_get_active_code(user_id)
+    if not active:
+        await callback.answer()
+        await _rv_prompt_email(callback.message, state)
+        return
+    await callback.answer()
+    await _rv_send_to(callback.message, state, user_id, active["email"], active["email_norm"], resend=True)
+
+
+@dp.message(RefMail.waiting_email, F.text, ~F.text.startswith("/"))
+async def rv_receive_email(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if not rv_get_pending(user_id):
+        await state.clear()
+        await message.answer("ℹ️ Приглашение недействительно или уже использовано.")
+        return
+    parsed = normalize_email(message.text)
+    if not parsed:
+        await message.answer("❌ Это не похоже на e-mail. Пример: <code>name@gmail.com</code>\nПопробуйте ещё раз.", parse_mode="HTML", reply_markup=RV_KB_CANCEL)
+        return
+    email, email_norm = parsed
+    if is_disposable_email(email_norm):
+        await message.answer("❌ Временные и одноразовые почты не подходят. Укажите свой постоянный e-mail.", reply_markup=RV_KB_CANCEL)
+        return
+    await _rv_send_to(message, state, user_id, email, email_norm)
+
+
+@dp.message(RefMail.waiting_code, F.text, ~F.text.startswith("/"))
+async def rv_receive_code(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    code = re.sub(r"\D", "", message.text or "")
+    if len(code) != 6:
+        await message.answer("Введите <b>6 цифр</b> из письма.", parse_mode="HTML", reply_markup=RV_KB_CODE)
+        return
+    status, extra = rv_check_code(user_id, code)
+    if status == "wrong":
+        await message.answer(f"❌ Неверный код. Осталось попыток: <b>{extra}</b>.", parse_mode="HTML", reply_markup=RV_KB_CODE)
+        return
+    if status in ("locked", "expired", "none"):
+        text = {"locked": "🔒 Слишком много неверных попыток — код аннулирован.",
+                "expired": "⌛ Срок действия кода истёк.",
+                "none": "ℹ️ Активного кода нет."}[status]
+        await message.answer(f"{text}\nЗапросите новый — укажите e-mail ещё раз.", reply_markup=RV_KB_CANCEL)
+        await _rv_prompt_email(message, state)
+        return
+
+    result = rv_finalize(user_id, extra)
+    if not result.get("ok"):
+        reason = result.get("reason")
+        await state.clear()
+        msg = {"email_taken": "❌ Эта почта уже привязана к другому аккаунту — бонус не начислен. Нажмите /verify и укажите другой адрес.",
+               "self_referral": "❌ Нельзя использовать почту пригласившего. Нажмите /verify и укажите свой адрес.",
+               "expired": "⌛ Срок приглашения (7 дней) истёк, бонус недоступен.",
+               "not_pending": "ℹ️ Бонус за это приглашение уже получен или недоступен.",
+               }.get(reason, "⚠️ Произошла ошибка. Попробуйте ещё раз: /verify")
+        await message.answer(msg)
+        return
+
+    await state.clear()
+    username = message.from_user.username or f"user_{user_id}"
+    granted_self = False
+    try:
+        await renew_vpn_subscription_flexible(user_id, REF_BONUS_DAYS, username)
+        granted_self = True
+    except Exception as e:
+        logging.error(f"[REF-EMAIL] Не удалось начислить дни рефералу {user_id}: {e}", exc_info=True)
+
+    inviter_id = result["inviter_id"]
+    granted_inviter = False
+    if result.get("reward_inviter"):
+        try:
+            inv = get_user_from_db(inviter_id)
+            inv_name = inv[1] if (inv and len(inv) > 1 and inv[1]) else f"user_{inviter_id}"
+            await renew_vpn_subscription_flexible(inviter_id, REF_BONUS_DAYS, inv_name)
+            granted_inviter = True
+            try:
+                await bot.send_message(inviter_id,
+                    f"🤝 <b>Новый реферал!</b>\n\n<blockquote>Пользователь @{_html.escape(username)} подтвердил аккаунт по вашей ссылке.\n"
+                    f"🎁 Вам начислено: <b>+{REF_BONUS_DAYS} дня подписки</b>!</blockquote>", parse_mode="HTML")
+            except Exception:
+                pass
+        except Exception as e:
+            logging.error(f"[REF-EMAIL] Не удалось начислить дни пригласившему {inviter_id}: {e}", exc_info=True)
+    elif result.get("cap_hit"):
+        logging.info(f"[REF-EMAIL] Пригласивший {inviter_id} достиг дневного лимита наград ({REF_INVITER_DAILY_CAP}).")
+
+    try: add_referral_connection(inviter_id, user_id)
+    except Exception: pass
+
+    if not granted_self or (result.get("reward_inviter") and not granted_inviter):
+        try:
+            await bot.send_message(ADMIN_ID, f"⚠️ Реферальная награда подтверждена, но дни начислены не полностью.\nреферал={user_id} (ок={granted_self}), пригласивший={inviter_id} (ок={granted_inviter}). Смотрите лог [REF-EMAIL].")
+        except Exception:
+            pass
+
+    if granted_self:
+        await message.answer(f"✅ <b>Почта подтверждена!</b>\n\n<blockquote>🎁 Вам начислено <b>+{REF_BONUS_DAYS} дня подписки</b>.</blockquote>", parse_mode="HTML")
+    else:
+        await message.answer("✅ Почта подтверждена! Бонус будет начислен в ближайшее время — если дни не появятся, напишите в поддержку.")
+
+
+@dp.message(RefMail.waiting_email, ~F.text)   # стикер/фото и т.п.; команды и текст сюда не попадают
+@dp.message(RefMail.waiting_code, ~F.text)
+async def rv_wrong_input(message: types.Message):
+    await message.answer("Отправьте текстом: e-mail или код из письма. /verify — начать заново.")
+
+
+
+async def legacy_instant_referral(callback: types.CallbackQuery, user_id: int, username: str, inviter_id: int, inviter_data) -> str:
+    """СТАРАЯ СХЕМА (используется, пока не заполнены GMAIL_ADDRESS и GMAIL_APP_PASSWORD):
+    дни начисляются сразу после капчи — ровно так, как работало раньше. Возвращает текст-вставку для приветствия."""
+    ref_bonus_text = ""
+    inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
+    inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
+    
+    if inviter_role in ["partner", "ambassador", "admin", "creator"]:
+        logging.info(f"🚫 [РЕФ СИСТЕМА] Партнеру {inviter_id} не начислены 3 дня, так как он на денежной программе.")
+        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+        await renew_vpn_subscription_flexible(user_id, 3)
+        
+        ref_bonus_text = (
+            f"<blockquote>🎉 <b>Вам начислен приветственный бонус!</b>\n"
+            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+        )
+    else:
+        try: inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
+        except (ValueError, TypeError): inviter_old_expiry = 0
+        
+        current_time = int(time.time())
+        if inviter_old_expiry > current_time:
+            new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
+        else:
+            new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
+
+        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
+        await renew_vpn_subscription_flexible(inviter_id, 3)
+
+        try:
+            await callback.bot.send_message(
+                chat_id=inviter_id,
+                text=f"🤝 <b>Новый реферал!</b>\n\n"
+                     f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
+                     f"🎁 Вам начислено: <b>+3 дня подписки</b>!</blockquote>",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+
+        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
+        await renew_vpn_subscription_flexible(user_id, 3)
+        
+        ref_bonus_text = (
+            f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
+            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+        )
+
+    try: add_referral_connection(inviter_id, user_id)
+    except Exception: pass
+    return ref_bonus_text
+
+
+# =========================================================================
 # 🔥 ОБРАБОТЧИК НАЖАТИЯ НА КНОПКИ КАПЧИ
 # =========================================================================
 @dp.callback_query(F.data.startswith("captcha:"))
@@ -3687,6 +4433,7 @@ async def process_captcha(callback: types.CallbackQuery):
         return
 
     ref_bonus_text = ""
+    ref_pending = False   # приглашение ждёт подтверждения e-mail (дни пока НЕ начислены)
 
     # =========================================================================
     # 🔥 МОДЕРНИЗИРОВАННАЯ ДЕНЕЖНАЯ ПАРТНЕРСКАЯ ПРОГРАММА (Внутри Капчи)
@@ -3753,60 +4500,26 @@ async def process_captcha(callback: types.CallbackQuery):
     # 🎁 КЛИЕНТСКАЯ РЕФЕРАЛКА НА ДНИ (ref123) (Внутри Капчи)
     # =========================================================================
     elif ref_arg != "none" and ref_arg.startswith("ref") and is_new_user:
+        # 📧 Дни НЕ начисляются сразу: сначала подтверждение e-mail (см. блок «РЕФЕРАЛЫ С ПОДТВЕРЖДЕНИЕМ E-MAIL»)
         try:
             inviter_id = int(ref_arg.replace("ref", ""))
             if inviter_id != user_id:
                 inviter_data = get_user_from_db(inviter_id)
-                if inviter_data:
+                if inviter_data and email_verify_active():
                     inviter_role = inviter_data[5] if len(inviter_data) > 5 else "user"
-                    inviter_username = inviter_data[1] if len(inviter_data) > 1 else f"user_{inviter_id}"
-                    
-                    if inviter_role in ["partner", "ambassador", "admin", "creator"]:
-                        logging.info(f"🚫 [РЕФ СИСТЕМА] Партнеру {inviter_id} не начислены 3 дня, так как он на денежной программе.")
-                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
-                        await renew_vpn_subscription_flexible(user_id, 3)
-                        
+                    if rv_create_pending(user_id, inviter_id, inviter_role):
+                        ref_pending = True
                         ref_bonus_text = (
-                            f"<blockquote>🎉 <b>Вам начислен приветственный бонус!</b>\n"
-                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
+                            f"<blockquote>🎁 <b>Бонус за приглашение</b>\n"
+                            f"Подтвердите e-mail — и вы оба получите по <b>+{REF_BONUS_DAYS} дня</b>.</blockquote>\n\n"
                         )
-                    else:
-                        try: inviter_old_expiry = int(inviter_data[4]) if inviter_data[4] is not None else 0
-                        except (ValueError, TypeError): inviter_old_expiry = 0
-                        
-                        current_time = int(time.time())
-                        if inviter_old_expiry > current_time:
-                            new_expiry_timestamp = inviter_old_expiry + THREE_DAYS_SECONDS
-                        else:
-                            new_expiry_timestamp = current_time + THREE_DAYS_SECONDS
-
-                        add_or_update_user(inviter_id, inviter_username, expiry_time=new_expiry_timestamp, role=inviter_role)
-                        await renew_vpn_subscription_flexible(inviter_id, 3)
-
-                        try:
-                            await callback.bot.send_message(
-                                chat_id=inviter_id,
-                                text=f"🤝 <b>Новый реферал!</b>\n\n"
-                                     f"<blockquote>Пользователь @{username} зарегистрировался по вашей ссылке.\n"
-                                     f"🎁 Вам начислено: <b>+3 дня подписки</b>!</blockquote>",
-                                parse_mode="HTML"
-                            )
-                        except Exception: pass
-
-                        add_or_update_user(user_id, username, expiry_time=int(time.time() + THREE_DAYS_SECONDS))
-                        await renew_vpn_subscription_flexible(user_id, 3)
-                        
-                        ref_bonus_text = (
-                            f"<blockquote>🎉 <b>Вам начислен реферальный бонус!</b>\n"
-                            f"🎁 Подарочные <b>3 дня подписки</b> уже активированы.</blockquote>\n\n"
-                        )
-
-                    try: add_referral_connection(inviter_id, user_id)
-                    except Exception: pass 
+                elif inviter_data:
+                    # почта ещё не настроена — работает прежняя схема (дни сразу)
+                    ref_bonus_text = await legacy_instant_referral(callback, user_id, username, inviter_id, inviter_data)
         except (ValueError, TypeError): pass
 
     # 3. Финализация регистрации в основной БД, если бонуса дней не было
-    if is_new_user and not ref_bonus_text:
+    if is_new_user and (not ref_bonus_text or ref_pending):
         # Также принудительно выставляем is_bot = 0, так как капча успешно пройдена
         add_or_update_user(user_id, username, expiry_time=0, is_bot=0)
 
@@ -3833,6 +4546,15 @@ async def process_captcha(callback: types.CallbackQuery):
     # 4. Отправка главного сообщения с медиа-эффектом через bot.send_video
     final_caption = f"{ref_bonus_text}{text1}"
     await send_screen(user_id, "welcome", final_caption, main_kb(), effect=True)
+
+    if ref_pending:
+        try:
+            await bot.send_message(
+                user_id,
+                f"🎁 <b>Ваш бонус ждёт подтверждения</b>\n\nПодтвердите e-mail — и вы оба с пригласившим получите по <b>+{REF_BONUS_DAYS} дня</b>. Это займёт меньше минуты.",
+                reply_markup=RV_KB_NUDGE, parse_mode="HTML")
+        except Exception as _nudge_err:
+            logging.warning(f"[REF-EMAIL] Не удалось отправить напоминание о бонусе: {_nudge_err}")
 
 
 
@@ -5288,10 +6010,10 @@ async def subscription(callback: types.CallbackQuery):
         status_sub = "⚠️ <i>Не удалось загрузить данные</i>"
 
     # --- 2. РАСЧЕТ ДИНАМИЧЕСКИХ СКИДОК ---
-    p30, is_promo = get_discount_price(150)
-    p90, _ = get_discount_price(350)
-    p150, _ = get_discount_price(650)
-    p365, _ = get_discount_price(1099)
+    p30, is_promo, pct30 = get_discount_price_ex(150, user_id)
+    p90, _, _ = get_discount_price_ex(350, user_id)
+    p150, _, _ = get_discount_price_ex(650, user_id)
+    p365, _, _ = get_discount_price_ex(1099, user_id)
     
     prefix = "🔥 " if is_promo else "💳 "
     
@@ -5307,6 +6029,10 @@ async def subscription(callback: types.CallbackQuery):
     
     # --- 4. КРАСИВОЕ ТЕКСТОВОЕ ОФОРМЛЕНИЕ МЕНЮ ---
     promo_header = "🔥 <b>Внимание! Действует скидка 30% на все помесячные тарифы!</b>\n\n" if is_promo else ""
+    _personal = get_discount_info(150, user_id)
+    if _personal["source"] == "personal":
+        _o = get_best_offer(user_id)
+        promo_header = f"🎁 <b>Ваша персональная скидка −{pct30}%</b> уже учтена в ценах ниже (до {_ret_date(_o['expires_ts'])} МСК)\n\n"
     
     caption_text = (
         f"{promo_header}"
@@ -5346,7 +6072,7 @@ async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     except Exception: pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    final_price_rub, is_promo = get_discount_price(150)
+    final_price_rub, is_promo, _disc_pct = get_discount_price_ex(150, callback.from_user.id)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
@@ -5355,7 +6081,7 @@ async def send_invoice_30(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на 1 месяц {'-30%' if is_promo else ''}",
+        title=f"Подписка на 1 месяц {('-' + str(_disc_pct) + '%') if is_promo else ''}",
         description="Доступ к VPN Sonata на 30 дней. Лимит: до 5 устройств одновременно.",
         payload="vpn_30_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -5373,7 +6099,7 @@ async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     except Exception: pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    final_price_rub, is_promo = get_discount_price(350)
+    final_price_rub, is_promo, _disc_pct = get_discount_price_ex(350, callback.from_user.id)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
@@ -5382,7 +6108,7 @@ async def send_invoice_90(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на 3 месяца {'-30%' if is_promo else ''}",
+        title=f"Подписка на 3 месяца {('-' + str(_disc_pct) + '%') if is_promo else ''}",
         description="Доступ к VPN Sonata на 90 дней. Лимит: до 10 устройств одновременно.",
         payload="vpn_90_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -5400,7 +6126,7 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     except Exception: pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    final_price_rub, is_promo = get_discount_price(650)
+    final_price_rub, is_promo, _disc_pct = get_discount_price_ex(650, callback.from_user.id)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
@@ -5409,7 +6135,7 @@ async def send_invoice_150(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Подписка на 5 месяцев {'-30%' if is_promo else ''}",
+        title=f"Подписка на 5 месяцев {('-' + str(_disc_pct) + '%') if is_promo else ''}",
         description="Доступ к VPN Sonata на 150 дней. Лимит: до 20 устройств одновременно.",
         payload="vpn_150_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -5427,7 +6153,7 @@ async def send_invoice_365(callback: types.CallbackQuery, bot: Bot):
     except Exception: pass
         
     await get_vpn_config_clean(callback.from_user.id, callback.from_user.username or "")
-    final_price_rub, is_promo = get_discount_price(1099)
+    final_price_rub, is_promo, _disc_pct = get_discount_price_ex(1099, callback.from_user.id)
     
     invoice_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"💳 Оплатить — {final_price_rub} руб.", pay=True)],
@@ -5436,7 +6162,7 @@ async def send_invoice_365(callback: types.CallbackQuery, bot: Bot):
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"Безлимитная подписка на 1 год {'-30%' if is_promo else ''}",
+        title=f"Безлимитная подписка на 1 год {('-' + str(_disc_pct) + '%') if is_promo else ''}",
         description="Максимальный доступ к VPN Sonata на 365 дней. ПОЛНЫЙ БЕЗЛИМИТ по устройствам!",
         payload="vpn_365_days_subscription",
         provider_token=PROVIDER_TOKEN,
@@ -5665,6 +6391,11 @@ async def process_successful_payment(message: types.Message):
                 f"<i>✨ Лимиты устройств и сервера успешно обновлены! Вы можете зайти в меню «Подключиться», выбрать свое устройство и импортировать обновленный ключ подписки.</i>",
                 parse_mode="HTML"
             )
+            # 🎯 ретеншн: журнал покупки, списание применённой скидки, благодарность за продление
+            try:
+                await ret_on_purchase(bot, user_id, payload, days_to_add, int(message.successful_payment.total_amount // 100))
+            except Exception as ret_err:
+                logging.error(f"[RET] Ошибка ret_on_purchase: {ret_err}", exc_info=True)
         except Exception as e:
             logging.error(f"Ошибка при начислении дней после оплаты для {user_id}: {e}", exc_info=True)
             await message.answer(
@@ -5740,9 +6471,9 @@ async def handle_miniapp_data(message: types.Message, bot: Bot):
         else:
             return
 
-        final_price_rub, is_promo = get_discount_price(base_price)
+        final_price_rub, is_promo, _disc_pct = get_discount_price_ex(base_price, message.from_user.id)
         if is_promo:
-            title += " -30%"
+            title += f" -{_disc_pct}%"
 
         try:
             invoice_link = await bot.create_invoice_link(
@@ -6745,175 +7476,674 @@ import logging
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 async def check_and_notify_expiring_subscriptions(bot):
-    """
-    Фоновая задача: запускается раз в сутки.
-    Использует отдельную таблицу-журнал, создаваемую автоматически.
-    Основная таблица users при этом остается нетронутой.
-    """
-    logging.info("⏳ Запуск проверки статусов и истекающих подписок...")
-    
-    current_time = int(time.time())
-    one_day = 24 * 3600
-    
-    expiring_rows = []
-    expired_rows = []
+    """Оставлено для совместимости: теперь всё делает ретеншн-движок (см. ret_tick)."""
+    await ret_tick(bot)
 
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0) 
-        cursor = conn.cursor()
-        
-        # Автоматически создаем таблицу-журнал прямо на хостинге, если её ещё нет
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS notification_log (
-                user_id INTEGER,
-                notified_expiry INTEGER,
-                type TEXT,
-                PRIMARY KEY (user_id, notified_expiry, type)
-            )
-        """)
+
+# =====================================================================
+# 🎯 РЕТЕНШН-ДВИЖОК: уведомления об окончании, персональные скидки, заботливые сообщения
+#
+#  Что исправлено в уведомлениях об окончании подписки:
+#   • проверка раз в 5 минут (раньше раз в сутки), поэтому «подписка закончилась» приходит сразу, а не через сутки;
+#   • в сообщении — РЕАЛЬНЫЙ остаток времени («осталось 1 день 3 ч»), а не всегда «менее 3 дней»;
+#   • напоминание отправляется только если подписка была ДОЛЬШЕ этого порога, когда её оформили:
+#     на 2 дня — не придёт «за 3 дня»; на 5 часов — придёт только «за 3 часа»;
+#   • каждое напоминание — один раз на каждую дату окончания, лишние (пропущенные) пороги не сыплются пачкой.
+#  Персональные акции (скидки) хранятся в таблице user_offers и применяются к тарифам автоматически.
+#  Типы сообщений: service (важное, всегда), soft (мягкие вопросы, не ночью), marketing (акции: не ночью,
+#  не чаще 1 в 20 ч и 3 в неделю, можно отключить кнопкой «Отключить акции» или /promo_off).
+# =====================================================================
+import datetime as dt
+RET_TICK_SECONDS = 300
+RET_BOT_USERNAME = "SonataVPN_bot"
+RET_SUPPORT_URL = "https://t.me/SonataSupport_bot"
+RET_GUIDE_URL = "https://sn-go.ru/Instruktion"
+RET_TZ = dt.timezone(dt.timedelta(hours=3))          # Москва
+RET_QUIET_START, RET_QUIET_END = 22, 10               # тихие часы: с 22:00 до 10:00 акции и мягкие вопросы не шлём
+RET_MARKETING_GAP = 20 * 3600
+RET_MARKETING_PER_WEEK = 3
+RET_API_BUDGET_PER_TICK = 25                          # сколько раз за один проход спрашиваем список устройств у сайта
+RET_EXEMPT_ROLES = ("creator", "admin", "ambassador", "partner")
+RET_PRICES = {"vpn_30_days_subscription": 150, "vpn_90_days_subscription": 350,
+              "vpn_150_days_subscription": 650, "vpn_365_days_subscription": 1099}
+RET_INF_DAYS = 3000                                    # дольше — считаем «безлимитной» (партнёры и т.п.)
+
+# Сценарии скидок: ключ -> (процент, часов действия, название)
+RET_OFFERS = {
+    "first_buy": (20, 72, "скидка на первую подписку"),
+    "last_day": (10, 48, "скидка «последний день»"),
+    "loyal_renew": (20, 60 * 24, "скидка за продление"),
+    "winback_1d": (15, 72, "скидка «возвращайтесь»"),
+    "winback_7d": (25, 72, "скидка «скучаем»"),
+    "winback_30d": (35, 120, "особая скидка для возвращения"),
+    "loyal_long": (15, 14 * 24, "скидка постоянному клиенту"),
+    "year_upsell": (12, 7 * 24, "скидка на годовой тариф"),
+    "manual": (0, 0, "персональная скидка"),
+}
+
+_RET_READY = False
+
+
+def _ret_db():
+    global _RET_READY
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    if not _RET_READY:
+        cur = conn.cursor()
+        cur.execute('''CREATE TABLE IF NOT EXISTS sub_track (
+            user_id INTEGER, expiry_time INTEGER, first_seen_ts INTEGER, first_remaining INTEGER,
+            PRIMARY KEY (user_id, expiry_time))''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS user_meta (
+            user_id INTEGER PRIMARY KEY, first_seen_ts INTEGER DEFAULT 0,
+            promos_off INTEGER DEFAULT 0, blocked INTEGER DEFAULT 0)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, payload TEXT, days INTEGER,
+            paid_rub INTEGER, ts INTEGER, is_first INTEGER DEFAULT 0, discount_pct INTEGER DEFAULT 0)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS user_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, offer_key TEXT, percent INTEGER,
+            created_ts INTEGER, expires_ts INTEGER, used_ts INTEGER)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS campaign_log (
+            user_id INTEGER, campaign_key TEXT, ref_key TEXT, sent_ts INTEGER,
+            kind TEXT DEFAULT 'service', skipped INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, campaign_key, ref_key))''')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_offers_user ON user_offers(user_id, used_ts, expires_ts)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_purch_user ON purchases(user_id, ts)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_camp_kind ON campaign_log(user_id, kind, sent_ts)')
+        # Те, кто уже был в боте до запуска движка, помечаются «старыми» (first_seen_ts = 0): им не шлём «приветственные» сообщения
+        cur.execute('SELECT COUNT(*) FROM user_meta')
+        if cur.fetchone()[0] == 0:
+            cur.execute('INSERT OR IGNORE INTO user_meta (user_id, first_seen_ts) SELECT user_id, 0 FROM users')
         conn.commit()
-        
-        # 1. Выбираем пользователей, у которых подписка заканчивается в пределах 3 дней,
-        # и которым еще НЕ отправлялось уведомление типа '3days' для их текущего expiry_time
-        cursor.execute(
-            """
-            SELECT u.user_id, u.expiry_time 
-            FROM users u
-            LEFT JOIN notification_log nl 
-              ON u.user_id = nl.user_id 
-             AND u.expiry_time = nl.notified_expiry 
-             AND nl.type = '3days'
-            WHERE u.expiry_time > ? 
-              AND u.expiry_time <= (? + (3 * ?))
-              AND nl.user_id IS NULL
-            """, 
-            (current_time, current_time, one_day)
-        )
-        expiring_rows = cursor.fetchall()
-        
-        # 2. Выбираем пользователей, у которых подписка полностью закончилась,
-        # и которым еще НЕ отправлялось уведомление типа 'expired' для их текущего expiry_time
-        cursor.execute(
-            """
-            SELECT u.user_id, u.expiry_time 
-            FROM users u
-            LEFT JOIN notification_log nl 
-              ON u.user_id = nl.user_id 
-             AND u.expiry_time = nl.notified_expiry 
-             AND nl.type = 'expired'
-            WHERE u.expiry_time <= ? 
-              AND u.expiry_time > 0
-              AND nl.user_id IS NULL
-            """, 
-            (current_time,)
-        )
-        expired_rows = cursor.fetchall()
-        
-    except Exception as e:
-        logging.error(f"❌ Ошибка при работе с БД в блоке выборки: {e}")
-        if 'conn' in locals():
-            conn.close()
-        return
+        _RET_READY = True
+    return conn
 
-    # --- БЛОК 1: УВЕДОМЛЕНИЕ ЗА 3 ДНЯ ---
-    for row in expiring_rows:
-        user_id = row[0]
-        expiry_time = row[1]
-        try:
-            text = (
-                "⚠️ <b>Внимание!</b>\n\n"
-                "Ваша VPN-подписка заканчивается менее чем через <b>3 дня</b>.\n"
-                "Пожалуйста, продлите её вовремя, чтобы не потерять доступ к сети."
-            )
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)]
-            ])
-            
-            await bot.send_message(
-                chat_id=user_id, 
-                text=text, 
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            
-            # Записываем факт отправки в журнал
-            cursor.execute(
-                "INSERT OR IGNORE INTO notification_log (user_id, notified_expiry, type) VALUES (?, ?, '3days')",
-                (user_id, expiry_time)
-            )
-            conn.commit()
-            
-            logging.info(f"🔔 Уведомление (3 дня) отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05)
-            
-        except Exception as err:
-            logging.error(f"Не удалось отправить уведомление за 3 дня пользователю {user_id}: {err}")
 
-    # --- БЛОК 2: УВЕДОМЛЕНИЕ ОБ ОКОНЧАНИИ ---
-    for row in expired_rows:
-        user_id = row[0]
-        expiry_time = row[1]
-        try:
-            text = (
-                "🛑 <b>Срок действия подписки истек!</b>\n\n"
-                "Ваш VPN-доступ временно отключен.\n"
-                "Чтобы восстановить подключение, оплатите продление."
-            )
-            
-            kb_expired = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="buy", style=ButtonStyle.SUCCESS)]
-            ])
-            
-            await bot.send_message(
-                chat_id=user_id, 
-                text=text, 
-                parse_mode="HTML",
-                reply_markup=kb_expired
-            )
-            
-            # Записываем факт отправки в журнал
-            cursor.execute(
-                "INSERT OR IGNORE INTO notification_log (user_id, notified_expiry, type) VALUES (?, ?, 'expired')",
-                (user_id, expiry_time)
-            )
-            conn.commit()
-            
-            logging.info(f"🛑 Уведомление об отключении отправлено пользователю {user_id}")
-            await asyncio.sleep(0.05)
-            
-        except Exception as err:
-            logging.error(f"Не удалось отправить уведомление об окончании пользователю {user_id}: {err}")
+def ret_human(seconds: int) -> str:
+    """2 дня 5 ч / 1 день / 7 ч 20 мин / 45 мин"""
+    seconds = max(0, int(seconds))
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    def plural(n, one, few, many):
+        n10, n100 = n % 10, n % 100
+        return one if (n10 == 1 and n100 != 11) else (few if 2 <= n10 <= 4 and not 12 <= n100 <= 14 else many)
+    if d >= 1:
+        return f"{d} {plural(d, 'день', 'дня', 'дней')}" + (f" {h} ч" if h and d < 3 else "")
+    if h >= 1:
+        return f"{h} ч" + (f" {m} мин" if m and h < 6 else "")
+    return f"{max(m, 1)} мин"
 
-    # Очищаем старые логи, чтобы база данных на хостинге не раздувалась со временем
+
+def ret_is_quiet(now=None) -> bool:
+    h = dt.datetime.fromtimestamp(now or time.time(), RET_TZ).hour
+    return h >= RET_QUIET_START or h < RET_QUIET_END
+
+
+def _ret_date(ts: int) -> str:
+    return dt.datetime.fromtimestamp(ts, RET_TZ).strftime("%d.%m %H:%M")
+
+
+# ---------------------------------------------------------------- ПЕРСОНАЛЬНЫЕ СКИДКИ
+def grant_offer(user_id: int, key: str, percent: int = None, hours: int = None, now: int = None) -> int:
+    """Выдаёт скидку. Если у пользователя уже есть активная не меньшая — новую не создаёт. Возвращает id скидки или 0."""
+    now = now or int(time.time())
+    base_pct, base_hours, _ = RET_OFFERS.get(key, RET_OFFERS["manual"])
+    percent = int(percent if percent is not None else base_pct)
+    hours = int(hours if hours is not None else base_hours)
+    if percent <= 0 or hours <= 0:
+        return 0
+    conn = _ret_db()
     try:
-        # Удаляем записи логов для подписок, которые закончились более месяца назад
-        one_month_ago = current_time - (30 * one_day)
-        cursor.execute("DELETE FROM notification_log WHERE notified_expiry < ?", (one_month_ago,))
+        cur = conn.cursor()
+        cur.execute('SELECT id, percent FROM user_offers WHERE user_id=? AND used_ts IS NULL AND expires_ts>? ORDER BY percent DESC LIMIT 1', (user_id, now))
+        row = cur.fetchone()
+        if row and int(row[1]) >= percent:
+            return 0
+        cur.execute('INSERT INTO user_offers (user_id, offer_key, percent, created_ts, expires_ts) VALUES (?,?,?,?,?)',
+                    (user_id, key, percent, now, now + hours * 3600))
         conn.commit()
+        return cur.lastrowid
+    finally:
         conn.close()
-    except Exception as e:
-        logging.error(f"Ошибка при закрытии или очистке логов БД: {e}")
 
+
+def get_best_offer(user_id: int, now: int = None):
+    now = now or int(time.time())
+    conn = _ret_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT id, offer_key, percent, expires_ts FROM user_offers WHERE user_id=? AND used_ts IS NULL AND expires_ts>? ORDER BY percent DESC, expires_ts ASC LIMIT 1', (user_id, now))
+        r = cur.fetchone()
+        return {"id": r[0], "key": r[1], "percent": int(r[2]), "expires_ts": int(r[3])} if r else None
+    finally:
+        conn.close()
+
+
+def consume_offer(offer_id: int, now: int = None):
+    conn = _ret_db()
+    try:
+        conn.execute('UPDATE user_offers SET used_ts=? WHERE id=? AND used_ts IS NULL', (now or int(time.time()), offer_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_discount_info(base_price_rub: int, user_id: int = None) -> dict:
+    """Лучшая из скидок: общая акция (promo_actions) или персональная. percent=0 — скидки нет."""
+    pct, source, offer_id = 0, None, None
+    try:
+        if check_promo_active_db():
+            pct, source = 30, "global"
+    except Exception:
+        pass
+    if user_id:
+        o = get_best_offer(user_id)
+        if o and o["percent"] > pct:
+            pct, source, offer_id = o["percent"], "personal", o["id"]
+    price = max(1, int(base_price_rub * (100 - pct) / 100)) if pct else int(base_price_rub)
+    return {"price": price, "percent": pct, "source": source, "offer_id": offer_id}
+
+
+def get_discount_price_ex(base_price_rub: int, user_id: int = None):
+    """(цена, есть_ли_скидка, процент) — с учётом персональных скидок."""
+    info = get_discount_info(base_price_rub, user_id)
+    return info["price"], info["percent"] > 0, info["percent"]
+
+
+# ---------------------------------------------------------------- ОТПРАВКА С ЗАЩИТАМИ
+def _ret_kb(rows):
+    return InlineKeyboardMarkup(inline_keyboard=[[b for b in row] for row in rows])
+
+def _btn(text, cb=None, url=None):
+    return InlineKeyboardButton(text=text, callback_data=cb) if cb else InlineKeyboardButton(text=text, url=url)
+
+RET_OFF_ROW = [_btn("🔕 Отключить акции", cb="ret:off")]
+
+
+async def ret_try_send(bot, user_id: int, text: str, rows, key: str, ref: str, kind: str = "service", silent: bool = False, now: int = None) -> str:
+    """Возвращает 'sent' | 'skip' | 'defer' | 'fail'. Лог отправки пишется только после успешной доставки."""
+    now = now or int(time.time())
+    conn = _ret_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key=? AND ref_key=?', (user_id, key, ref))
+        if cur.fetchone():
+            return "skip"
+        cur.execute('SELECT promos_off, blocked FROM user_meta WHERE user_id=?', (user_id,))
+        meta = cur.fetchone() or (0, 0)
+        if meta[1]:
+            return "skip"
+        if kind in ("soft", "marketing") and ret_is_quiet(now):
+            return "defer"
+        if kind == "marketing":
+            if meta[0]:
+                return "skip"
+            cur.execute("SELECT MAX(sent_ts), COUNT(*) FROM campaign_log WHERE user_id=? AND kind='marketing' AND skipped=0 AND sent_ts>?", (user_id, now - 7 * 86400))
+            last_ts, cnt = cur.fetchone()
+            if (last_ts and now - last_ts < RET_MARKETING_GAP) or (cnt or 0) >= RET_MARKETING_PER_WEEK:
+                return "defer"
+            rows = list(rows) + [RET_OFF_ROW]
+    finally:
+        conn.close()
+    try:
+        await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML", reply_markup=_ret_kb(rows), disable_notification=silent)
+    except Exception as e:
+        name = type(e).__name__
+        msg = str(e).lower()
+        conn = _ret_db()
+        try:
+            if name == "TelegramForbiddenError" or "blocked" in msg or "deactivated" in msg or "chat not found" in msg:
+                conn.execute('INSERT OR IGNORE INTO user_meta (user_id) VALUES (?)', (user_id,))
+                conn.execute('UPDATE user_meta SET blocked=1 WHERE user_id=?', (user_id,))
+                conn.execute('INSERT OR IGNORE INTO campaign_log (user_id, campaign_key, ref_key, sent_ts, kind, skipped) VALUES (?,?,?,?,?,1)', (user_id, key, ref, now, kind))
+                conn.commit()
+                logging.info(f"[RET] Пользователь {user_id} недоступен ({name}) — больше не пишем")
+                return "skip"
+        finally:
+            conn.close()
+        logging.error(f"[RET] Не удалось отправить '{key}' пользователю {user_id}: {name}: {e}")
+        return "fail"
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO campaign_log (user_id, campaign_key, ref_key, sent_ts, kind) VALUES (?,?,?,?,?)', (user_id, key, ref, now, kind))
+        conn.commit()
+    finally:
+        conn.close()
+    await asyncio.sleep(0.05)
+    return "sent"
+
+
+def ret_mark(user_id: int, key: str, ref: str, kind: str = "service", now: int = None):
+    """Тихо пометить «обработано» (без отправки) — чтобы не возвращаться к этому снова."""
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO campaign_log (user_id, campaign_key, ref_key, sent_ts, kind, skipped) VALUES (?,?,?,?,?,1)', (user_id, key, ref, now or int(time.time()), kind))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def ret_devices_info(sub_id: str):
+    """(кол-во устройств, последняя активность, лимит) из API сайта (данные панели по HWID) или None, если сайт не ответил."""
+    if not sub_id:
+        return None
+    data = await fetch_user_data_from_vps(sub_id)
+    if not data or data.get("status") != "success":
+        return None
+    devs = data.get("devices", []) or []
+    last = 0
+    for d in devs:
+        try: last = max(last, int(d.get("last_seen", 0) or 0))
+        except (TypeError, ValueError): pass
+    return len(devs), last, int((data.get("profile") or {}).get("device_limit") or 0)
+
+
+def _ret_base_users_sql(extra: str = "") -> str:
+    ex = ",".join(f"'{r}'" for r in RET_EXEMPT_ROLES)
+    return (f"SELECT u.user_id, u.github_raw_url, u.expiry_time, COALESCE(u.role,'user'), COALESCE(u.device_limit,5) FROM users u "
+            f"LEFT JOIN user_meta m ON m.user_id=u.user_id WHERE COALESCE(u.is_bot,0)=0 AND COALESCE(m.blocked,0)=0 "
+            f"AND COALESCE(u.role,'user') NOT IN ({ex}) {extra}")
+
+
+def _ret_query(sql: str, params=()):
+    conn = _ret_db()
+    try:
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def _ret_offer_line(user_id: int, now: int = None) -> str:
+    o = get_best_offer(user_id, now)
+    if not o:
+        return ""
+    return f"\n\n🎁 <b>Ваша скидка −{o['percent']}%</b> действует до <b>{_ret_date(o['expires_ts'])}</b> (МСК) — применится к цене автоматически."
+
+
+def _buy_btn(user_id: int, now: int = None, text: str = "💳 Продлить подписку"):
+    o = get_best_offer(user_id, now)
+    return _btn(f"💳 Продлить со скидкой −{o['percent']}%" if o else text, cb="buy")
+
+
+# ---------------------------------------------------------------- 1. УВЕДОМЛЕНИЯ ОБ ОКОНЧАНИИ
+RET_TIERS = [(72 * 3600, "t72"), (24 * 3600, "t24"), (3 * 3600, "t3")]    # от дальнего к ближнему
+
+
+async def ret_expiry_notices(bot, now: int):
+    horizon = now + 72 * 3600 + 60
+    rows = _ret_query(_ret_base_users_sql(
+        "AND u.expiry_time>? AND u.expiry_time<=?"), (now, horizon))
+    for user_id, sub_id, expiry, role, limit in rows:
+        t = _ret_query("SELECT first_remaining FROM sub_track WHERE user_id=? AND expiry_time=?", (user_id, expiry))
+        first_remaining = int(t[0][0]) if t else 0
+        remaining = expiry - now
+        # пороги, которые уже наступили и при оформлении подписки ещё были впереди
+        due = [(T, k) for T, k in RET_TIERS if remaining <= T and first_remaining > T + 600]
+        if not due:
+            continue
+        T, k = due[-1]                                        # берём самый близкий; более дальние помечаем как пропущенные
+        for T2, k2 in due[:-1]:
+            ret_mark(user_id, f"exp_{k2}", str(expiry), "service", now)
+        had_purchases = bool(_ret_query("SELECT 1 FROM purchases WHERE user_id=? LIMIT 1", (user_id,)))
+        offer_note = ""
+        if k == "t24":
+            granted = grant_offer(user_id, "first_buy" if not had_purchases else "last_day", now=now)
+            offer_note = _ret_offer_line(user_id, now)
+        elif k == "t3":
+            offer_note = _ret_offer_line(user_id, now)
+        left = ret_human(remaining)
+        if k == "t72":
+            text = f"⏳ <b>Подписка скоро закончится</b>\n\nДо окончания осталось: <b>{left}</b> (до {_ret_date(expiry)} МСК).\nПродлите заранее — доступ не прервётся."
+        elif k == "t24":
+            text = f"⚠️ <b>Остался примерно один день</b>\n\nПодписка закончится через <b>{left}</b> ({_ret_date(expiry)} МСК).{offer_note}"
+        else:
+            text = f"🔔 <b>Подписка заканчивается через {left}</b>\n\nПосле {_ret_date(expiry)} МСК VPN отключится.{offer_note}"
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now)]], f"exp_{k}", str(expiry), "service", silent=ret_is_quiet(now), now=now)
+
+
+async def ret_expired_notices(bot, now: int):
+    """Подписка закончилась — сообщаем сразу (в пределах нескольких минут), а не через сутки."""
+    rows = _ret_query(_ret_base_users_sql("AND u.expiry_time>? AND u.expiry_time<=?"), (now - 6 * 3600, now))
+    for user_id, sub_id, expiry, role, limit in rows:
+        text = (f"🛑 <b>Срок подписки истёк</b>\n\nДоступ к VPN отключён с {_ret_date(expiry)} МСК.\n"
+                f"Чтобы вернуть подключение, оформите продление — всё заработает на тех же устройствах.{_ret_offer_line(user_id, now)}")
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Продлить подписку")]], "exp_expired", str(expiry), "service", silent=ret_is_quiet(now), now=now)
+
+
+# ---------------------------------------------------------------- 2. ЗАБОТА ПОСЛЕ ПОКУПКИ / РЕГИСТРАЦИИ
+async def ret_connect_checks(bot, now: int, budget: list):
+    # 2.1 первая покупка: через 3 часа ни одного устройства -> спросить, что случилось; через сутки — ещё раз
+    purchases = _ret_query(
+        "SELECT p.id, p.user_id, p.ts, u.github_raw_url FROM purchases p JOIN users u ON u.user_id=p.user_id "
+        "WHERE p.is_first=1 AND p.ts<=? AND p.ts>? ", (now - 3 * 3600, now - 72 * 3600))
+    for pid, user_id, ts, sub_id in purchases:
+        key = "nc24h" if now - ts >= 24 * 3600 else "nc3h"
+        if key == "nc24h" and not _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='nc3h' AND ref_key=? AND skipped=0", (user_id, str(pid))):
+            continue                                           # 24-часовое напоминание только если 3-часовое было отправлено
+        if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key=? AND ref_key=?", (user_id, key, str(pid))):
+            continue
+        if budget[0] <= 0:
+            return
+        budget[0] -= 1
+        info = await ret_devices_info(sub_id)
+        if info is None:
+            continue
+        if info[0] > 0:
+            ret_mark(user_id, "nc3h", str(pid), "soft", now); ret_mark(user_id, "nc24h", str(pid), "soft", now)   # подключился — молчим
+            continue
+        if key == "nc3h":
+            text = ("👋 <b>Как дела с подключением?</b>\n\nВы оформили подписку, но мы пока не видим ни одного подключённого устройства. "
+                    "Возможно, что-то пошло не так?\n\nЭто бывает: не тот импорт, приложение не обновилось или не получилось вставить ссылку. "
+                    "Мы поможем — выберите, что удобнее:")
+        else:
+            text = ("🤝 <b>Всё ещё не подключились?</b>\n\nПрошли сутки, а подключённых устройств нет. Не оставляйте это на потом — "
+                    "напишите в поддержку, мы разберёмся вместе и подскажем, что сделать именно на вашем устройстве.")
+        rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("📲 Подключиться", cb="connect")]]
+        await ret_try_send(bot, user_id, text, rows, key, str(pid), "soft", now=now)
+
+    # 2.2 новый пользователь с бонусными днями не подключил устройство за 6 часов
+    rows_new = _ret_query(_ret_base_users_sql(
+        "AND m.first_seen_ts>? AND m.first_seen_ts<=? AND u.expiry_time>? "
+        "AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.user_id=u.user_id)"), (now - 48 * 3600, now - 6 * 3600, now))
+    for user_id, sub_id, expiry, role, limit in rows_new:
+        if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='new_unused'", (user_id,)):
+            continue
+        if budget[0] <= 0:
+            return
+        budget[0] -= 1
+        info = await ret_devices_info(sub_id)
+        if info is None:
+            continue
+        if info[0] > 0:
+            ret_mark(user_id, "new_unused", "1", "soft", now)
+            continue
+        text = ("🎁 <b>Ваши бонусные дни ещё не используются</b>\n\nПодключиться — это пара кликов: выберите своё устройство, "
+                "импортируйте ключ, и VPN работает. Если что-то не получается — мы на связи.")
+        rows = [[_btn("📲 Подключиться", cb="connect")], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("🆘 Поддержка", url=RET_SUPPORT_URL)]]
+        await ret_try_send(bot, user_id, text, rows, "new_unused", "1", "soft", now=now)
+
+    # 2.3 давно не видели ни одного устройства при активной подписке
+    idle = _ret_query(_ret_base_users_sql(
+        "AND u.expiry_time>? AND u.expiry_time<?"), (now + 3 * 86400, now + RET_INF_DAYS * 86400))
+    month = dt.datetime.fromtimestamp(now, RET_TZ).strftime("%Y-%m")
+    for user_id, sub_id, expiry, role, limit in idle:
+        if budget[0] <= 3:
+            return
+        if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='idle7d' AND ref_key=?", (user_id, month)):
+            continue
+        if not _ret_query("SELECT 1 FROM purchases WHERE user_id=? AND ts<? LIMIT 1", (user_id, now - 7 * 86400)):
+            continue
+        budget[0] -= 1
+        info = await ret_devices_info(sub_id)
+        if info is None or info[0] == 0 or info[1] == 0:
+            continue
+        if now - info[1] > 7 * 86400:
+            text = ("👀 <b>Давно вас не видели</b>\n\nПодписка активна, но подключений за последнюю неделю не было. Всё ли в порядке? "
+                    "Если VPN перестал работать или что-то не подключается — напишите нам, поможем.")
+            rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📲 Подключиться", cb="connect")]]
+            await ret_try_send(bot, user_id, text, rows, "idle7d", month, "soft", now=now)
+
+
+# ---------------------------------------------------------------- 3. АКЦИИ И ВОЗВРАТ
+async def ret_winback(bot, now: int):
+    """Подписка истекла и не продлена: три волны со скидкой (1, 7 и 30 дней после окончания)."""
+    stages = [("winback_1d", 1 * 86400, "👋 <b>Мы по вам скучаем</b>\n\nПодписка закончилась вчера. Вернитесь — и подключение заработает на ваших устройствах без повторной настройки."),
+              ("winback_7d", 7 * 86400, "💛 <b>Неделя без Sonata VPN</b>\n\nЗнаем, что без доступа неудобно. Мы подготовили для вас скидку на возвращение."),
+              ("winback_30d", 30 * 86400, "🔥 <b>Лучшее предложение для возвращения</b>\n\nПрошёл месяц — и мы хотим, чтобы вы вернулись. Это самая большая скидка, которую мы даём.")]
+    for key, delay, intro in stages:
+        rows = _ret_query(_ret_base_users_sql("AND u.expiry_time>0 AND u.expiry_time<=? AND u.expiry_time>?"), (now - delay, now - delay - 36 * 3600))
+        for user_id, sub_id, expiry, role, limit in rows:
+            if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key=? AND ref_key=?", (user_id, key, str(expiry))):
+                continue
+            if _ret_query("SELECT 1 FROM purchases WHERE user_id=? AND ts>? LIMIT 1", (user_id, expiry - 86400)):
+                ret_mark(user_id, key, str(expiry), "marketing", now)    # уже продлил после окончания — не тревожим
+                continue
+            if ret_is_quiet(now):
+                continue
+            grant_offer(user_id, key, now=now)
+            text = intro + _ret_offer_line(user_id, now)
+            await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now)]], key, str(expiry), "marketing", now=now)
+
+
+async def ret_offer_expiring(bot, now: int):
+    rows = _ret_query("SELECT id, user_id, percent, expires_ts, created_ts FROM user_offers WHERE used_ts IS NULL AND expires_ts>? AND expires_ts<=? AND expires_ts-created_ts>=259200",
+                      (now, now + 24 * 3600))
+    for oid, user_id, pct, exp, created in rows:
+        text = f"⏰ <b>Скидка −{pct}% сгорает</b>\n\nОсталось <b>{ret_human(exp - now)}</b> (до {_ret_date(exp)} МСК). Потом цена вернётся к обычной."
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф")]], "offer_expiring", str(oid), "marketing", now=now)
+
+
+async def ret_loyalty(bot, now: int):
+    """Постоянным клиентам: каждые 3 покупки — скидка в благодарность."""
+    rows = _ret_query(_ret_base_users_sql("AND u.expiry_time>?"), (now,))
+    for user_id, sub_id, expiry, role, limit in rows:
+        n = _ret_query("SELECT COUNT(*) FROM purchases WHERE user_id=?", (user_id,))[0][0]
+        if n < 3:
+            continue
+        ref = str(n // 3)
+        if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='loyal_long' AND ref_key=?", (user_id, ref)):
+            continue
+        if expiry - now > 10 * 86400 or ret_is_quiet(now):
+            continue                                                # напоминаем ближе к продлению
+        grant_offer(user_id, "loyal_long", now=now)
+        text = f"💛 <b>Спасибо, что вы с нами!</b>\n\nВы продлевали подписку уже {n} раз(а) — для нас это лучшая оценка. Дарим скидку постоянному клиенту.{_ret_offer_line(user_id, now)}"
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф")]], "loyal_long", ref, "marketing", now=now)
+
+
+async def ret_referral_nudge(bot, now: int, budget: list):
+    """Через 3 дня после первой покупки, если устройство подключено — предлагаем позвать друга (+3 дня обоим)."""
+    rows = _ret_query("SELECT p.id, p.user_id, u.github_raw_url FROM purchases p JOIN users u ON u.user_id=p.user_id WHERE p.is_first=1 AND p.ts<=? AND p.ts>?",
+                      (now - 3 * 86400, now - 10 * 86400))
+    for pid, user_id, sub_id in rows:
+        if _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='ref_nudge'", (user_id,)):
+            continue
+        if budget[0] <= 0:
+            return
+        budget[0] -= 1
+        info = await ret_devices_info(sub_id)
+        if not info or info[0] == 0:
+            continue
+        link = f"https://t.me/{RET_BOT_USERNAME}?start=ref{user_id}"
+        text = (f"🤝 <b>Позовите друга — получите бонус</b>\n\nЗа каждого друга, который подтвердит аккаунт по вашей ссылке, вы оба получаете <b>+3 дня</b> подписки.\n\n"
+                f"Ваша ссылка:\n<code>{link}</code>")
+        await ret_try_send(bot, user_id, text, [[_btn("👤 Личный кабинет", cb="cabinet")]], "ref_nudge", "1", "marketing", now=now)
+
+
+async def ret_year_upsell(bot, now: int):
+    """Тем, кто продлевает месячную подписку, показываем выгоду годового тарифа (с реальным расчётом)."""
+    rows = _ret_query(_ret_base_users_sql("AND u.expiry_time>? AND u.expiry_time<=?"), (now, now + 7 * 86400))
+    month = dt.datetime.fromtimestamp(now, RET_TZ).strftime("%Y-%m")
+    for user_id, sub_id, expiry, role, limit in rows:
+        n30 = _ret_query("SELECT COUNT(*) FROM purchases WHERE user_id=? AND payload='vpn_30_days_subscription'", (user_id,))[0][0]
+        if n30 < 2 or _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='year_upsell' AND ref_key=?", (user_id, month)):
+            continue
+        monthly_year = RET_PRICES["vpn_30_days_subscription"] * 12
+        year_price = RET_PRICES["vpn_365_days_subscription"]
+        grant_offer(user_id, "year_upsell", now=now)
+        year_now = get_discount_info(year_price, user_id)["price"]
+        text = (f"📈 <b>Годовой тариф выгоднее</b>\n\n12 месяцев по {RET_PRICES['vpn_30_days_subscription']} ₽ — это {monthly_year} ₽. Годовой — <b>{year_now} ₽</b> "
+                f"(экономия {max(0, monthly_year - year_now)} ₽) и <b>безлимит устройств</b>.{_ret_offer_line(user_id, now)}")
+        await ret_try_send(bot, user_id, text, [[_btn(f"🚀 Годовой — {year_now} ₽", cb="pay_365_days")]], "year_upsell", month, "marketing", now=now)
+
+
+async def ret_slots_upsell(bot, now: int, budget: list):
+    """Если все слоты устройств заняты — предлагаем расширить лимит."""
+    rows = _ret_query(_ret_base_users_sql("AND u.expiry_time>? AND u.expiry_time<?"), (now + 2 * 86400, now + RET_INF_DAYS * 86400))
+    for user_id, sub_id, expiry, role, limit in rows:
+        if budget[0] <= 5:
+            return
+        if limit >= 999 or _ret_query("SELECT 1 FROM campaign_log WHERE user_id=? AND campaign_key='slots_upsell' AND sent_ts>?", (user_id, now - 30 * 86400)):
+            continue
+        if not _ret_query("SELECT 1 FROM purchases WHERE user_id=? LIMIT 1", (user_id,)):
+            continue
+        budget[0] -= 1
+        info = await ret_devices_info(sub_id)
+        if not info or info[2] <= 0 or info[0] < info[2]:
+            continue
+        text = f"📱 <b>Все слоты устройств заняты</b>\n\nПодключено {info[0]} из {info[2]}. Чтобы добавить ещё телефон, ноутбук или ТВ, расширьте лимит — это недорого и применяется сразу."
+        await ret_try_send(bot, user_id, text, [[_btn("📱 Расширить лимит устройств", cb="buy_device_limit")]], "slots_upsell", str(now // 86400), "marketing", now=now)
+
+
+async def ret_ref_email_reminder(bot, now: int):
+    """Напоминание о бонусе за приглашение, если e-mail ещё не подтверждён (работает только когда включена проверка по почте)."""
+    try:
+        if not email_verify_active():
+            return
+    except NameError:
+        return
+    rows = _ret_query("SELECT referral_id, created_at FROM referral_pending WHERE status='pending' AND created_at<=? AND created_at>?", (now - 24 * 3600, now - 6 * 86400))
+    for user_id, created in rows:
+        ref = "d5" if now - created >= 5 * 86400 else "d1"
+        text = "🎁 <b>Бонус за приглашение ждёт вас</b>\n\nПодтвердите e-mail — и вы с пригласившим получите по +3 дня. Это займёт минуту."
+        await ret_try_send(bot, user_id, text, [[_btn("📧 Подтвердить почту", cb="refv:start")]], "ref_email_rem", ref, "soft", now=now)
+
+
+# ---------------------------------------------------------------- 4. ХУКИ И ГЛАВНЫЙ ЦИКЛ
+async def ret_on_purchase(bot, user_id: int, payload: str, days: int, paid_rub: int, now: int = None):
+    """Вызывается после успешной оплаты тарифа: журнал покупок, списание применённой скидки, награда за продление."""
+    now = now or int(time.time())
+    conn = _ret_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('INSERT OR IGNORE INTO user_meta (user_id, first_seen_ts) VALUES (?, 0)', (user_id,))
+        cur.execute('SELECT first_seen_ts FROM user_meta WHERE user_id=?', (user_id,))
+        first_seen = cur.fetchone()[0] or 0
+        cur.execute('SELECT COUNT(*) FROM purchases WHERE user_id=?', (user_id,))
+        n_before = cur.fetchone()[0]
+        is_first = 1 if (n_before == 0 and first_seen > 0) else 0
+        conn.commit()
+    finally:
+        conn.close()
+    pct_used = 0
+    base = RET_PRICES.get(payload)
+    if base and paid_rub < base:                                  # скидка действительно была применена — сжигаем подходящую персональную
+        o = get_best_offer(user_id, now - 600)
+        if o and max(1, int(base * (100 - o["percent"]) / 100)) == paid_rub:
+            consume_offer(o["id"], now); pct_used = o["percent"]
+        else:
+            pct_used = round(100 - paid_rub * 100 / base)
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT INTO purchases (user_id, payload, days, paid_rub, ts, is_first, discount_pct) VALUES (?,?,?,?,?,?,?)',
+                     (user_id, payload, days, paid_rub, now, is_first, pct_used))
+        conn.commit()
+    finally:
+        conn.close()
+    n = n_before + 1
+    if n == 2:                                                    # человек продлил — благодарим скидкой на следующее продление (2 месяца)
+        if grant_offer(user_id, "loyal_renew", now=now):
+            text = (f"💛 <b>Спасибо, что остаётесь с нами!</b>\n\nВы продлили подписку — в благодарность даём скидку на следующее продление."
+                    f"{_ret_offer_line(user_id, now)}")
+            await ret_try_send(bot, user_id, text, [[_btn("👤 Личный кабинет", cb="cabinet")]], "loyal_renew", str(n), "service", now=now)
+
+
+async def ret_tick(bot, now: int = None):
+    now = now or int(time.time())
+    conn = _ret_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('INSERT OR IGNORE INTO user_meta (user_id, first_seen_ts) SELECT user_id, ? FROM users', (now,))
+        cur.execute("INSERT OR IGNORE INTO sub_track (user_id, expiry_time, first_seen_ts, first_remaining) "
+                    "SELECT user_id, expiry_time, ?, expiry_time-? FROM users WHERE expiry_time>? AND expiry_time<?",
+                    (now, now, now, now + RET_INF_DAYS * 86400))
+        cur.execute('DELETE FROM sub_track WHERE expiry_time<?', (now - 45 * 86400,))
+        cur.execute("DELETE FROM campaign_log WHERE sent_ts<? AND kind<>'marketing'", (now - 120 * 86400,))
+        conn.commit()
+    finally:
+        conn.close()
+    budget = [RET_API_BUDGET_PER_TICK]
+    for step in (ret_expiry_notices, ret_expired_notices):
+        try: await step(bot, now)
+        except Exception as e: logging.error(f"[RET] Ошибка шага {step.__name__}: {e}", exc_info=True)
+    for step in (ret_connect_checks, ret_referral_nudge, ret_slots_upsell):
+        try: await step(bot, now, budget)
+        except Exception as e: logging.error(f"[RET] Ошибка шага {step.__name__}: {e}", exc_info=True)
+    for step in (ret_winback, ret_offer_expiring, ret_loyalty, ret_year_upsell, ret_ref_email_reminder):
+        try: await step(bot, now)
+        except Exception as e: logging.error(f"[RET] Ошибка шага {step.__name__}: {e}", exc_info=True)
 
 
 async def scheduler(bot):
-    """Цикл, который запускает проверку раз в сутки под именем scheduler."""
-    await asyncio.sleep(10)
-    
+    """Главный цикл: проверка каждые 5 минут (раньше — раз в сутки)."""
+    await asyncio.sleep(15)
     while True:
         try:
-            await check_and_notify_expiring_subscriptions(bot)
+            await ret_tick(bot)
         except Exception as e:
-            logging.error(f"Критическая ошибка в планировщике подписок: {e}")
-        
-        # Твой стандартный таймер на 24 часа. Благодаря левому соединению (LEFT JOIN) 
-        # и сверке с журналом, смещение времени выполнения кода больше ни на что не влияет.
-        await asyncio.sleep(24 * 60 * 60)
+            logging.error(f"Критическая ошибка ретеншн-планировщика: {e}", exc_info=True)
+        await asyncio.sleep(RET_TICK_SECONDS)
 
 
+# ---------------------------------------------------------------- 5. КОМАНДЫ
+@dp.callback_query(F.data == "ret:off")
+async def ret_cb_off(callback: types.CallbackQuery):
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO user_meta (user_id) VALUES (?)', (callback.from_user.id,))
+        conn.execute('UPDATE user_meta SET promos_off=1 WHERE user_id=?', (callback.from_user.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    await callback.answer("Акции отключены. Важные уведомления о подписке продолжат приходить.", show_alert=True)
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
 
 
+@dp.message(Command("promo_off"))
+async def ret_cmd_off(message: types.Message):
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO user_meta (user_id) VALUES (?)', (message.from_user.id,))
+        conn.execute('UPDATE user_meta SET promos_off=1 WHERE user_id=?', (message.from_user.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    await message.answer("🔕 Акции отключены. Важные уведомления о подписке продолжат приходить. Включить обратно: /promo_on")
+
+
+@dp.message(Command("promo_on"))
+async def ret_cmd_on(message: types.Message):
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO user_meta (user_id) VALUES (?)', (message.from_user.id,))
+        conn.execute('UPDATE user_meta SET promos_off=0 WHERE user_id=?', (message.from_user.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    await message.answer("🔔 Акции снова включены.")
+
+
+@dp.message(Command("offer"))
+async def ret_cmd_offer(message: types.Message, command: CommandObject):
+    """Админ: /offer <user_id> <процент> <часов> — выдать персональную скидку вручную."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        uid, pct, hours = (int(x) for x in (command.args or "").split())
+    except ValueError:
+        await message.answer("Формат: <code>/offer ID_пользователя процент часов</code>\nПример: <code>/offer 123456789 25 48</code>", parse_mode="HTML")
+        return
+    if not (1 <= pct <= 90 and 1 <= hours <= 24 * 90):
+        await message.answer("Процент 1–90, срок 1–2160 часов.")
+        return
+    oid = grant_offer(uid, "manual", pct, hours)
+    if not oid:
+        await message.answer("У пользователя уже есть не меньшая активная скидка.")
+        return
+    await ret_try_send(bot, uid, f"🎁 <b>Для вас персональная скидка −{pct}%</b>{_ret_offer_line(uid)}", [[_btn("💳 Выбрать тариф", cb="buy")]], "manual", str(oid), "service")
+    await message.answer(f"✅ Скидка −{pct}% на {hours} ч. выдана пользователю {uid}.")
+
+
+@dp.message(Command("ret_status"))
+async def ret_cmd_status(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    now = int(time.time())
+    active = _ret_query("SELECT COUNT(*) FROM user_offers WHERE used_ts IS NULL AND expires_ts>?", (now,))[0][0]
+    used = _ret_query("SELECT COUNT(*) FROM user_offers WHERE used_ts IS NOT NULL")[0][0]
+    camp = _ret_query("SELECT campaign_key, COUNT(*) FROM campaign_log WHERE sent_ts>? AND skipped=0 GROUP BY campaign_key ORDER BY 2 DESC", (now - 86400,))
+    pur = _ret_query("SELECT COUNT(*), COALESCE(SUM(paid_rub),0) FROM purchases WHERE ts>?", (now - 7 * 86400,))[0]
+    lines = "\n".join(f"• {k}: {c}" for k, c in camp) or "—"
+    await message.answer(f"<b>🎯 Ретеншн-движок</b>\nАктивных скидок: <b>{active}</b>, использовано: <b>{used}</b>\nПокупок за 7 дней: <b>{pur[0]}</b> на <b>{pur[1]} ₽</b>\n\n<b>Сообщений за 24 ч:</b>\n{lines}", parse_mode="HTML")
 
 
 # =====================================================================
