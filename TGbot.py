@@ -1775,37 +1775,120 @@ async def send_sub_to_website(token, b64_content, expiry, is_blocked=False, devi
 
 
 
-import aiohttp
-import logging
+MINIAPP_URL = "https://sn-go.ru/miniapp"
+MINIAPP_SYNC_URL = MINIAPP_URL + "/index.php?bot_sync=1"
+MINIAPP_SYNC_SECRET = "SuperSecretVpnKey123"      # должен совпадать с SYNC_SECRET в index.php
+_miniapp_last_hash: dict = {}
 
-async def sync_user_to_miniapp(user_id: int, username: str, vpn_config: str, expiry_time: int, github_raw_url: str = ""):
-    """
-    Отправляет актуальные данные подписки из Docker-бота на PHP-сайт Mini App.
-    Данные сохраняются в локальный текстовый JSON-кэш сайта.
-    """
-    # 🔥 ИСПРАВЛЕНО: Строка адреса точно в формате
-    url = "https://sn-go.ru/miniapp/index.php?bot_sync=1" 
-    
-    # Собираем все POST-данные для передачи на PHP-сервер
-    data = {
-        "secret": "SuperSecretVpnKey123", 
-        "user_id": str(user_id),
-        "username": username if username else "Пользователь",
-        "vpn_config": vpn_config if vpn_config else "",
-        "expiry_time": str(expiry_time),
-        "github_raw_url": str(github_raw_url) # Аргумент добавлен в тело запроса
-    }
-    
+
+def _miniapp_collect(user_id: int):
+    """Читает из БД всё, что нужно сайту. Возвращает dict или None, если юзера нет в БД."""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        r = conn.execute(
+            "SELECT username, vpn_config, github_raw_url, expiry_time, role, device_limit FROM users WHERE user_id = ?",
+            (user_id,)).fetchone()
+        if not r:
+            return None
+        role = "creator" if user_id == ADMIN_ID else (r["role"] or "user")
+        d = {
+            "username": r["username"] or "", "vpn_config": r["vpn_config"] or "",
+            "github_raw_url": r["github_raw_url"] or "", "expiry_time": int(r["expiry_time"] or 0),
+            "role": role, "device_limit": int(r["device_limit"] or 5),
+        }
+        # --- скидка: лучшая из общей акции -30% и персональной ---
+        pct, until, global_on = 0, 0, 0
+        try:
+            if check_promo_active_db():
+                row = conn.execute("SELECT end_time FROM promo_actions WHERE promo_name='discount_30' "
+                                   "AND is_active=1 ORDER BY id DESC LIMIT 1").fetchone()
+                pct, global_on = 30, 1
+                until = int(dt_module.datetime.fromisoformat(row[0]).timestamp()) if row else 0
+        except Exception:
+            pass
+        try:
+            o = get_best_offer(user_id)
+            if o and o["percent"] > pct:
+                pct, until, global_on = o["percent"], o["expires_ts"], 0
+        except Exception:
+            pass
+        d.update(discount_percent=pct, discount_until=until, promo_global=global_on)
+        # --- друзья ---
+        try:
+            d["friends_count"] = conn.execute("SELECT COUNT(*) FROM referral_connections WHERE inviter_id=?",
+                                              (user_id,)).fetchone()[0]
+        except Exception:
+            pass
+        # --- партнёрка (для всех, кроме обычных пользователей) ---
+        if role != "user":
+            try:
+                bal, total, refs, quest = get_partner_profile(user_id)
+                d.update(partner_balance=bal or 0, partner_total=total or 0, partner_refs=refs or 0,
+                         partner_quest=1 if quest else 0)
+                s = conn.execute("SELECT sub_partners_count FROM partner_stats WHERE partner_id=?", (user_id,)).fetchone()
+                d["sub_partners"] = (s[0] if s else 0) or 0
+            except Exception:
+                pass
+        return d
+    finally:
+        conn.close()
+
+
+async def sync_user_to_miniapp(user_id: int, username: str = "", vpn_config: str = "", expiry_time: int = 0,
+                               github_raw_url: str = "", force: bool = True, **_ignored):
+    """Отправляет профиль на сайт Mini App. Аргументы vpn_config/expiry_time/... оставлены для совместимости
+    со старыми вызовами: реальные значения читаются из БД; аргументы нужны только если юзера в БД ещё нет."""
+    data = await asyncio.to_thread(_miniapp_collect, user_id)
+    if data is None:
+        if not github_raw_url:
+            return None
+        data = {"username": username or "", "vpn_config": vpn_config or "",
+                "github_raw_url": github_raw_url, "expiry_time": int(expiry_time or 0)}
+    if not data.get("username"):
+        data["username"] = username or "Пользователь"
+    h = hashlib.md5(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    if not force and _miniapp_last_hash.get(user_id) == h:
+        return "UNCHANGED"
+    form = {"secret": MINIAPP_SYNC_SECRET, "user_id": str(user_id), **{k: str(v) for k, v in data.items()}}
     try:
         async with aiohttp.ClientSession() as session:
-            # Делаем чистый POST-запрос с заполненным data-словарем
-            async with session.post(url, data=data, timeout=5) as response:
-                res_text = await response.text()
-                logging.info(f"🔄 [MINIAPP SYNC] Ответ от сайта для юзера {user_id}: {res_text}")
-                return res_text
+            async with session.post(MINIAPP_SYNC_URL, data=form, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                res = (await resp.text()).strip()
+        if res == "OK_SYNCED":
+            _miniapp_last_hash[user_id] = h
+        else:
+            logging.warning(f"[MINIAPP SYNC] {user_id}: сайт ответил «{res[:80]}»")
+        return res
     except Exception as e:
-        logging.error(f"❌ [MINIAPP SYNC ERROR] Не удалось синхронизировать {user_id}: {e}")
+        logging.error(f"[MINIAPP SYNC ERROR] {user_id}: {e}")
         return None
+
+
+async def miniapp_resync_loop(period: int = 300):
+    """Фоновая выгрузка: срок подписки/скидки меняются без /start (оплата, промокод, акция) —
+    сайт обновляется максимум через `period` секунд. Неизменённые профили не отправляются."""
+    await asyncio.sleep(20)
+    cycle = 0
+    while True:
+        try:
+            cycle += 1
+            if cycle % 72 == 0:                      # раз в ~6 часов — полная пересылка (если кэш на сайте очищали)
+                _miniapp_last_hash.clear()
+
+            def _ids():
+                c = sqlite3.connect(DB_PATH, timeout=30.0)
+                try:
+                    return [r[0] for r in c.execute("SELECT user_id FROM users WHERE github_raw_url IS NOT NULL "
+                                                    "AND github_raw_url != ''").fetchall()]
+                finally:
+                    c.close()
+            for uid in await asyncio.to_thread(_ids):
+                await sync_user_to_miniapp(uid, force=False)
+                await asyncio.sleep(0.05)
+        except Exception as e:
+            logging.error(f"[MINIAPP RESYNC] {e}", exc_info=True)
+        await asyncio.sleep(period)
 
 
 
@@ -3543,60 +3626,43 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # === ШАГ 0: МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ ===
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
-    # === ШАГ 0.1: НАСТРОЙКА КНОПКИ MINI APP (Open) В УГЛУ ЭКРАНА ===
-#    try:
-        # Формируем правильную ссылку с явным GET-параметром ?tg_id=
-#        personal_miniapp_url = f"https://sn-go.ru/miniapp?tg_id={uid}"
+# === MINI APP: кнопка Open + выгрузка профиля на сайт (в фоне, /start не тормозит) ===
+    async def _miniapp_start_sync(uid: int, uname: str, chat_id: int):
+        # 1) Кнопка Open. Ссылка без ?tg_id=: сайт сам определяет юзера по подписи Telegram
+        try:
+            await message.bot.set_chat_menu_button(
+                chat_id=chat_id,
+                menu_button=MenuButtonWebApp(text="Open", web_app=WebAppInfo(url="https://sn-go.ru/miniapp"))
+            )
+        except Exception as e:
+            logging.error(f"❌ [MINI APP] Не удалось поставить кнопку Open для {uid}: {e}")
 
-#        await bot.set_chat_menu_button(
-#            chat_id=message.chat.id,
-#            menu_button=MenuButtonWebApp(
-#                text="Open",  # Текст на синей кнопке в углу экрана
-#                web_app=WebAppInfo(url=personal_miniapp_url)
-#            )
-#        )
-#        logging.info(f"✅ [MINI APP] Кнопка MenuButtonWebApp успешно привязана к ссылке для пользователя {uid}")
-#    except Exception as e:
-#        logging.error(f"❌ [MINI APP ERROR] Ошибка установки Menu Button для пользователя {uid}: {e}")
+        # 2) Выгрузка данных из БД бота на сайт
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)   # DB_PATH уже есть в боте, '/app/users.db' не нужен
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?",
+                    (uid,)
+                ).fetchone()
+            finally:
+                conn.close()
 
-    # === 🔥 ШАГ 0.2: ПРЯМАЯ И ПРИНУДИТЕЛЬНАЯ ВЫГРУЗКА ДАННЫХ ИЗ SQLITE НА САЙТ ===
-#    try:
-        # Подключаемся напрямую к локальному файлу базы вашего Docker-бота
-        # Если в контейнере путь к базе другой, поменяйте '/app/users.db' на ваш рабочий путь
-#        with sqlite3.connect('/app/users.db') as conn:
-#            conn.row_factory = sqlite3.Row  # Позволяет обращаться к колонкам по их именам
-#            cursor = conn.cursor()
-            
-            # Делаем точный запрос к вашей таблице users на основе вашего скриншота структуры
-#            cursor.execute(
-#                "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?", 
-#                (uid,)
-#            )
-#            row = cursor.fetchone()
-            
-#            if row:
-#                username_str = row['username'] if row['username'] else f"User_{uid}"
-#                vpn_config_str = row['vpn_config'] if row['vpn_config'] else ""
-#                expiry_time_int = int(row['expiry_time']) if row['expiry_time'] else 0
-#                github_raw_url_str = row['github_raw_url'] if row['github_raw_url'] else ""
+            if row:
+                await sync_user_to_miniapp(
+                    user_id=uid,
+                    username=row["username"] or uname,
+                    vpn_config=row["vpn_config"] or "",
+                    expiry_time=int(row["expiry_time"] or 0),
+                    github_raw_url=row["github_raw_url"] or ""
+                )
+            else:
+                logging.warning(f"⚠️ [AUTO SYNC] {uid} нажал /start, но его ещё нет в таблице users")
+        except Exception as sync_err:
+            logging.error(f"❌ [MINI APP SYNC] Не удалось выгрузить данные {uid}: {sync_err}")
 
-#               logging.info(f"🛰 [DB READ] Данные юзера {uid} успешно прочитаны из локального users.db. Отправляем POST на сайт...")
-
-                # Вызываем вашу сетевую функцию aiohttp отправки данных на PHP-сайт
-                # ВНИМАНИЕ: Обязательно передаем github_raw_url пятым аргументом!
-#                await sync_user_to_miniapp(
-#                    user_id=uid,
-#                    username=username_str,
-#                    vpn_config=vpn_config_str,
-#                    expiry_time=expiry_time_int,
-#                    github_raw_url=github_raw_url_str
-#                )
-#            else:
-#                logging.warning(f"⚠️ [AUTO SYNC] Пользователь {uid} нажал /start, но его еще нет в таблице users базы данных бота.")
-                
-#    except Exception as sync_err:
-        # Если база заблокирована или путь неверный — мы гарантированно увидим причину в логах!
-#       logging.error(f"❌ [CRITICAL SYNC ERROR] Не удалось принудительно выгрузить данные юзера {uid}: {sync_err}")
+    asyncio.create_task(_miniapp_start_sync(user_id, username, message.chat.id))
 
 
 
@@ -7759,7 +7825,7 @@ def _ret_offer_line(user_id: int, now: int = None) -> str:
     return f"\n\n🎁 <b>Ваша скидка −{o['percent']}%</b> действует до <b>{_ret_date(o['expires_ts'])}</b> (МСК) — применится к цене автоматически."
 
 
-def _buy_btn(user_id: int, now: int = None, text: str = "💳 Продлить подписку"):
+def _buy_btn(user_id: int, now: int = None, text: str = "💳 Продлить подписку", style=ButtonStyle.SUCCESS):
     o = get_best_offer(user_id, now)
     return _btn(f"💳 Продлить со скидкой −{o['percent']}%" if o else text, cb="buy")
 
@@ -7806,7 +7872,7 @@ async def ret_expired_notices(bot, now: int):
     for user_id, sub_id, expiry, role, limit in rows:
         text = (f"🛑 <b>Срок подписки истёк</b>\n\nДоступ к VPN отключён с {_ret_date(expiry)} МСК.\n"
                 f"Чтобы вернуть подключение, оформите продление — всё заработает на тех же устройствах.{_ret_offer_line(user_id, now)}")
-        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Продлить подписку")]], "exp_expired", str(expiry), "service", silent=ret_is_quiet(now), now=now)
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Продлить подписку", style=ButtonStyle.SUCCESS)]], "exp_expired", str(expiry), "service", silent=ret_is_quiet(now), now=now)
 
 
 # ---------------------------------------------------------------- 2. ЗАБОТА ПОСЛЕ ПОКУПКИ / РЕГИСТРАЦИИ
@@ -7837,7 +7903,7 @@ async def ret_connect_checks(bot, now: int, budget: list):
         else:
             text = ("🤝 <b>Всё ещё не подключились?</b>\n\nПрошли сутки, а подключённых устройств нет. Не оставляйте это на потом — "
                     "напишите в поддержку, мы разберёмся вместе и подскажем, что сделать именно на вашем устройстве.")
-        rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("📲 Подключиться", cb="connect")]]
+        rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("📲 Подключиться", cb="connect", style=ButtonStyle.PRIMAPI)]]
         await ret_try_send(bot, user_id, text, rows, key, str(pid), "soft", now=now)
 
     # 2.2 новый пользователь с бонусными днями не подключил устройство за 6 часов
@@ -7858,7 +7924,7 @@ async def ret_connect_checks(bot, now: int, budget: list):
             continue
         text = ("🎁 <b>Ваши бонусные дни ещё не используются</b>\n\nПодключиться — это пара кликов: выберите своё устройство, "
                 "импортируйте ключ, и VPN работает. Если что-то не получается — мы на связи.")
-        rows = [[_btn("📲 Подключиться", cb="connect")], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("🆘 Поддержка", url=RET_SUPPORT_URL)]]
+        rows = [[_btn("📲 Подключиться", cb="connect", style=ButtonStyle.PRIMARY)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("🆘 Поддержка", url=RET_SUPPORT_URL)]]
         await ret_try_send(bot, user_id, text, rows, "new_unused", "1", "soft", now=now)
 
     # 2.3 давно не видели ни одного устройства при активной подписке
@@ -7879,7 +7945,7 @@ async def ret_connect_checks(bot, now: int, budget: list):
         if now - info[1] > 7 * 86400:
             text = ("👀 <b>Давно вас не видели</b>\n\nПодписка активна, но подключений за последнюю неделю не было. Всё ли в порядке? "
                     "Если VPN перестал работать или что-то не подключается — напишите нам, поможем.")
-            rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📲 Подключиться", cb="connect")]]
+            rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📲 Подключиться", cb="connect", style=ButtonStyle.PRIMARY)]]
             await ret_try_send(bot, user_id, text, rows, "idle7d", month, "soft", now=now)
 
 
@@ -7909,7 +7975,7 @@ async def ret_offer_expiring(bot, now: int):
                       (now, now + 24 * 3600))
     for oid, user_id, pct, exp, created in rows:
         text = f"⏰ <b>Скидка −{pct}% сгорает</b>\n\nОсталось <b>{ret_human(exp - now)}</b> (до {_ret_date(exp)} МСК). Потом цена вернётся к обычной."
-        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф")]], "offer_expiring", str(oid), "marketing", now=now)
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф", style=ButtonStyle.SUCCESS)]], "offer_expiring", str(oid), "marketing", now=now)
 
 
 async def ret_loyalty(bot, now: int):
@@ -7926,7 +7992,7 @@ async def ret_loyalty(bot, now: int):
             continue                                                # напоминаем ближе к продлению
         grant_offer(user_id, "loyal_long", now=now)
         text = f"💛 <b>Спасибо, что вы с нами!</b>\n\nВы продлевали подписку уже {n} раз(а) — для нас это лучшая оценка. Дарим скидку постоянному клиенту.{_ret_offer_line(user_id, now)}"
-        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф")]], "loyal_long", ref, "marketing", now=now)
+        await ret_try_send(bot, user_id, text, [[_buy_btn(user_id, now, "💳 Выбрать тариф", style=ButtonStyle.SUCCESS)]], "loyal_long", ref, "marketing", now=now)
 
 
 async def ret_referral_nudge(bot, now: int, budget: list):
@@ -7962,7 +8028,7 @@ async def ret_year_upsell(bot, now: int):
         year_now = get_discount_info(year_price, user_id)["price"]
         text = (f"📈 <b>Годовой тариф выгоднее</b>\n\n12 месяцев по {RET_PRICES['vpn_30_days_subscription']} ₽ — это {monthly_year} ₽. Годовой — <b>{year_now} ₽</b> "
                 f"(экономия {max(0, monthly_year - year_now)} ₽) и <b>безлимит устройств</b>.{_ret_offer_line(user_id, now)}")
-        await ret_try_send(bot, user_id, text, [[_btn(f"🚀 Годовой — {year_now} ₽", cb="pay_365_days")]], "year_upsell", month, "marketing", now=now)
+        await ret_try_send(bot, user_id, text, [[_btn(f"🚀 Годовой — {year_now} ₽", cb="pay_365_days", style=ButtonStyle.DANGER)]], "year_upsell", month, "marketing", now=now)
 
 
 async def ret_slots_upsell(bot, now: int, budget: list):
@@ -7980,7 +8046,7 @@ async def ret_slots_upsell(bot, now: int, budget: list):
         if not info or info[2] <= 0 or info[0] < info[2]:
             continue
         text = f"📱 <b>Все слоты устройств заняты</b>\n\nПодключено {info[0]} из {info[2]}. Чтобы добавить ещё телефон, ноутбук или ТВ, расширьте лимит — это недорого и применяется сразу."
-        await ret_try_send(bot, user_id, text, [[_btn("📱 Расширить лимит устройств", cb="buy_device_limit")]], "slots_upsell", str(now // 86400), "marketing", now=now)
+        await ret_try_send(bot, user_id, text, [[_btn("📱 Расширить лимит устройств", cb="buy_device_limit", style=ButtonStyle.SUCCESS)]], "slots_upsell", str(now // 86400), "marketing", now=now)
 
 
 async def ret_ref_email_reminder(bot, now: int):
@@ -7994,7 +8060,7 @@ async def ret_ref_email_reminder(bot, now: int):
     for user_id, created in rows:
         ref = "d5" if now - created >= 5 * 86400 else "d1"
         text = "🎁 <b>Бонус за приглашение ждёт вас</b>\n\nПодтвердите e-mail — и вы с пригласившим получите по +3 дня. Это займёт минуту."
-        await ret_try_send(bot, user_id, text, [[_btn("📧 Подтвердить почту", cb="refv:start")]], "ref_email_rem", ref, "soft", now=now)
+        await ret_try_send(bot, user_id, text, [[_btn("📧 Подтвердить почту", cb="refv:start", style=ButtonStyle.PRIMARY)]], "ref_email_rem", ref, "soft", now=now)
 
 
 # ---------------------------------------------------------------- 4. ХУКИ И ГЛАВНЫЙ ЦИКЛ
@@ -8129,7 +8195,7 @@ async def ret_cmd_offer(message: types.Message, command: CommandObject):
     if not oid:
         await message.answer("У пользователя уже есть не меньшая активная скидка.")
         return
-    await ret_try_send(bot, uid, f"🎁 <b>Для вас персональная скидка −{pct}%</b>{_ret_offer_line(uid)}", [[_btn("💳 Выбрать тариф", cb="buy")]], "manual", str(oid), "service")
+    await ret_try_send(bot, uid, f"🎁 <b>Для вас персональная скидка −{pct}%</b>{_ret_offer_line(uid)}", [[_btn("💳 Выбрать тариф", cb="buy", style=ButtonStyle.SUCCESS)]], "manual", str(oid), "service")
     await message.answer(f"✅ Скидка −{pct}% на {hours} ч. выдана пользователю {uid}.")
 
 
