@@ -95,6 +95,26 @@ dp = Dispatcher()
 
 
 
+
+for _p in ("/data/users.db", "/app/users.db", DB_PATH):
+    try:
+        _ex = os.path.exists(_p)
+        _sz = os.path.getsize(_p) if _ex else 0
+        _info = ""
+        if _ex:
+            try:
+                _c = sqlite3.connect(_p)
+                _info = [r[0] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+                _c.close()
+            except Exception as _e:
+                _info = f"ОШИБКА: {_e}"
+        print(f"[DIAG] {_p}: существует={_ex}, размер={_sz}, таблицы={_info}", flush=True)
+    except Exception as _e:
+        print(f"[DIAG] {_p}: {_e}", flush=True)
+print(f"[DIAG] DB_PATH бота = {DB_PATH}; AMVERA_APP_NAME = {os.environ.get('AMVERA_APP_NAME')}", flush=True)
+
+
+
 # ===== ВРЕМЕННЫЙ РЕМОНТ БАЗЫ (после успешного запуска блок можно удалить) =====
 def _repair_db_once():
     import shutil, time as _t
