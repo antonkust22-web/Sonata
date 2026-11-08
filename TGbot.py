@@ -8344,10 +8344,18 @@ init_partner_db()
 async def main():
     # Очищаем вебхуки от старых запросов при перезапусках
     await bot.delete_webhook(drop_pending_updates=True)
-
+    
     # Инициализируем стандартную базу данных sqlite3
     init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
+    
+    # ВСТАВЛЯТЬ ИМЕННО СЮДА (внутри функции main)
+    try:
+        import miniapp_api
+        miniapp_api.configure(bot, dp) 
+        logging.info("Диспетчер: API для Mini App успешно сконфигурировано.")
+    except Exception as e:
+        logging.error(f"Ошибка инициализации miniapp_api: {e}")
 
     # Фоновый запуск сайта-админки базы данных sqlite-web
     try:
@@ -8361,21 +8369,7 @@ async def main():
         logging.warning(f"Не удалось запустить сайт-админку (это не влияет на бота): {e}")
 
 
-    # 2. ЗАПУСК ПЛАНИРОВЩИКА (Сначала запускаем фоновую задачу)
-    asyncio.create_task(scheduler(bot))
-    logging.info("Фоновый планировщик успешно запущен")
-    asyncio.create_task(device_limit_watchdog())   # откат лимита устройств после окончания подписки
 
-
-
-
-
-
-    
-
-    
-    logging.info("Диспетчер: Бот успешно запущен на хостинге Amvera. Начинаем Polling...")
-    await dp.start_polling(bot)
 
 
 def get_all_users_from_db():
