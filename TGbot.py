@@ -95,6 +95,39 @@ dp = Dispatcher()
 
 
 
+# ===== ВРЕМЕННЫЙ РЕМОНТ БАЗЫ (после успешного запуска блок можно удалить) =====
+def _repair_db_once():
+    import shutil, time as _t
+    print(f"[REPAIR] DB_PATH = {DB_PATH}, существует: {os.path.exists(DB_PATH)}", flush=True)
+    if not os.path.exists(DB_PATH):
+        return
+    try:
+        c = sqlite3.connect(DB_PATH)
+        c.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        c.close()
+        print("[REPAIR] схема в порядке, ремонт не нужен", flush=True)
+        return
+    except sqlite3.DatabaseError as e:
+        print(f"[REPAIR] ошибка схемы: {e}", flush=True)
+    bak = f"{DB_PATH}.bak{int(_t.time())}"
+    shutil.copy2(DB_PATH, bak)
+    print(f"[REPAIR] копия сохранена: {bak}", flush=True)
+    try:
+        c = sqlite3.connect(DB_PATH)
+        c.execute("PRAGMA writable_schema=ON")
+        c.execute("DELETE FROM sqlite_master WHERE tbl_name='sub_track'")
+        c.execute("PRAGMA writable_schema=OFF")
+        c.commit()
+        c.close()
+        c = sqlite3.connect(DB_PATH)
+        print("[REPAIR] integrity_check:", c.execute("PRAGMA integrity_check").fetchall(), flush=True)
+        print("[REPAIR] таблицы:", [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")], flush=True)
+        print("[REPAIR] пользователей:", c.execute("SELECT COUNT(*) FROM users").fetchone(), flush=True)
+        c.close()
+    except Exception as e:
+        print(f"[REPAIR] НЕ УДАЛОСЬ починить: {e}", flush=True)
+
+_repair_db_once()
 
 
 
