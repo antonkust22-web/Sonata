@@ -96,58 +96,81 @@ dp = Dispatcher()
 
 
 
-for _p in ("/data/users.db", "/app/users.db", DB_PATH):
-    try:
-        _ex = os.path.exists(_p)
-        _sz = os.path.getsize(_p) if _ex else 0
-        _info = ""
-        if _ex:
-            try:
-                _c = sqlite3.connect(_p)
-                _info = [r[0] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-                _c.close()
-            except Exception as _e:
-                _info = f"ОШИБКА: {_e}"
-        print(f"[DIAG] {_p}: существует={_ex}, размер={_sz}, таблицы={_info}", flush=True)
-    except Exception as _e:
-        print(f"[DIAG] {_p}: {_e}", flush=True)
-print(f"[DIAG] DB_PATH бота = {DB_PATH}; AMVERA_APP_NAME = {os.environ.get('AMVERA_APP_NAME')}", flush=True)
-
-
-
-# ===== ВРЕМЕННЫЙ РЕМОНТ БАЗЫ (после успешного запуска блок можно удалить) =====
+# ===== АВТО-РЕМОНТ БАЗЫ ПРИ ЗАПУСКЕ (можно убрать, когда всё стабильно) =====
 def _repair_db_once():
     import shutil, time as _t
-    print(f"[REPAIR] DB_PATH = {DB_PATH}, существует: {os.path.exists(DB_PATH)}", flush=True)
-    if not os.path.exists(DB_PATH):
+
+    def _ok():
+        try:
+            c = sqlite3.connect(DB_PATH)
+            c.execute("SELECT name FROM sqlite_master").fetchall()
+            c.close()
+            return True
+        except Exception as e:
+            print(f"[REPAIR] проверка: {e}", flush=True)
+            return False
+
+    print(f"[REPAIR] DB_PATH={DB_PATH}, существует={os.path.exists(DB_PATH)}", flush=True)
+    if not os.path.exists(DB_PATH) or _ok():
+        print("[REPAIR] база в порядке", flush=True)
         return
-    try:
-        c = sqlite3.connect(DB_PATH)
-        c.execute("SELECT count(*) FROM sqlite_master").fetchone()
-        c.close()
-        print("[REPAIR] схема в порядке, ремонт не нужен", flush=True)
-        return
-    except sqlite3.DatabaseError as e:
-        print(f"[REPAIR] ошибка схемы: {e}", flush=True)
-    bak = f"{DB_PATH}.bak{int(_t.time())}"
-    shutil.copy2(DB_PATH, bak)
-    print(f"[REPAIR] копия сохранена: {bak}", flush=True)
+
+    stamp = int(_t.time())
+    for suf in ("", "-wal", "-shm"):                       # копии перед любыми правками
+        if os.path.exists(DB_PATH + suf):
+            shutil.copy2(DB_PATH + suf, f"{DB_PATH}{suf}.bak{stamp}")
+    print(f"[REPAIR] копии сохранены (*.bak{stamp})", flush=True)
+
+    # Шаг 1: старые хвосты WAL/SHM от другого файла базы
+    for suf in ("-wal", "-shm"):
+        try: os.remove(DB_PATH + suf)
+        except FileNotFoundError: pass
+    if _ok():
+        print("[REPAIR] помогло удаление старых -wal/-shm", flush=True); return
+
+    # Шаг 2: убрать битую запись о таблице sub_track
     try:
         c = sqlite3.connect(DB_PATH)
         c.execute("PRAGMA writable_schema=ON")
         c.execute("DELETE FROM sqlite_master WHERE tbl_name='sub_track'")
-        c.execute("PRAGMA writable_schema=OFF")
-        c.commit()
-        c.close()
-        c = sqlite3.connect(DB_PATH)
-        print("[REPAIR] integrity_check:", c.execute("PRAGMA integrity_check").fetchall(), flush=True)
-        print("[REPAIR] таблицы:", [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")], flush=True)
-        print("[REPAIR] пользователей:", c.execute("SELECT COUNT(*) FROM users").fetchone(), flush=True)
-        c.close()
+        c.commit(); c.close()
     except Exception as e:
-        print(f"[REPAIR] НЕ УДАЛОСЬ починить: {e}", flush=True)
+        print(f"[REPAIR] шаг 2: {e}", flush=True)
+    if _ok():
+        print("[REPAIR] помогло удаление записи sub_track", flush=True); return
+
+    # Шаг 3: пересборка базы в новый файл (копируем всё, что читается)
+    new = DB_PATH + ".rebuilt"
+    try:
+        if os.path.exists(new): os.remove(new)
+        src = sqlite3.connect(DB_PATH)
+        src.execute("PRAGMA writable_schema=ON")
+        dst = sqlite3.connect(new)
+        objs = src.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL "
+                           "AND name NOT LIKE 'sqlite_%' AND tbl_name != 'sub_track'").fetchall()
+        for t, n, tn, sql in [o for o in objs if o[0] == "table"]:
+            try:
+                dst.execute(sql)
+                rows = src.execute(f'SELECT * FROM "{n}"').fetchall()
+                if rows:
+                    dst.executemany(f'INSERT INTO "{n}" VALUES ({",".join("?" * len(rows[0]))})', rows)
+                print(f"[REPAIR] таблица {n}: {len(rows)} строк", flush=True)
+            except Exception as e:
+                print(f"[REPAIR] таблица {n}: ПРОПУЩЕНА ({e})", flush=True)
+        for t, n, tn, sql in [o for o in objs if o[0] != "table"]:
+            try: dst.execute(sql)
+            except Exception as e: print(f"[REPAIR] {t} {n}: {e}", flush=True)
+        dst.commit(); dst.close(); src.close()
+        for suf in ("-wal", "-shm"):
+            try: os.remove(DB_PATH + suf)
+            except FileNotFoundError: pass
+        os.replace(new, DB_PATH)
+        print("[REPAIR] база пересобрана", flush=True)
+    except Exception as e:
+        print(f"[REPAIR] НЕ УДАЛОСЬ: {e}", flush=True)
 
 _repair_db_once()
+
 
 
 
