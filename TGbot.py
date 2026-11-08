@@ -3703,42 +3703,42 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     loading_msg = await message.answer("⏳ <b>Загрузка...</b>", parse_mode="HTML")
 
 # === MINI APP: кнопка Open + выгрузка профиля на сайт (в фоне, /start не тормозит) ===
-#    async def _miniapp_start_sync(uid: int, uname: str, chat_id: int):
-#        # 1) Кнопка Open. Ссылка без ?tg_id=: сайт сам определяет юзера по подписи Telegram
-#        try:
-#            await message.bot.set_chat_menu_button(
-#                chat_id=chat_id,
-#                menu_button=MenuButtonWebApp(text="Open", web_app=WebAppInfo(url="https://sn-go.ru/miniapp"))
-#            )
-#        except Exception as e:
-#            logging.error(f"❌ [MINI APP] Не удалось поставить кнопку Open для {uid}: {e}")
+    async def _miniapp_start_sync(uid: int, uname: str, chat_id: int):
+        # 1) Кнопка Open. Ссылка без ?tg_id=: сайт сам определяет юзера по подписи Telegram
+        try:
+            await message.bot.set_chat_menu_button(
+                chat_id=chat_id,
+                menu_button=MenuButtonWebApp(text="Open", web_app=WebAppInfo(url="https://sn-go.ru/miniapp"))
+            )
+        except Exception as e:
+            logging.error(f"❌ [MINI APP] Не удалось поставить кнопку Open для {uid}: {e}")
 
-#        # 2) Выгрузка данных из БД бота на сайт
-#        try:
-#            conn = sqlite3.connect(DB_PATH, timeout=30.0)   # DB_PATH уже есть в боте, '/app/users.db' не нужен
-#            conn.row_factory = sqlite3.Row
-#            try:
-#                row = conn.execute(
-#                    "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?",
-#                    (uid,)
-#                ).fetchone()
-#            finally:
-#                conn.close()
+        # 2) Выгрузка данных из БД бота на сайт
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)   # DB_PATH уже есть в боте, '/app/users.db' не нужен
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT username, vpn_config, expiry_time, github_raw_url FROM users WHERE user_id = ?",
+                    (uid,)
+                ).fetchone()
+            finally:
+                conn.close()
 
-#            if row:
-#                await sync_user_to_miniapp(
-#                    user_id=uid,
-#                    username=row["username"] or uname,
-#                    vpn_config=row["vpn_config"] or "",
-#                    expiry_time=int(row["expiry_time"] or 0),
-#                    github_raw_url=row["github_raw_url"] or ""
-#                )
-#            else:
-#                logging.warning(f"⚠️ [AUTO SYNC] {uid} нажал /start, но его ещё нет в таблице users")
-#        except Exception as sync_err:
-#            logging.error(f"❌ [MINI APP SYNC] Не удалось выгрузить данные {uid}: {sync_err}")
+            if row:
+                await sync_user_to_miniapp(
+                    user_id=uid,
+                    username=row["username"] or uname,
+                    vpn_config=row["vpn_config"] or "",
+                    expiry_time=int(row["expiry_time"] or 0),
+                    github_raw_url=row["github_raw_url"] or ""
+                )
+            else:
+                logging.warning(f"⚠️ [AUTO SYNC] {uid} нажал /start, но его ещё нет в таблице users")
+        except Exception as sync_err:
+            logging.error(f"❌ [MINI APP SYNC] Не удалось выгрузить данные {uid}: {sync_err}")
 
-#    asyncio.create_task(_miniapp_start_sync(user_id, username, message.chat.id))
+    asyncio.create_task(_miniapp_start_sync(user_id, username, message.chat.id))
 
 
 
