@@ -49,7 +49,33 @@ DOCS = {
 USER_COLS = ("user_id", "inviter_id", "referral_id", "partner_id", "sub_partner_id")
 
 
-def configure(cfg: dict):
+# имя команды -> имя функции-хендлера в файле бота
+HANDLERS = {"gift": "admin_gift_sub", "revoke": "admin_revoke_sub", "set_limit": "admin_set_device_limit",
+            "find_user": "find_user_universal_cmd", "top": "cmd_top_inviters", "gen": "handle_generate_promo",
+            "delpromo": "handle_delete_promo", "setrole": "handle_set_role", "demote": "handle_demote_user",
+            "team": "handle_show_team", "setpartner": "set_partner_command", "setbalance": "set_balance_command",
+            "status_db": "cmd_admin_stats", "start_promo": "start_promo_command", "update_servers": "admin_night_mass_update",
+            "offer": "ret_cmd_offer", "ret_status": "ret_cmd_status", "ref_email_status": "rv_cmd_status"}
+
+
+def configure_from_bot(ns: dict):
+    """Вызывать из main() бота:  miniapp_api.configure_from_bot(globals())  — всё нужное берётся из файла бота само."""
+    from aiogram.filters import CommandObject
+    cmds, missing = {}, []
+    for name, fn in HANDLERS.items():
+        if fn in ns: cmds[name] = ns[fn]
+        else: missing.append(fn)
+    if missing: logging.warning(f"[MINIAPP] в боте не найдены хендлеры: {missing}")
+    configure({"bot": ns["bot"], "BOT_TOKEN": ns["API_TOKEN"], "DB_PATH": ns["DB_PATH"], "ADMIN_ID": ns["ADMIN_ID"],
+               "commands": cmds, "CommandObject": CommandObject, "activate_promo_in_db": ns["activate_promo_in_db"],
+               "apply_subscription_extension": ns["apply_subscription_extension"], "get_partner_profile": ns["get_partner_profile"],
+               "create_withdrawal_request": ns["create_withdrawal_request"], "confirm_withdrawal_db": ns["confirm_withdrawal_db"],
+               "InlineKeyboardMarkup": ns["InlineKeyboardMarkup"], "InlineKeyboardButton": ns["InlineKeyboardButton"]})
+
+
+def configure(cfg=None, *_ignored):
+    if not isinstance(cfg, dict):   # старый вызов configure(bot, dp) падал с «takes 1 positional argument but 2 were given»
+        logging.error("[MINIAPP] configure() ждёт dict. Используйте miniapp_api.configure_from_bot(globals())"); return
     C.clear(); C.update(cfg)
     miss = [k for k in ("bot", "BOT_TOKEN", "DB_PATH", "ADMIN_ID", "commands", "CommandObject", "activate_promo_in_db",
                         "apply_subscription_extension", "get_partner_profile", "create_withdrawal_request",
@@ -60,6 +86,7 @@ def configure(cfg: dict):
 def q(sql, args=(), one=False):
     conn = sqlite3.connect(C["DB_PATH"], timeout=30.0); conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA busy_timeout=30000")
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
         return (rows[0] if rows else None) if one else rows
     except sqlite3.Error as e:
@@ -156,8 +183,8 @@ async def m_cmd(uid, tg, b):
     if "command" in prm: kw["command"] = C["CommandObject"](prefix="/", command=name, args=args or None)
     if "bot" in prm: kw["bot"] = C["bot"]
     logging.info(f"[MINIAPP CMD] {uid}: /{name} {args}")
-    if name == "update_servers":
-        asyncio.create_task(fn(msg, **kw)); return {"ok": True, "out": ["⏳ Запущено в фоне. Результат придёт в чат с ботом."]}
+    if name in ("update_servers", "start_promo"):
+        asyncio.create_task(fn(msg, **kw)); return {"ok": True, "out": ["⏳ Запущено в фоне. Результат придёт в чат с ботом (рассылка/обновление идут без ограничения по времени)."]}
     try: await asyncio.wait_for(fn(msg, **kw), timeout=90)
     except asyncio.TimeoutError: msg.box.append("⏳ Команда выполняется дольше обычного — проверьте результат позже.")
     except Exception as e:
@@ -266,8 +293,10 @@ async def handle(request: web.Request):
 async def start_server():
     app = web.Application(client_max_size=64 * 1024)
     app.router.add_post("/miniapp/api/{method}", handle)
-    app.router.add_get("/miniapp/api", lambda r: web.json_response({"ok": True}))
+    async def ping(r): return web.json_response({"ok": True})
+    app.router.add_get("/miniapp/api", ping)
     runner = web.AppRunner(app); await runner.setup()
     port = int(os.getenv("MINIAPP_PORT") or 8081)
     await web.TCPSite(runner, "0.0.0.0", port).start()
     logging.info(f"[MINIAPP] API слушает порт {port}")
+    return runner
