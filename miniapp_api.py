@@ -296,7 +296,7 @@ async def start_server():
     async def ping(r): return web.json_response({"ok": True})
     app.router.add_get("/miniapp/api", ping)
     runner = web.AppRunner(app); await runner.setup()
-    port = int(os.getenv("MINIAPP_PORT") or 8081)
+    port = int(os.getenv("MINIAPP_PORT") or 3000)
     await web.TCPSite(runner, "0.0.0.0", port).start()
     logging.info(f"[MINIAPP] API слушает порт {port}")
     return runner
