@@ -65,18 +65,9 @@ class PromoStates(StatesGroup):
 ADMIN_ID = 8759913724  # ОБЯЗАТЕЛЬНО: Замените эти цифры на ваш настоящий Telegram ID
 
 # --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
-if os.path.exists("/data") or os.environ.get("AMVERA_APP_NAME"):
-    # Железная защита Amvera: гарантируем создание папки на постоянном диске
-    try:
-        os.makedirs("/data", exist_ok=True)
-    except Exception as e:
-        logging.warning(f"Не удалось принудительно создать /data: {e}")
-        
-    DB_PATH = "/data/users.db"
-else:
-    # Локальная папка для разработки на компьютере
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_PATH = os.path.join(BASE_DIR, "users.db")
+os.makedirs("/data", exist_ok=True)
+DB_PATH = "/data/users.db"
+
 
 
 # Конфигурация логирования
@@ -104,11 +95,13 @@ def _repair_db_once():
         try:
             c = sqlite3.connect(DB_PATH)
             c.execute("SELECT name FROM sqlite_master").fetchall()
+            r = c.execute("PRAGMA quick_check").fetchone()
             c.close()
-            return True
+            return bool(r) and r[0] == "ok"
         except Exception as e:
             print(f"[REPAIR] проверка: {e}", flush=True)
             return False
+
 
     print(f"[REPAIR] DB_PATH={DB_PATH}, существует={os.path.exists(DB_PATH)}", flush=True)
     if not os.path.exists(DB_PATH) or _ok():
@@ -525,8 +518,6 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
                        saved_os=None, saved_app=None, device_limit=None, active_devices_count=None, is_bot=None):
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-    
-    # Запрашиваем абсолютно ВСЕ 13 полей строго по порядку индексов от 0 до 12
     cursor.execute('''
         SELECT user_id, username, vpn_config, github_raw_url, expiry_time, 
                role, actions_gift, actions_gen, saved_os, saved_app,
@@ -546,17 +537,13 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
             ) 
             VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
         ''', (
-                user_id, 
-                username, 
-                vpn_config, 
-                github_raw_url, 
-                clean_expiry if clean_expiry is not None else 0, 
+                user_id, username, vpn_config, github_raw_url,
+                clean_expiry if clean_expiry is not None else 0,
                 role if role is not None else 'user',
-                saved_os,  
-                saved_app, 
-                device_limit if device_limit is not None else 5,          
+                saved_os, saved_app,
+                device_limit if device_limit is not None else 5,
                 active_devices_count if active_devices_count is not None else 0,
-                is_bot if is_bot is not None else 0 # Индекс: по дефолту не бот (0)
+                is_bot if is_bot is not None else 0
             )
         )
     else:
@@ -564,14 +551,10 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
         new_github = github_raw_url if github_raw_url is not None else row[3]
         new_expiry = clean_expiry if clean_expiry is not None else row[4]
         new_role = role if role is not None else row[5]
-        
         new_os = saved_os if saved_os is not None else row[8]
         new_app = saved_app if saved_app is not None else row[9]
-        
         new_limit = device_limit if device_limit is not None else row[10]
         new_active = active_devices_count if active_devices_count is not None else row[11]
-        
-        # Защита флага бота: если передали новое значение — пишем его, иначе берем старое из БД
         new_is_bot = is_bot if is_bot is not None else row[12]
 
         try:
@@ -581,21 +564,20 @@ def add_or_update_user(user_id, username, vpn_config=None, github_raw_url=None, 
 
         cursor.execute('''
             UPDATE users SET 
-                username = ?, 
-                vpn_config = ?, 
-                github_raw_url = ?, 
-                expiry_time = ?, 
-                role = ?,
-                saved_os = ?,
-                saved_app = ?,
-                device_limit = ?,
-                active_devices_count = ?,
-                is_bot = ?
+                username = ?, vpn_config = ?, github_raw_url = ?, expiry_time = ?, role = ?,
+                saved_os = ?, saved_app = ?, device_limit = ?, active_devices_count = ?, is_bot = ?
             WHERE user_id = ?
         ''', (username, new_config, new_github, new_expiry, new_role, new_os, new_app, new_limit, new_active, new_is_bot, user_id))
         
     conn.commit()
     conn.close()
+
+    # обновить Mini App сразу (без ожидания фонового цикла)
+    try:
+        asyncio.get_running_loop().create_task(sync_user_to_miniapp(user_id, force=False))
+    except RuntimeError:
+        pass
+
 
 
 
@@ -1669,58 +1651,79 @@ async def get_vpn_config_clean(user_id, username=""):
 
 
 async def fetch_real_server_load(srv):
-    """
-    Делает запрос к API 3X-UI и возвращает реальный процент загрузки CPU.
-    Автоматически перебирает пути, если сервер выдает 404.
-    """
+    """CPU % сервера. Поддерживает 3x-ui 3.x (Bearer-токен) и старые панели 2.x (логин/пароль)."""
+    panel_url = srv['panel_url'].rstrip('/')
+    base_path = (srv.get('base_path') or '').strip('/')
+    base_url = f"{panel_url}/{base_path}" if base_path else panel_url
+    token = (srv.get('api_token') or '').strip()
+
+    def extract_cpu(data):
+        if not isinstance(data, dict):
+            return None
+        obj = data.get('obj') if 'obj' in data else data
+        if isinstance(obj, dict) and obj.get('cpu') is not None:
+            try:
+                return int(round(float(obj['cpu'])))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    # новые пути первыми, старые — запасные
+    attempts = [
+        ("GET", "/panel/api/server/status"),
+        ("POST", "/panel/api/server/status"),
+        ("POST", "/server/status"),
+        ("GET", "/server/status"),
+    ]
+
+    async def try_status(session, headers):
+        for method, path in attempts:
+            try:
+                async with session.request(method, base_url + path, headers=headers) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        logging.info(f"[STATUS] {srv['id']} {method} {path} -> HTTP {resp.status}")
+                        continue
+                    try:
+                        data = json.loads(text)
+                    except ValueError:
+                        logging.info(f"[STATUS] {srv['id']} {method} {path} -> не JSON: {text[:80]!r}")
+                        continue
+                    cpu = extract_cpu(data)
+                    if cpu is not None:
+                        return cpu
+                    logging.info(f"[STATUS] {srv['id']} {method} {path} -> нет поля cpu: {text[:120]!r}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logging.info(f"[STATUS] {srv['id']} {method} {path} -> {type(e).__name__}: {e}")
+        return None
+
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
-    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+    timeout = aiohttp.ClientTimeout(total=8)
+
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar, timeout=timeout) as session:
         try:
-            # 1. Авторизация на сервере (строго POST)
-            login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-            async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=5) as resp:
-                await resp.text()
-                
-            headers = {"Accept": "application/json"}
-            
-            # Список эндпоинтов для проверки (сначала новый API-путь, затем старый прямой)
-            endpoints = [
-                f"{srv['panel_url']}{srv['base_path']}/panel/api/server/status",
-                f"{srv['panel_url']}{srv['base_path']}/server/status"
-            ]
-            
-            res_json = None
-            
-            # Перебираем пути, пока не найдем рабочий
-            for status_url in endpoints:
-                async with session.get(status_url, headers=headers, timeout=5) as resp:
-                    if resp.status == 200:
-                        try:
-                            res_json = await resp.json()
-                            if res_json.get("success") and "obj" in res_json:
-                                # Если данные успешно получены, прерываем цикл перебора путей
-                                break
-                        except Exception:
-                            # Если не удалось распарсить JSON, идем к следующему эндпоинту
-                            continue
-                    elif resp.status == 404:
-                        # Если 404, просто пробуем следующий путь в цикле
-                        continue
-            
-            # Если ни один путь не вернул успех
-            if not res_json or not res_json.get("success") or "obj" not in res_json:
-                logging.error(f"❌ Сервер {srv['id']} не отдал статус ни по одному из известных эндпоинтов.")
-                return None
-                
-            # Извлекаем чистый процент загрузки процессора
-            cpu_load = res_json["obj"].get("cpu", 0)
-            return int(cpu_load)
-                
-        except Exception as e:
-            logging.error(f"❌ Критическая ошибка получения статуса для сервера {srv['id']}: {e}")
+            # 1) по API-токену (панель 3.x)
+            if token:
+                cpu = await try_status(session, {"Accept": "application/json", "Authorization": f"Bearer {token}"})
+                if cpu is not None:
+                    return cpu
+
+            # 2) по логину и паролю (старые панели, а также запасной путь для 3.x)
+            if srv.get('panel_user') and srv.get('panel_password'):
+                async with session.post(f"{base_url}/login",
+                                        data={"username": srv['panel_user'], "password": srv['panel_password']}) as resp:
+                    await resp.text()
+                cpu = await try_status(session, {"Accept": "application/json"})
+                if cpu is not None:
+                    return cpu
+
+            logging.error(f"❌ Сервер {srv['id']} не отдал статус ни по одному способу.")
             return None
+        except Exception as e:
+            logging.error(f"❌ Ошибка получения статуса сервера {srv['id']}: {e}")
+            return None
+
 
 
 
@@ -1942,21 +1945,18 @@ async def sync_user_to_miniapp(user_id: int, username: str = "", vpn_config: str
 
 
 async def miniapp_resync_loop(period: int = 300):
-    """Фоновая выгрузка: срок подписки/скидки меняются без /start (оплата, промокод, акция) —
-    сайт обновляется максимум через `period` секунд. Неизменённые профили не отправляются."""
     await asyncio.sleep(20)
     cycle = 0
     while True:
         try:
             cycle += 1
-            if cycle % 72 == 0:                      # раз в ~6 часов — полная пересылка (если кэш на сайте очищали)
+            if cycle % 72 == 0:
                 _miniapp_last_hash.clear()
 
             def _ids():
                 c = sqlite3.connect(DB_PATH, timeout=30.0)
                 try:
-                    return [r[0] for r in c.execute("SELECT user_id FROM users WHERE github_raw_url IS NOT NULL "
-                                                    "AND github_raw_url != ''").fetchall()]
+                    return [r[0] for r in c.execute("SELECT user_id FROM users").fetchall()]
                 finally:
                     c.close()
             for uid in await asyncio.to_thread(_ids):
@@ -1965,6 +1965,7 @@ async def miniapp_resync_loop(period: int = 300):
         except Exception as e:
             logging.error(f"[MINIAPP RESYNC] {e}", exc_info=True)
         await asyncio.sleep(period)
+
 
 
 
@@ -4665,8 +4666,8 @@ async def process_captcha(callback: types.CallbackQuery):
         # Также принудительно выставляем is_bot = 0, так как капча успешно пройдена
         add_or_update_user(user_id, username, expiry_time=0, is_bot=0)
 
-
-    
+    asyncio.create_task(sync_user_to_miniapp(user_id, username))
+       
     # === УДАЛЯЕМ ТЕКСТ КАПЧИ ИЗ ЧАТА ===
     try: 
         await callback.message.delete()
@@ -5807,39 +5808,44 @@ async def info(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "server_status")
 async def server_status(callback: types.CallbackQuery):
     await callback.answer("Получаю данные от серверов...")
-    
-    # ИСПРАВЛЕНО: Передаем конкретные объекты серверов из вашего глобального списка SERVERS
-    load_fi = await fetch_real_server_load(SERVERS[0])  # Финляндия (fi_1)
-    load_pl = await fetch_real_server_load(SERVERS[1])  # Польша (de_1)
-    load_ru = await fetch_real_server_load(SERVERS[2])  # Обход №1 (ru_bridge_1)
-    
+
+    loads = await asyncio.gather(
+        fetch_real_server_load(SERVERS[0]),   # Финляндия (fi_1)
+        fetch_real_server_load(SERVERS[1]),   # Польша (de_1)
+        fetch_real_server_load(SERVERS[2]),   # Обход №1 (ru_bridge_1)
+        return_exceptions=True
+    )
+    load_fi, load_pl, load_ru = [None if isinstance(x, Exception) else x for x in loads]
+
     def get_status_text(load):
         if load is None:
             return "⚪️ Недоступен"
-        
         if load < 40:
             return f"{load}% — 🟢 Стабильно"
         elif load < 75:
             return f"{load}% — 🟡 Умеренно"
-        else:
-            return f"{load}% — 🔴 Загружен"
+        return f"{load}% — 🔴 Загружен"
 
     status_text = (
         "<b>📊 Актуальная нагрузка на сервера:</b>\n\n"
         f"🇫🇮 <b>Финляндия:</b> {get_status_text(load_fi)}\n"
         f"🇵🇱 <b>Польша:</b> {get_status_text(load_pl)}\n"
-        f"🇷🇺 <b>Обход №1:</b> {get_status_text(load_ru)}\n\n"
+        f"🇮🇪 <b>Обход №1:</b> {get_status_text(load_ru)}\n\n"
         "<i>Данные обновляются в реальном времени. Если сервер загружен, рекомендуем переключиться на другой.</i>"
     )
-    
+
     back_to_info_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="info")]
     ])
-    
+
     try:
         await callback.message.edit_caption(caption=status_text, reply_markup=back_to_info_kb, parse_mode="HTML")
     except Exception:
-        pass
+        try:
+            await callback.message.edit_text(text=status_text, reply_markup=back_to_info_kb, parse_mode="HTML")
+        except Exception:
+            pass
+
 
 
 
@@ -6369,6 +6375,8 @@ async def process_successful_payment(message: types.Message):
             conn.commit()
             conn.close()
 
+            asyncio.create_task(sync_user_to_miniapp(user_id))
+
             # 2. Подготавливаем base64
             base64_payload = base64.b64encode(current_config.strip().encode('utf-8')).decode('utf-8')
 
@@ -6880,6 +6888,9 @@ async def admin_set_device_limit(message: types.Message):
         )
         conn.commit()
         conn.close()
+
+        asyncio.create_task(sync_user_to_miniapp(target_user_id))
+
 
         # Подготавливаем base64 конфиг для отправки на PHP-сайт
         base64_payload = base64.b64encode(current_config.strip().encode('utf-8')).decode('utf-8')
@@ -8342,31 +8353,27 @@ init_partner_db()
 
 # --- Запуск ---
 async def main():
-    # Очищаем вебхуки от старых запросов при перезапусках
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Инициализируем стандартную базу данных sqlite3
     init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
-    
-    # ВСТАВЛЯТЬ ИМЕННО СЮДА (внутри функции main)
+
     try:
         import miniapp_api
-        miniapp_api.configure(bot, dp) 
-        logging.info("Диспетчер: API для Mini App успешно сконфигурировано.")
+        miniapp_api.configure_from_bot(globals())
+        await miniapp_api.start_server()
     except Exception as e:
-        logging.error(f"Ошибка инициализации miniapp_api: {e}")
+        logging.error(f"Ошибка запуска miniapp_api: {e}", exc_info=True)
 
-    # Фоновый запуск сайта-админки базы данных sqlite-web
+    asyncio.create_task(scheduler(bot))
+    asyncio.create_task(device_limit_watchdog())
+    asyncio.create_task(miniapp_resync_loop())
+
+    logging.info("Диспетчер: запускаю polling")
     try:
-        subprocess.Popen(
-            ["sqlite-web", DB_PATH, "--port", "8080", "--host", "0.0.0.0"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        logging.info("Диспетчер: Запрос на фоновый запуск сайта-админки на порту 8080 отправлен.")
-    except Exception as e:
-        logging.warning(f"Не удалось запустить сайт-админку (это не влияет на бота): {e}")
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+
 
 
 
