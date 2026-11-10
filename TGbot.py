@@ -66,7 +66,7 @@ ADMIN_ID = 8759913724  # ОБЯЗАТЕЛЬНО: Замените эти циф�
 
 # --- НАСТРОЙКА ПУТИ К БД ДЛЯ ХОСТИНГА AMVERA ---
 os.makedirs("/data", exist_ok=True)
-DB_PATH = "/data/users.db"
+DB_PATH = "/app/users.db"
 
 
 
