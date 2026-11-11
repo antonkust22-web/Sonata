@@ -8013,7 +8013,7 @@ async def ret_connect_checks(bot, now: int, budget: list):
         else:
             text = ("🤝 <b>Всё ещё не подключились?</b>\n\nПрошли сутки, а подключённых устройств нет. Не оставляйте это на потом — "
                     "напишите в поддержку, мы разберёмся вместе и подскажем, что сделать именно на вашем устройстве.")
-        rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("📲 Подключиться", cb="connect", style=ButtonStyle.PRIMAPI)]]
+        rows = [[_btn("🆘 Написать в поддержку", url=RET_SUPPORT_URL)], [_btn("📖 Инструкция", url=RET_GUIDE_URL)], [_btn("📲 Подключиться", cb="connect", style=ButtonStyle.PRIMARY)]]
         await ret_try_send(bot, user_id, text, rows, key, str(pid), "soft", now=now)
 
     # 2.2 новый пользователь с бонусными днями не подключил устройство за 6 часов
