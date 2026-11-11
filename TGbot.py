@@ -55,6 +55,9 @@ from aiogram.types import WebAppInfo, InlineKeyboardButton
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
+import premium_emoji
+
+
 class PromoStates(StatesGroup):
     waiting_for_promo = State()  # Состояние ожидания текста промокода
 
@@ -8356,6 +8359,8 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
+    await premium_emoji.setup(bot, dp, ADMIN_ID)
+
 
     try:
         import miniapp_api
