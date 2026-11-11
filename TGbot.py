@@ -361,20 +361,32 @@ async def video_error_handler(event: ErrorEvent):
                 chat_id = event.update.callback_query.message.chat.id
 
             if chat_id:
-                text1 = ("<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
-                         "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
-                         "📖 Выберите действие:")
+                # Символ &#8203; делает ссылку невидимой в тексте, но Telegram всё равно рисует кнопку превью!
+                text1 = (
+                    "<a href='https://sn-go.ru/Instruktion'>&#8203;</a>"
+                    "<b>👋 Добро пожаловать в наш VPN-сервис</b>\n\n"
+                    "<blockquote>"
+                    "🖥️ Доступны <b>Белые Списки</b> и серверы разных стран для стабильного обхода блокировок."
+                    "</blockquote>\n\n"
+                    "📖 <b>Выберите действие ниже:</b>"
+                )
                 try:
                     await event.bot.send_message(
                         chat_id=chat_id,
-                        text=f"{text1}",
+                        text=text1,
                         reply_markup=main_kb(),
-                        parse_mode="HTML"
+                        parse_mode="HTML",
+                        link_preview_options=LinkPreviewOptions(
+                            is_disabled=False,
+                            url="https://sn-go.ru/Instruktion",
+                            prefer_small_media=True,  # Делает плашку компактной, без огромной картинки
+                            show_above_text=False     # False — кнопка внизу текста, True — над текстом
+                        )
                     )
                 except Exception as user_err:
                     print(f"Не удалось отправить текстовую панель пользователю: {user_err}")
             
-            return True  # Ошибка успешно обработана, бот продолжает работать!
+            return True
             
     return False  # Все остальные ошибки (например, синтаксические) не трогаем, пусть летят в консоль
 
@@ -5741,26 +5753,28 @@ async def reset_device_preferences(callback: types.CallbackQuery):
 async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext = None):
     await callback.answer()
     
-    # ИСПРАВЛЕНО: Сбрасываем FSM состояние, если пользователь пришел из ввода промокода
     if state:
         await state.clear()
     
     text = (
-        "<b>👋 Привет, добро пожаловать в наш VPN сервис</b>\n\n"
-        "🖥️ У нас доступны Белые Списки, а также иные страны для обхода блокировок.\n\n"
-        "📖 Выберите действие:\n\n"
-        "<pre>Сейчас бот находится на тех. работах</pre>"
+        "<a href='https://sn-go.ru/Instruktion'>&#8203;</a>"
+        "<b>👋 Добро пожаловать в наш VPN-сервис</b>\n\n"
+        "<blockquote>"
+        "🖥️ Доступны <b>Белые Списки</b> и серверы разных стран для стабильного обхода блокировок."
+        "</blockquote>\n\n"
+        "<pre>Сейчас бот находится на тех. работах</pre>\n\n"
+        "📖 <b>Выберите действие ниже:</b>"
     )
     
-    # 1. Сначала удаляем текущее сообщение (кабинет или коннектор), чтобы очистить чат
     try:
         await callback.message.delete()
     except Exception:
-        pass  # Если сообщение старое и удалить нельзя, просто идем дальше
+        pass
         
-    # 2. Отправляем главное меню заново точно так же, как в команде /start
-    # send_screen сам откатывается на текст, если видео не отправилось
+    # Важно: внутри вашей функции send_screen при отправке текста нужно передавать
+    # link_preview_options=LinkPreviewOptions(is_disabled=False, prefer_small_media=True)
     await send_screen(callback.message.chat.id, "main", text, main_kb(), effect=True)
+
 
 
 
