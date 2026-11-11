@@ -7827,8 +7827,10 @@ def get_discount_price_ex(base_price_rub: int, user_id: int = None):
 def _ret_kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=[[b for b in row] for row in rows])
 
-def _btn(text, cb=None, url=None):
-    return InlineKeyboardButton(text=text, callback_data=cb) if cb else InlineKeyboardButton(text=text, url=url)
+def _btn(text, cb=None, url=None, style=None):
+    kw = {"style": style} if style else {}
+    return InlineKeyboardButton(text=text, callback_data=cb, **kw) if cb else InlineKeyboardButton(text=text, url=url, **kw)
+
 
 RET_OFF_ROW = [_btn("🔕 Отключить акции", cb="ret:off")]
 
