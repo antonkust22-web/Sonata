@@ -51,6 +51,8 @@ from aiogram.enums.button_style import ButtonStyle
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import WebAppInfo, InlineKeyboardButton
+from aiogram.types import LinkPreviewOptions
+
 
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -364,7 +366,7 @@ async def video_error_handler(event: ErrorEvent):
                 # Символ &#8203; делает ссылку невидимой в тексте, но Telegram всё равно рисует кнопку превью!
                 text1 = (
                     "<a href='https://sn-go.ru/Instruktion'>&#8203;</a>"
-                    "<b>👋 Добро пожаловать в наш VPN-сервис</b>\n\n"
+                    "<b>👋 Привет, добро пожаловать в наш VPN-сервис</b>\n\n"
                     "<blockquote>"
                     "🖥️ Доступны <b>Белые Списки</b> и серверы разных стран для стабильного обхода блокировок."
                     "</blockquote>\n\n"
@@ -5786,7 +5788,7 @@ async def info(callback: types.CallbackQuery):
     await callback.answer()
     text = (
         "⚙️ <b><a href=\"https://t.me/SonataSupport_bot\">Основная поддержка</a></b>\n"
-        "📢 <b>Информационный канал:</b> <a href=\"https://t.me/Sonata_Information\">Sonata | INFO</a>\n\n"
+        "📢 <b>Наш канал:</b> <a href=\"https://t.me/Sonata_Information\">Sonata | INFO</a>\n\n"
         "📋 <a href=\"https://sn-go.ru/terms\">Пользовательское соглашение</a>\n"
         "🔒 <a href=\"https://sn-go.ru/privacy\">Политика конфиденциальности</a>\n\n"
         "<i>Информация будет обновляться</i>"
