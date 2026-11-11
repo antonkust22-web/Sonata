@@ -48,7 +48,7 @@ MANUAL = {}
 SPEC = {
     "wave": ["👋"], "whitelist": ["🖥"], "book": ["📖"], "connect": ["📲"], "user": ["👤"],
     "card": ["💳"], "promo": ["🎟"], "clock": ["⏰"], "bell_off": ["🔕"], "phone": ["📱"],
-    "link": ["🔗"], "sparkle": ["✨"], "back": ["⬅"], "cart": ["🛒"], "rocket": ["🚀"],
+    "link": ["🔗"], "sparkle": ["✨"], "back": ["⬅️"], "cart": ["🛒"], "rocket": ["🚀"],
     "check": ["✅"], "bolt": ["⚡"], "qr": ["🖼"], "refresh": ["🔄"], "calendar": ["📅"],
     "clip": ["📋"], "globe": ["🌍"], "expired": ["❌", "🔴", "🛑"],
     # "friends" (👥) и "handshake" (🤝) разбираются отдельно в pick_ids()
