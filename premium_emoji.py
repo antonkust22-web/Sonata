@@ -2,23 +2,26 @@
 premium_emoji.py — премиум-эмодзи Sonata VPN (набор https://t.me/addemoji/Sonata_VPN)
 
 Как это работает
-  • При старте бот сам читает набор через getStickerSet и берёт оттуда id эмодзи
-    (вручную id копировать не нужно).
-  • Перед отправкой каждого сообщения модуль по ТАБЛИЦАМ ПРАВИЛ НИЖЕ заменяет
-    нужные обычные эмодзи на премиум: в тексте — <tg-emoji>, на кнопках — иконку
-    (icon_custom_emoji_id). Правила точные: эмодзи + слова рядом, ничего «на авось».
-  • Если Telegram отклоняет сообщение с премиум-эмодзи, то оно тут же уходит
-    повторно с обычными. После 3 таких случаев модуль выключается и пишет админу.
+  • При старте бот читает набор через getStickerSet и берёт id эмодзи ПО ПОРЯДКУ В НАБОРЕ
+    (см. PACK_ORDER ниже). К тому, какой обычный эмодзи привязан к стикеру в наборе,
+    модуль больше не привязан — поэтому ничего не «теряется».
+  • Перед отправкой каждого сообщения модуль заменяет обычные эмодзи на премиум:
+    в тексте (HTML) — <tg-emoji>, на кнопках — иконка (icon_custom_emoji_id).
+  • Если Telegram отклоняет сообщение с премиум-эмодзи, оно тут же уходит повторно
+    с обычными. После 3 таких случаев модуль выключается и пишет админу.
 
-Подключение (в боте):
+Подключение (в боте), как и раньше:
     import premium_emoji
     ...
     async def main():
         ...
         init_db()
-        await premium_emoji.setup(bot, dp, ADMIN_ID)   # <- одна строка
+        await premium_emoji.setup(bot, dp, ADMIN_ID)
 
 Команды для админа: /emoji_map  /emoji_test  /emoji_reload  /emoji_off  /emoji_on
+
+Если добавите/переставите эмодзи в наборе — поправьте PACK_ORDER (порядок слева направо,
+сверху вниз) и проверьте командой /emoji_test.
 """
 import json
 import logging
@@ -39,44 +42,48 @@ CACHE_PATH = "/data/premium_emoji.json"   # запасной кэш id, если
 ENABLED = True                            # главный рубильник
 MAX_FAILS = 3                             # столько отказов Telegram — и модуль сам отключается
 
-# Если авто-определение ошиблось, можно вписать id вручную: {"handshake": "5123456789012345678"}
+# Если нужно подменить конкретный id вручную: {"handshake": "5123456789012345678"}
 MANUAL = {}
 
 # ------------------------------------------------------------------------------------------
-# 1. КАКОЙ ФАЙЛ ПАКА ЧЕМ БЫЛ ОБЗВАН: ключ -> эмодзи, к которому он привязан в наборе
+# 1. ПОРЯДОК ЭМОДЗИ В НАБОРЕ (как в Telegram: слева направо, сверху вниз). Всего 26.
 # ------------------------------------------------------------------------------------------
-SPEC = {
-    "wave": ["👋"], "whitelist": ["🖥"], "book": ["📖"], "connect": ["📲"], "user": ["👤"],
-    "card": ["💳"], "promo": ["🎟"], "clock": ["⏰"], "bell_off": ["🔕"], "phone": ["📱"],
-    "link": ["🔗"], "sparkle": ["✨"], "back": ["⬅️"], "cart": ["🛒"], "rocket": ["🚀"],
-    "check": ["✅"], "bolt": ["⚡"], "qr": ["🖼"], "refresh": ["🔄"], "calendar": ["📅"],
-    "clip": ["📋"], "globe": ["🌍"], "expired": ["❌", "🔴", "🛑"],
-    # "friends" (👥) и "handshake" (🤝) разбираются отдельно в pick_ids()
-}
-
-
-def _norm(ch):
-    return (ch or "").replace("\ufe0f", "").strip()
+PACK_ORDER = [
+    "wave",           # 01 👋 приветствие
+    "whitelist",      # 02 🛡 белые списки
+    "book",           # 03 📖 книга
+    "connect",        # 04 ⏻ подключиться
+    "user",           # 05 👤 пользователь
+    "card",           # 06 💳 карта
+    "promo",          # 07 🎟 промокод
+    "clock",          # 08 ⏰ будильник
+    "bell_off",       # 09 🔕 отключить акции
+    "phone",          # 10 📱 устройство
+    "friends",        # 11 👥 друзья
+    "link",           # 12 🔗 ссылка
+    "sparkle",        # 13 ✨ искры
+    "back",           # 14 ⬅ назад
+    "cart",           # 15 🛒 корзина
+    "rocket",         # 16 🚀 ракета
+    "check",          # 17 ✅ галочка (активна / успешно)
+    "bolt",           # 18 ⚡ молния (импорт)
+    "qr",             # 19 🖼 QR-код
+    "refresh",        # 20 🔄 обновить
+    "calendar",       # 21 📅 календарь
+    "clip",           # 22 📋 список / информация
+    "globe",          # 23 🌍 глобус
+    "cross",          # 24 ❌ крестик (не активна / ошибка)
+    "handshake_alt",  # 25 🤝 рукопожатие (запасное, пока не используется)
+    "handshake",      # 26 🤝 рукопожатие
+]
 
 
 def pick_ids(rows):
     """rows: [(эмодзи_привязки, custom_emoji_id), ...] в порядке набора -> {ключ: id}"""
-    by = {}
-    for ch, cid in rows:
-        by.setdefault(_norm(ch), []).append(cid)
-    out = {}
-    for key, chars in SPEC.items():
-        for ch in chars:
-            if by.get(ch):
-                out[key] = by[ch][0]
-                break
-    handshakes = by.get("🤝", [])
-    if handshakes:
-        out["handshake"] = handshakes[-1]               # рукопожатие загружали последним
-    if by.get("👥"):
-        out["friends"] = by["👥"][0]
-    elif len(handshakes) >= 2:
-        out["friends"] = handshakes[0]                  # «два человека» мог быть привязан к 🤝
+    if len(rows) != len(PACK_ORDER):
+        logging.warning(f"[EMOJI] В наборе {len(rows)} эмодзи, а в PACK_ORDER {len(PACK_ORDER)} — "
+                        "проверьте порядок командой /emoji_test")
+    out = {key: rows[i][1] for i, key in enumerate(PACK_ORDER) if i < len(rows)}
     out.update({k: v for k, v in MANUAL.items() if v})
     return out
 
@@ -84,63 +91,36 @@ def pick_ids(rows):
 # ------------------------------------------------------------------------------------------
 # 2. ПРАВИЛА ЗАМЕНЫ
 # ------------------------------------------------------------------------------------------
-def E(ch):
-    """эмодзи + необязательный селектор вариации"""
-    return re.escape(ch) + "\ufe0f?"
+# Простые: один и тот же значок везде заменяется на один и тот же премиум (текст и кнопки).
+SIMPLE = {
+    "👋": "wave", "🖥": "whitelist", "📖": "book", "📲": "connect", "👤": "user",
+    "💳": "card", "🎟": "promo", "⏰": "clock", "🔕": "bell_off", "📱": "phone",
+    "👥": "friends", "🔗": "link", "✨": "sparkle", "⬅": "back", "🛒": "cart",
+    "🚀": "rocket", "✅": "check", "⚡": "bolt", "🖼": "qr", "🔄": "refresh", "🔁": "refresh",
+    "📅": "calendar", "📆": "calendar", "📋": "clip", "🌍": "globe",
+    "❌": "cross", "🛑": "cross", "🤝": "handshake",
+}
 
+# По контексту: заменяются только в тексте и только если сразу за ними идут эти слова.
+_PRE = r"\s*(?:<[^>]+>\s*)*"      # пробелы и теги <b>, <i> между эмодзи и словом
+CONTEXT = {
+    "🟢": (re.compile(_PRE + r"(?:Активна|∞)"), "check"),                 # статус подписки: активна / безлимит
+    "🔴": (re.compile(_PRE + r"Не активна"), "cross"),                    # статус подписки: не активна
+    "⏳": (re.compile(_PRE + r"Подписка скоро закончится"), "clock"),      # уведомление за 3 дня
+    "🔔": (re.compile(_PRE + r"Подписка заканчивается"), "clock"),         # уведомление за 3 часа
+}
 
-# ТЕКСТ (только HTML-сообщения): эмодзи заменяется, если сразу за ним идут эти слова
-_TEXT = [
-    # главное меню / приветствие
-    (E("👋") + r"(?=\s*Привет, добро пожаловать)", "wave"),
-    (E("🖥") + r"(?=\s*У нас доступны Белые Списки)", "whitelist"),
-    (E("📖") + r"(?=\s*Выберите действие)", "book"),
-    # личный кабинет
-    (E("👤") + r"(?=\s*Личный кабинет)", "user"),
-    (r"(?<=</b> )" + E("👤") + r"(?=Пользователь\n)", "user"),
-    (E("🤝") + r"(?=Партнер\n)", "handshake"),
-    (E("🤝") + r"(?=\s*<b>(?:Партнерская программа|Новый реферал|Позовите друга))", "handshake"),
-    (E("🔗") + r"(?=\s*Ссылка)", "link"),
-    (E("👥") + r"(?=\s*Приглашено друзей)", "friends"),
-    (E("✨") + r"(?=\s*Ваша подписка активна)", "sparkle"),
-    (E("🔴") + r"(?=\s*Не активна)", "expired"),
-    (E("📱") + r"(?=\s*(?:<b>Устройства:|<b>Управление устройствами|<b>Покупка дополнительных слотов|"
-               r"<b>Все слоты|Устройство:|Доступный лимит устройств|Ваш лимит))", "phone"),
-    # магазин и тарифы
-    (E("💳") + r"(?=\s*<b>(?:Магазин Sonata VPN|Выбор тарифа))", "card"),
-    (E("👤") + r"(?=\s*<b>Ваш ID:)", "user"),
-    (E("🎟") + r"(?=\s*<b>Активация промокода)", "promo"),
-    # подключение
-    (E("🚀") + r"(?=\s*<b>РЕЖИМ ОТЛАДКИ)", "rocket"),
-    (E("📅") + r"(?=\s*(?:Срок действия|Подписка продлена до|Новая дата окончания))", "calendar"),
-    (E("✅") + r"(?=[^\n]*<b>Успешно подключен</b>)", "check"),
-    (E("🖼") + r"(?=\s*<b>Ваш QR-код)", "qr"),
-    (E("📋") + r"(?=\s*Информация об устройстве)", "clip"),
-    # уведомления
-    (E("⏰") + r"(?=\s*<b>Скидка)", "clock"),
-    (E("🛑") + r"(?=\s*<b>Срок подписки истёк)", "expired"),
-]
-TEXT_RULES = [(re.compile(rx), key) for rx, key in _TEXT]
+# Кнопки без эмодзи в тексте, но с премиум-иконкой (точное совпадение текста)
+PLAIN_BUTTONS = {"Подключиться": "connect"}
 
-# КНОПКИ: (эмодзи, текст после него, ключ). Эмодзи уходит из текста, вместо него иконка.
-_BTN = [
-    ("📲", r"Подключиться", "connect"),
-    ("👤", r"Личный кабинет|Пригласить Клиента", "user"),
-    ("💳", r".+", "card"),
-    ("🎟", r"Активировать промокод", "promo"),
-    ("📖", r"Информация и поддержка|Инструкция", "book"),
-    ("🛒", r"Купить подписку", "cart"),
-    ("📱", r"Расширить лимит устройств|Докупить устройства", "phone"),
-    ("📋", r"Мои устройства", "clip"),
-    ("⚡", r"Импортировать.+", "bolt"),
-    ("🖼", r"Получить QR-код", "qr"),
-    ("🔄", r"Выбрать другое устройство|Я подписался.*", "refresh"),
-    ("🔕", r"Отключить акции", "bell_off"),
-    ("🤝", r"Пригласить Партнера", "handshake"),
-    ("🚀", r"Годовой.+", "rocket"),
-    ("⬅", r"Назад.*|Изменить ОС", "back"),
-]
-BTN_RULES = [(re.compile("^" + E(ch) + r"\s*(" + rest + ")$"), key) for ch, rest, key in _BTN]
+_CHARS = sorted(list(SIMPLE) + list(CONTEXT), key=len, reverse=True)
+# Сначала «пропускаемые» куски (уже готовый <tg-emoji>, <pre>, <code>, любой тег), потом сам эмодзи
+_TEXT_RE = re.compile(
+    r"(<tg-emoji\b.*?</tg-emoji>|<pre\b.*?</pre>|<code\b.*?</code>|<[^>]*>)|("
+    + "|".join(re.escape(c) for c in _CHARS) + r")\ufe0f?",
+    re.S,
+)
+_BTN_RE = re.compile(r"^(" + "|".join(re.escape(c) for c in SIMPLE) + r")\ufe0f?\s*(.+)$", re.S)
 
 # ------------------------------------------------------------------------------------------
 # 3. СОСТОЯНИЕ
@@ -154,20 +134,36 @@ _ADMIN = None
 def decorate_text(s):
     if not isinstance(s, str) or not IDS:
         return s
-    for rx, key in TEXT_RULES:
+
+    def sub(m):
+        if m.group(1):                       # тег / код / уже готовый premium — не трогаем
+            return m.group(0)
+        ch = m.group(2)
+        if ch in CONTEXT:
+            rx, key = CONTEXT[ch]
+            if not rx.match(s, m.end()):
+                return m.group(0)
+        else:
+            key = SIMPLE[ch]
         cid = IDS.get(key)
-        if cid:
-            s = rx.sub(lambda m, cid=cid: f'<tg-emoji emoji-id="{cid}">{m.group(0)}</tg-emoji>', s)
-    return s
+        if not cid:
+            return m.group(0)
+        return f'<tg-emoji emoji-id="{cid}">{m.group(0)}</tg-emoji>'
+
+    return _TEXT_RE.sub(sub, s)
 
 
 def decorate_button_text(text):
     """(новый_текст, id) или None, если у кнопки нет премиум-замены"""
-    for rx, key in BTN_RULES:
-        cid = IDS.get(key)
-        m = rx.match(text or "")
-        if cid and m:
-            return m.group(1), cid
+    text = text or ""
+    key = PLAIN_BUTTONS.get(text.strip())
+    if key and IDS.get(key):
+        return text.strip(), IDS[key]
+    m = _BTN_RE.match(text)
+    if m:
+        cid = IDS.get(SIMPLE[m.group(1)])
+        if cid:
+            return m.group(2), cid
     return None
 
 
@@ -260,13 +256,13 @@ async def reload_pack(bot):
     global IDS, ROWS
     try:
         st = await bot.get_sticker_set(PACK_NAME)
-        rows = [(i, s.emoji or "", s.custom_emoji_id) for i, s in enumerate(st.stickers) if s.custom_emoji_id]
-        ROWS = rows
-        IDS = pick_ids([(ch, cid) for _, ch, cid in rows])
+        found = [(s.emoji or "", s.custom_emoji_id) for s in st.stickers if s.custom_emoji_id]
+        ROWS = [(i, ch, cid) for i, (ch, cid) in enumerate(found)]
+        IDS = pick_ids(found)
         try:
             os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
             with open(CACHE_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ids": IDS, "rows": rows}, f, ensure_ascii=False)
+                json.dump({"ids": IDS, "rows": ROWS}, f, ensure_ascii=False)
         except Exception as e:
             logging.warning(f"[EMOJI] Кэш не записан: {e}")
     except Exception as e:
@@ -298,7 +294,8 @@ async def _cmd_map(message):
     lines = [f"<b>Набор {PACK_NAME}</b>: {len(ROWS)} шт. | Статус: {'✅ включено' if ENABLED else '⏸ выключено'}\n"]
     for i, ch, cid in ROWS:
         lines.append(f"{i + 1:02d} {ch} → <b>{', '.join(used.get(cid, ['—']))}</b>")
-    missing = [k for k in list(SPEC) + ["friends", "handshake"] if k not in IDS]
+    needed = set(SIMPLE.values()) | {v[1] for v in CONTEXT.values()} | set(PLAIN_BUTTONS.values())
+    missing = sorted(k for k in needed if k not in IDS)
     if missing:
         lines.append("\nНе найдены (останутся обычные эмодзи): " + ", ".join(missing))
     await message.answer("\n".join(lines), parse_mode="HTML")
@@ -318,11 +315,14 @@ async def _cmd_test(message):
         return
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     cid = IDS.get("handshake") or next(iter(IDS.values()))
+    lines = ["Тест порядка: слева — эмодзи из набора, справа — его роль в боте.\n"]
+    for i, _ch, c in ROWS:
+        name = PACK_ORDER[i] if i < len(PACK_ORDER) else "— (нет в PACK_ORDER)"
+        lines.append(f'<tg-emoji emoji-id="{c}">⭐</tg-emoji> {i + 1:02d} {name}')
+    lines.append("\nЕсли вместо анимированных значков обычные ⭐, то у владельца бота нет Telegram Premium.")
     try:
         await message.bot.send_message(
-            message.chat.id,
-            f'Тест: <tg-emoji emoji-id="{cid}">🤝</tg-emoji> текст с премиум-эмодзи.\nЕсли выше обычный значок, а не анимированный, то у владельца бота нет Telegram Premium.',
-            parse_mode="HTML",
+            message.chat.id, "\n".join(lines), parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="Кнопка с иконкой", callback_data="emoji_test", icon_custom_emoji_id=cid)]]))
     except Exception as e:
