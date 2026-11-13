@@ -3843,8 +3843,8 @@ from email.utils import formataddr as _formataddr, make_msgid as _make_msgid, fo
 # ---------- НАСТРОЙКИ ПОЧТЫ ----------
 # 👇 ЗАПОЛНИТЕ ДВЕ ПЕРЕМЕННЫЕ — и подтверждение по e-mail включится САМО (после перезапуска бота).
 #    Пока хотя бы одна пустая/неверная — рефералы работают по-старому (дни начисляются сразу).
-GMAIL_ADDRESS = ""            # Gmail, с которого будут уходить коды, например: "sonatavpn.noreply@gmail.com"
-GMAIL_APP_PASSWORD = ""       # 16-значный «пароль приложения» Google, например: "abcd efgh ijkl mnop" (пробелы можно оставлять)
+GMAIL_ADDRESS = "sonata.vpn.services@gmail.com"            # Gmail, с которого будут уходить коды, например: "sonatavpn.noreply@gmail.com"
+GMAIL_APP_PASSWORD = "jroicoyvuknthibq"       # 16-значный «пароль приложения» Google, например: "abcd efgh ijkl mnop" (пробелы можно оставлять)
 # (можно не править код, а задать переменными окружения GMAIL_ADDRESS и GMAIL_APP_PASSWORD на хостинге)
 GMAIL_ADDRESS = (GMAIL_ADDRESS or os.getenv("GMAIL_ADDRESS", "")).strip()
 GMAIL_APP_PASSWORD = re.sub(r"\s+", "", (GMAIL_APP_PASSWORD or os.getenv("GMAIL_APP_PASSWORD", "")))
