@@ -3177,26 +3177,36 @@ async def renew_vpn_subscription_flexible(user_id: int, days: int, username: str
 
 async def revoke_vpn_subscription(user_id: int) -> bool:
     """
-    Аннулирует подписку на ВСЕХ серверах из списка SERVERS (поддерживает старую x-ui и новую 3x-ui),
-    отключая клиентов и сбрасывая время окончания в локальной БД.
+    Аннулирует подписку на всех серверах из SERVERS (старая x-ui и новая 3x-ui):
+    отключает клиента и сбрасывает срок в локальной БД.
     """
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
-    
+
     any_server_updated = False
+    had_errors = False
+
+    def _is_ok(status: int, text: str) -> bool:
+        if status != 200:
+            return False
+        try:
+            return bool(json.loads(text).get("success", False))
+        except Exception:
+            return True  # 200 и не JSON — считаем успехом
 
     try:
         async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             for srv in SERVERS:
                 if srv["id"] == "fi_1":
                     continue
-                    
+
                 try:
-                    token_raw = srv.get("api_token", "")
-                    has_token = bool(token_raw and token_raw.strip())
-                    
+                    token_raw = (srv.get("api_token") or "").strip()
+                    is_3x = srv.get("version") == "3x-ui" or bool(token_raw)
+
                     email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
-                    
+                    email_in_url = urllib.parse.quote(email_for_panel, safe="")  # '#' и эмодзи нельзя класть в URL как есть
+
                     panel_url = srv['panel_url'].rstrip('/')
                     base_path = srv['base_path'].strip('/')
                     base_url = f"{panel_url}/{base_path}" if base_path else panel_url
@@ -3204,45 +3214,46 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
                     headers = {"Accept": "application/json"}
 
                     # 1. Авторизация
-                    login_url = f"{base_url.rstrip('/')}/login"
-                    async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
-                        await resp.text()
-
-                    if has_token:
-                        headers["Authorization"] = f"Bearer {token_raw.strip()}"
-
-                    # 2. Получение данных инбаунда
-                    if srv.get("version") == "3x-ui" or has_token:
-                        get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list/"
-                        async with session.get(get_url, headers=headers, timeout=10) as resp:
-                            resp_text = await resp.text()
-                            res_json = json.loads(resp_text)
-                        
-                        if not res_json.get("success"):
-                            logging.error(f"Не удалось получить список инбаундов на 3x-ui сервере {srv['id']}")
-                            continue
-                            
-                        inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
-                        if not inbound_obj:
-                            logging.error(f"Инбаунд {srv['inbound_id']} не найден на 3x-ui сервере {srv['id']}")
-                            continue
+                    if is_3x:
+                        headers["Authorization"] = f"Bearer {token_raw}"
+                        # первый запрос, чтобы панель выдала сессионную куку
+                        async with session.get(f"{base_url}/panel/api/inbounds/list/", headers=headers, timeout=10) as resp:
+                            await resp.text()
                     else:
-                        get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/get/{srv['inbound_id']}"
-                        async with session.get(get_url, headers=headers, timeout=10) as resp:
-                            resp_text = await resp.text()
-                            res_json = json.loads(resp_text)
-                            
+                        async with session.post(
+                            f"{base_url}/login",
+                            data={"username": srv['panel_user'], "password": srv['panel_password']},
+                            timeout=10
+                        ) as resp:
+                            await resp.text()
+
+                    # 2. Получаем инбаунд
+                    if is_3x:
+                        async with session.get(f"{base_url}/panel/api/inbounds/list/", headers=headers, timeout=10) as resp:
+                            res_json = json.loads(await resp.text())
                         if not res_json.get("success"):
-                            logging.error(f"Не удалось получить инбаунд на старой x-ui сервере {srv['id']}")
+                            logging.error(f"[REVOKE] {srv['id']}: не удалось получить список инбаундов")
+                            had_errors = True
+                            continue
+                        inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
+                    else:
+                        async with session.get(f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}", headers=headers, timeout=10) as resp:
+                            res_json = json.loads(await resp.text())
+                        if not res_json.get("success"):
+                            logging.error(f"[REVOKE] {srv['id']}: не удалось получить инбаунд")
+                            had_errors = True
                             continue
                         inbound_obj = res_json.get("obj")
 
-                    # Разбор настроек инбаунда
+                    if not inbound_obj:
+                        logging.error(f"[REVOKE] {srv['id']}: инбаунд {srv['inbound_id']} не найден")
+                        had_errors = True
+                        continue
+
                     raw_settings = inbound_obj.get("settings")
                     settings = raw_settings if isinstance(raw_settings, dict) else (json.loads(raw_settings) if raw_settings else {})
                     clients = settings.get("clients", [])
 
-                    # Поиск клиента по уникальному tgId или email
                     current_client = None
                     for c in clients:
                         if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
@@ -3250,85 +3261,85 @@ async def revoke_vpn_subscription(user_id: int) -> bool:
                             break
 
                     if not current_client:
-                        logging.warning(f"Клиент {user_id} не найден на сервере {srv['id']}. Пропускаем.")
+                        logging.warning(f"[REVOKE] Клиент {user_id} не найден на {srv['id']} — пропуск")
                         continue
 
                     client_uuid = current_client['id']
-                    past_expiry = 1  # Переводим в неактивное состояние (прошедшее время)
+                    past_expiry = 1  # прошедшее время = подписка закончилась
 
-                    # 3. Отправка запроса на деактивацию
-                    if srv.get("version") == "3x-ui" or has_token:
-                        # По Swagger спецификации 3x-ui: обновление по email в URL
-                        update_url = f"{panel_url}/{base_path}/panel/api/clients/update/{email_for_panel}" if base_path else f"{panel_url}/panel/api/clients/update/{email_for_panel}"
+                    # 3. Отключение клиента
+                    if is_3x:
+                        update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
-                        
                         payload = {
                             "client": {
-                                "email": email_for_panel,
-                                "totalGB": int(current_client.get("totalGB", 0)),
+                                "email": current_client.get("email", email_for_panel),
+                                "totalGB": int(current_client.get("totalGB", 0) or 0),
                                 "expiryTime": past_expiry,
                                 "tgId": int(user_id) if str(user_id).isdigit() else 0,
-                                "limitIp": int(current_client.get("limitIp", 2)),
-                                "limitHwid": int(current_client.get("limitHwid", 0)),
-                                "enable": False,  # Полностью выключаем подписку
+                                "limitIp": int(current_client.get("limitIp", 2) or 0),
+                                "limitHwid": int(current_client.get("limitHwid", 0) or 0),
+                                "enable": False,
                                 "id": client_uuid,
                                 "flow": current_client.get("flow", ""),
                                 "subId": current_client.get("subId", "")
                             },
                             "inboundIds": [int(srv['inbound_id'])]
                         }
-                        
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_text = await r.text()
-                            update_resp = json.loads(update_text)
+                            ok = _is_ok(r.status, update_text)
+                            logging.info(f"[REVOKE] {srv['id']} 3x-ui: HTTP={r.status}, ответ={update_text[:200]}")
                     else:
-                        # Старая панель x-ui (работает через urlencoded форму и требует id инбаунда)
-                        update_url = f"{base_url.rstrip('/')}/panel/api/inbounds/updateClient/{client_uuid}"
+                        update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
                         headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        
                         client_data = {
                             "id": str(srv['inbound_id']),
                             "settings": json.dumps({
                                 "clients": [{
                                     "id": client_uuid,
-                                    "email": email_for_panel,
-                                    "totalGB": int(current_client.get("totalGB", 0)),
+                                    "email": current_client.get("email", email_for_panel),
+                                    "limitIp": int(current_client.get("limitIp", 2) or 0),
+                                    "totalGB": int(current_client.get("totalGB", 0) or 0),
                                     "expiryTime": past_expiry,
-                                    "enable": False,  # Отключаем
+                                    "enable": False,
                                     "tgId": user_id,
-                                    "subId": current_client.get("subId", "")
+                                    "subId": current_client.get("subId", ""),
+                                    "flow": current_client.get("flow", "")
                                 }]
                             }, ensure_ascii=False)
                         }
-                        
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                             update_text = await r.text()
-                            update_resp = json.loads(update_text)
+                            ok = _is_ok(r.status, update_text)
+                            logging.info(f"[REVOKE] {srv['id']} x-ui: HTTP={r.status}, ответ={update_text[:200]}")
 
-                    if update_resp.get("success", False):
-                        logging.info(f"Клиент {user_id} успешно отключен на сервере {srv['id']}.")
+                    if ok:
+                        logging.info(f"[REVOKE] Клиент {user_id} отключён на {srv['id']}")
                         any_server_updated = True
                     else:
-                        logging.error(f"Панель {srv['id']} вернула ошибку при отзыве подписки: {update_text}")
+                        logging.error(f"[REVOKE] {srv['id']} вернул ошибку: {update_text[:300]}")
+                        had_errors = True
 
                 except Exception as srv_err:
-                    logging.error(f"Ошибка при отзыве подписки на сервере {srv['id']}: {srv_err}", exc_info=True)
+                    logging.error(f"[REVOKE] Ошибка на сервере {srv['id']}: {srv_err}", exc_info=True)
+                    had_errors = True
                     continue
 
-        # Если успешно отключили хотя бы на одном сервере, сбрасываем время подписки в локальной БД Amvera
-        if any_server_updated:
+        # Хоть где-то отключили, либо ошибок не было (клиента просто нигде нет) — обнуляем БД
+        if any_server_updated or not had_errors:
             user_data = get_user_from_db(user_id)
-            current_username = user_data[0] if user_data else ""
-            
+            current_username = user_data[1] if (user_data and len(user_data) > 1) else ""
             add_or_update_user(user_id, current_username, expiry_time=0)
-            logging.info(f"Локальная подписка для пользователя {user_id} успешно обнулена.")
+            logging.info(f"[REVOKE] Локальная подписка {user_id} обнулена.")
             return True
-            
+
         return False
 
     except Exception as e:
         logging.error(f"Критическая ошибка в revoke_vpn_subscription: {e}", exc_info=True)
         return False
+
 
 
 
@@ -6843,6 +6854,8 @@ async def admin_revoke_sub(message: types.Message):
         
         # Записываем пустые конфиги и текущее Unix-время (что означает окончание подписки прямо сейчас)
         add_or_update_user(target_user_id, "", "", target_sub_id, current_time)
+        asyncio.create_task(send_sub_to_website(target_sub_id, "", current_time))
+
         # =======================================================================
 
         await message.answer(
