@@ -48,6 +48,8 @@ from aiogram import types
 from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent
 from aiogram.enums.button_style import ButtonStyle
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import WebAppInfo, InlineKeyboardButton
@@ -1544,7 +1546,8 @@ async def get_vpn_config_clean(user_id, username=""):
                     
                     if srv.get("version") == "3x-ui" or has_token:
                         # Из вашей Swagger-документации (image_zfRadq.png): роут обновления требует email в конце URL пути
-                        update_url = f"{panel_url}/{base_path}/panel/api/clients/update/{email_for_panel}" if base_path else f"{panel_url}/panel/api/clients/update/{email_for_panel}"
+                        email_in_url = urllib.parse.quote(email_for_panel, safe="")
+                         update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
@@ -2195,7 +2198,10 @@ async def handle_set_role(message: types.Message):
         await message.answer(f"⏳ Роль изменена. Синхронизирую безлимитную подписку на серверах X-UI для {target_user_id}...")
 
         # 2. Вызываем функцию безлимита на серверах и локально (наша прошлая функция)
-        await grant_infinity_access_for_staff(target_user_id)
+        granted = await grant_infinity_access_for_staff(target_user_id)
+        if not granted:
+            await message.answer("⚠️ Роль выдана, но безлимит применился не на всех серверах. Подробности в логах [STAFF] / [RENEW].")
+
 
         # Выводим красивый ответ в зависимости от выданной роли
         if requested_role == "admin":
@@ -2251,6 +2257,15 @@ async def handle_demote_user(message: types.Message):
 
         # 2. Вызываем вашу родную функцию аннулирования подписки (она отключит в панели и сбросит expiry_time в 0)
         is_revoked = await revoke_vpn_subscription(target_user_id)
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            conn.execute("UPDATE users SET device_limit = ? WHERE user_id = ?", (DEFAULT_DEVICE_LIMIT, target_user_id))
+            conn.commit(); conn.close()
+            if user_in_db[3]:
+                await send_sub_to_website(user_in_db[3], "", 0, device_limit=DEFAULT_DEVICE_LIMIT)
+        except Exception as e:
+            logging.error(f"[STAFF] Не удалось сбросить лимит устройств {target_user_id}: {e}")
+
 
         if is_revoked:
             status_vpn = "🟢 Успешно отключен везде и обнулен"
@@ -2604,135 +2619,231 @@ async def handle_delete_promo(message: types.Message):
 
 
 
+UPD_DEFAULT_TEXT = (
+    "🔄 <b>Серверы Sonata VPN обновлены</b>\n\n"
+    "Мы обновили список серверов. Откройте VPN-приложение и обновите подписку "
+    "(значок обновления рядом с ней), чтобы получить свежие настройки.\n\n"
+    "Если что-то не подключается — напишите в поддержку, поможем."
+)
+_UPD_LOCK = asyncio.Lock()
+_UPD_JOBS: dict = {}
+
+
+def _upd_active_users():
+    """[(user_id, username, expiry, заблокировал_бота)] — только с активной подпиской."""
+    conn = _ret_db()   # гарантирует наличие таблицы user_meta
+    try:
+        return conn.execute(
+            "SELECT u.user_id, u.username, CAST(u.expiry_time AS INTEGER), COALESCE(m.blocked, 0) "
+            "FROM users u LEFT JOIN user_meta m ON m.user_id = u.user_id "
+            "WHERE CAST(u.expiry_time AS INTEGER) > ? AND COALESCE(u.is_bot, 0) = 0",
+            (int(time.time()),)
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _upd_mark_blocked(user_id: int):
+    conn = _ret_db()
+    try:
+        conn.execute('INSERT OR IGNORE INTO user_meta (user_id) VALUES (?)', (user_id,))
+        conn.execute('UPDATE user_meta SET blocked = 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _upd_notice_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Инструкция", url=RET_GUIDE_URL)],
+        [InlineKeyboardButton(text="🆘 Поддержка", url=RET_SUPPORT_URL)],
+    ])
+
+
 @dp.message(Command("update_servers"))
-async def admin_night_mass_update(message: types.Message):
+async def admin_update_servers(message: types.Message, command: CommandObject):
     if message.from_user.id != ADMIN_ID:
         return
-
-    bot = message.bot
-    users_to_update = []
-    
-    # 1. Выгружаем данные строго по структуре вашей таблицы users
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=20.0) # Увеличили таймаут ожидания БД
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                user_id, 
-                username, 
-                expiry_time, 
-                saved_os, 
-                saved_app,
-                github_raw_url
-            FROM users 
-            WHERE is_blocked = 0 OR is_blocked IS NULL
-        """)
-        users_to_update = cursor.fetchall()
-        conn.close()
-    except Exception as db_err:
-        await message.answer(f"❌ Ошибка чтения БД: {db_err}")
+    if _UPD_LOCK.locked():
+        await message.answer("⏳ Обновление или рассылка уже выполняется — дождитесь завершения.")
         return
+    custom_text = (command.args or "").strip()
 
-    if not users_to_update:
-        await message.answer("ℹ️ В таблице users нет пользователей для обновления.")
-        return
-
-    # Информируем админа о старте
-    progress_msg = await message.answer(f"🚀 Запущено безопасное обновление {len(users_to_update)} подписок...")
-    success_count = 0
-    current_time = int(time.time())
-
-    # НАСТРОЙКИ БЕЗОПАСНОСТИ И ТАЙМИНГОВ
-    DISPLAY_DELAY = 2.0  # Сколько секунд сообщение висит у юзера перед удалением
-    FLOOD_DELAY = 1.5    # Пауза между пользователями для защиты от перегрузки Telegram API
-
-    # 2. Цикл скрытого обновления с «мягкими» таймингами
-    for row in users_to_update:
-        user_id, username, expiry_time, saved_os, saved_app, github_raw_url = row
-        
-        if not user_id or not str(user_id).isdigit():
-            continue
-            
-        user_id = int(user_id)
-        username = username or ""
-
-        # Выводим аккуратное ночное уведомление
-        notice_msg = None
+    async with _UPD_LOCK:
         try:
-            notice_msg = await bot.send_message(
-                chat_id=user_id,
-                text="🔄 **Проводится плановое обновление серверов...**\nПожалуйста, подождите.",
-                parse_mode="Markdown"
-            )
+            users = await asyncio.to_thread(_upd_active_users)
+        except Exception as e:
+            logging.error(f"[UPDATE] Ошибка чтения БД: {e}", exc_info=True)
+            await message.answer(f"❌ Ошибка чтения БД: <code>{e}</code>", parse_mode="HTML")
+            return
+        if not users:
+            await message.answer("ℹ️ Нет пользователей с активной подпиской.")
+            return
+
+        total = len(users)
+        status = await message.answer(f"🚀 Обновляю конфиги: 0 / {total}")
+        ok_cnt, failed, streak, last_edit, aborted = 0, [], 0, 0.0, False
+
+        for i, (uid, uname, expiry, _blocked) in enumerate(users, 1):
+            try:
+                res = await asyncio.wait_for(
+                    renew_vpn_subscription_flexible(int(uid), 0, uname or "", set_absolute_expiry=int(expiry)),
+                    timeout=180)
+            except Exception as e:
+                logging.error(f"[UPDATE] {uid}: {type(e).__name__}: {e}")
+                res = False
+            if res:
+                ok_cnt += 1
+                streak = 0
+            else:
+                failed.append(uid)
+                streak += 1
+                if streak >= 5:
+                    aborted = True
+                    break
+            if time.time() - last_edit > 4:
+                last_edit = time.time()
+                try:
+                    await status.edit_text(f"🚀 Обновляю конфиги: {i} / {total}\n✅ {ok_cnt}  ❌ {len(failed)}")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+
+        if aborted:
+            await status.edit_text(
+                f"🛑 <b>Остановлено:</b> 5 пользователей подряд не обновились — похоже, панели недоступны.\n"
+                f"Обновлено до остановки: <b>{ok_cnt}</b>. Рассылка не предлагается. "
+                f"Проверьте панели и запустите /update_servers снова.", parse_mode="HTML")
+            return
+
+        failed_txt = ""
+        if failed:
+            failed_txt = "\n⚠️ Не обновились: " + ", ".join(f"<code>{x}</code>" for x in failed[:15]) \
+                         + (f" и ещё {len(failed) - 15}" if len(failed) > 15 else "")
+        await status.edit_text(
+            f"✅ <b>Обновление серверов завершено</b>\nУспешно: <b>{ok_cnt}</b> из {total}{failed_txt}",
+            parse_mode="HTML")
+
+        # ---- запрос подтверждения рассылки ----
+        notify_count = sum(1 for u in users if not u[3])
+        blocked_count = total - notify_count
+        text = custom_text or UPD_DEFAULT_TEXT
+        job = secrets.token_hex(4)
+        _UPD_JOBS[job] = {"text": text}
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ Отправить ({notify_count})", callback_data=f"upd:send:{job}")],
+            [InlineKeyboardButton(text="👁 Тест мне", callback_data=f"upd:test:{job}")],
+            [InlineKeyboardButton(text="❌ Не отправлять", callback_data=f"upd:skip:{job}")],
+        ])
+        await message.answer(
+            f"📣 <b>Уведомить пользователей об обновлении?</b>\n\n"
+            f"С активной подпиской: <b>{total}</b>\n"
+            f"Получат сообщение: <b>{notify_count}</b>\n"
+            f"Пропущены (заблокировали бота): <b>{blocked_count}</b>\n\n"
+            f"<b>Текст:</b>\n<blockquote>{text}</blockquote>",
+            reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("upd:"))
+async def admin_update_servers_decision(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Нет прав.", show_alert=True)
+        return
+    try:
+        _, action, job = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer()
+        return
+
+    if action == "test":
+        data = _UPD_JOBS.get(job)
+        if not data:
+            await callback.answer("Задание устарело. Запустите /update_servers заново.", show_alert=True)
+            return
+        try:
+            await bot.send_message(ADMIN_ID, data["text"], parse_mode="HTML", reply_markup=_upd_notice_kb())
+            await callback.answer("Тест отправлен вам в чат.")
+        except Exception as e:
+            await callback.answer(f"Не удалось отправить тест: {e}", show_alert=True)
+        return
+
+    if action == "skip":
+        _UPD_JOBS.pop(job, None)
+        await callback.answer("Отклонено.")
+        try:
+            await callback.message.edit_text("❌ Рассылка об обновлении серверов отклонена. Пользователям ничего не отправлено.")
         except Exception:
-            # Игнорируем ошибку, если пользователь заблокировал бота
+            pass
+        return
+
+    if action != "send":
+        await callback.answer()
+        return
+
+    if _UPD_LOCK.locked():
+        await callback.answer("Уже выполняется.", show_alert=True)
+        return
+    data = _UPD_JOBS.pop(job, None)     # pop = защита от двойного нажатия
+    if not data:
+        await callback.answer("Задание устарело (бот перезапускался). Запустите /update_servers заново.", show_alert=True)
+        return
+    await callback.answer("Запускаю рассылку…")
+
+    async with _UPD_LOCK:
+        users = await asyncio.to_thread(_upd_active_users)
+        recipients = [int(u[0]) for u in users if not u[3]]
+        total = len(recipients)
+        sent = blocked_new = failed = 0
+        last_edit = 0.0
+        try:
+            await callback.message.edit_text(f"📤 Рассылка: 0 / {total}")
+        except Exception:
             pass
 
+        for i, uid in enumerate(recipients, 1):
+            for attempt in (1, 2):
+                try:
+                    await bot.send_message(uid, data["text"], parse_mode="HTML",
+                                           reply_markup=_upd_notice_kb(), disable_notification=True)
+                    sent += 1
+                    break
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after + 1)
+                    if attempt == 2:
+                        failed += 1
+                except TelegramForbiddenError:
+                    _upd_mark_blocked(uid)
+                    blocked_new += 1
+                    break
+                except TelegramBadRequest as e:
+                    m = str(e).lower()
+                    if "chat not found" in m or "deactivated" in m or "blocked" in m:
+                        _upd_mark_blocked(uid)
+                        blocked_new += 1
+                    else:
+                        failed += 1
+                        logging.warning(f"[UPDATE-NOTIFY] {uid}: {e}")
+                    break
+                except Exception as e:
+                    failed += 1
+                    logging.warning(f"[UPDATE-NOTIFY] {uid}: {type(e).__name__}: {e}")
+                    break
+            if time.time() - last_edit > 4:
+                last_edit = time.time()
+                try:
+                    await callback.message.edit_text(f"📤 Рассылка: {i} / {total}")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.06)
+
         try:
-            # === СТЕК ОПЕРАЦИЙ (Имитация кнопки "connect") ===
-            
-            # А. Запрос свежих ключей из панели (X-UI)
-            vless_links, expiry_time_ms = await get_vpn_config_clean(user_id, username)
-            
-            # Б. Сборка или чтение sub_id
-            sub_id = github_raw_url if github_raw_url else ("e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15])
-            
-            combined_configs = "\n".join(vless_links) if vless_links else ""
-            base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
-
-            # В. Расчет времени действия подписки
-            try:
-                expiry_in_db = int(expiry_time) if expiry_time is not None else 0
-            except (ValueError, TypeError):
-                expiry_in_db = 0
-
-            expiry_seconds = int(expiry_time_ms / 1000) if expiry_time_ms > 0 else expiry_in_db
-            if expiry_seconds <= current_time:
-                expiry_seconds = current_time
-
-            # Г. Асинхронная отправка данных на PHP-сайт (sn-go.ru)
-            if expiry_seconds <= current_time:
-                asyncio.create_task(send_sub_to_website(sub_id, "", expiry_seconds))
-            else:
-                asyncio.create_task(send_sub_to_website(sub_id, base64_payload, expiry_seconds))
-                
-            # Д. Запись конфигурации в локальную БД бота
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=15.0)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE users 
-                    SET vpn_config = ?, expiry_time = ?, github_raw_url = ? 
-                    WHERE user_id = ?
-                """, (combined_configs, expiry_seconds, sub_id, user_id))
-                conn.commit()
-                conn.close()
-            except Exception as db_up_err:
-                logging.error(f"Ошибка записи в БД для {user_id}: {db_up_err}")
-
-            success_count += 1
-
-        except Exception as proc_err:
-            logging.error(f"Ошибка обработки аккаунта {user_id}: {proc_err}")
-
-        # Е. Даем сообщению «повисеть», чтобы Telegram успел корректно зафиксировать его ID
-        await asyncio.sleep(DISPLAY_DELAY)
-
-        # Ж. Удаляем сообщение у пользователя
-        if notice_msg:
-            try:
-                await bot.delete_message(chat_id=user_id, message_id=notice_msg.message_id)
-            except TelegramBadRequest:
-                pass
-
-        # З. Финальная разгрузочная пауза перед переходом к следующему юзеру
-        await asyncio.sleep(FLOOD_DELAY)
-
-    # Итоговый отчет для вас
-    await progress_msg.edit_text(
-        f"✅ Безопасное обновление завершено!\n"
-        f"Успешно обработано: {success_count} из {len(users_to_update)} подписок."
-    )
+            await callback.message.edit_text(
+                f"✅ <b>Рассылка завершена</b>\n\n"
+                f"Доставлено: <b>{sent}</b>\n"
+                f"Заблокировали бота (помечены, больше не получают рассылки): <b>{blocked_new}</b>\n"
+                f"Другие ошибки: <b>{failed}</b>", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 
@@ -2741,94 +2852,40 @@ async def admin_night_mass_update(message: types.Message):
 
 
 
+
+
+ STAFF_INF_EXPIRY = 4070908800   # 2099 год
+STAFF_DEVICE_LIMIT = 999
 
 
 async def grant_infinity_access_for_staff(user_id: int) -> bool:
-    """
-    Автоматически выдает безлимитную подписку (до 2099 года) 
-    для Администраторов, Амбассадоров и Создателя на всех серверах 3X-UI и в локальной БД.
-    """
-    jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False)
-    
-    infinity_expiry_ms = 4070908800 * 1000 
-    infinity_expiry_seconds = 4070908800
-
-    any_server_updated = False
-
+    """Безлимитная подписка (до 2099) + безлимит устройств для admin/ambassador."""
+    user_data = get_user_from_db(user_id)
+    username = user_data[1] if (user_data and len(user_data) > 1 and user_data[1]) else ""
     try:
-        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-            for srv in SERVERS:
-                try:
-                    email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
-                    
-                    login_url = f"{srv['panel_url']}{srv['base_path']}/login"
-                    async with session.post(login_url, data={"username": srv['panel_user'], "password": srv['panel_password']}, timeout=10) as resp:
-                        await resp.text()
+        # 1. Лимит устройств в БД — до продления, чтобы сайт сразу получил 999
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute("UPDATE users SET device_limit = ? WHERE user_id = ?", (STAFF_DEVICE_LIMIT, user_id))
+        conn.commit()
+        conn.close()
 
-                    headers = {"Accept": "application/json"}
+        # 2. Срок на всех панелях (3x-ui и старых) + пересборка конфига
+        ok = await renew_vpn_subscription_flexible(
+            user_id, 0, username, set_absolute_expiry=STAFF_INF_EXPIRY)
 
-                    get_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/get/{srv['inbound_id']}"
-                    async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
+        # 3. Явно закрепляем лимит и срок на сайте
+        fresh = get_user_from_db(user_id)
+        if fresh and len(fresh) > 3 and fresh[3]:
+            payload = base64.b64encode((fresh[2] or "").strip().encode('utf-8')).decode('utf-8')
+            await send_sub_to_website(fresh[3], payload, STAFF_INF_EXPIRY, device_limit=STAFF_DEVICE_LIMIT)
 
-                    if not res_json.get("success"):
-                        continue
-
-                    settings = json.loads(res_json["obj"]["settings"])
-                    clients = settings.get("clients", [])
-
-                    current_client = next((c for c in clients if c.get("tgId") == user_id), None)
-                    if not current_client:
-                        old_email = f"user_{user_id}"
-                        current_client = next((c for c in clients if c.get("email") == old_email), None)
-
-                    if not current_client:
-                        continue
-
-                    client_uuid = current_client['id']
-                    update_url = f"{srv['panel_url']}{srv['base_path']}/panel/api/inbounds/updateClient/{client_uuid}"
-                    
-                    client_data = {
-                        "id": str(srv['inbound_id']),
-                        "settings": json.dumps({
-                            "clients": [{
-                                "id": client_uuid,
-                                "email": email_for_panel,
-                                "limitIp": current_client.get("limitIp", 5),
-                                "totalGB": 0,
-                                "expiryTime": infinity_expiry_ms,
-                                "enable": True,
-                                "tgId": user_id,
-                                "subId": current_client.get("subId", "")
-                            }]
-                        })
-                    }
-
-                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as resp:
-                        update_resp = await resp.json()
-
-                    if update_resp.get("success", False):
-                        any_server_updated = True
-
-                except Exception as srv_err:
-                    logging.error(f"Ошибка безлимита на сервере {srv['id']}: {srv_err}")
-                    continue
-
-        if any_server_updated:
-            user_data = get_user_from_db(user_id)
-            # ИСПРАВЛЕНО: Извлекаем username из кортежа по индексу 1
-            current_username = user_data[1] if (user_data and len(user_data) > 1) else ""
-            
-            # Записываем в БД вечный timestamp
-            add_or_update_user(user_id, current_username, expiry_time=infinity_expiry_seconds)
-            return True
-            
-        return False
-
+        logging.info(f"[STAFF] Безлимит для {user_id}: панели ok={ok}")
+        return bool(ok)
     except Exception as e:
-        logging.error(f"Ошибка в grant_infinity_access_for_staff: {e}")
+        logging.error(f"[STAFF] Ошибка выдачи безлимита {user_id}: {e}", exc_info=True)
         return False
+
+
 
 
 
@@ -2951,7 +3008,177 @@ async def apply_subscription_extension(user_id: int, username: str, days_to_add:
 
 
 
+def _panel_resp_ok(status: int, text: str) -> bool:
+    if status != 200:
+        return False
+    try:
+        return bool(json.loads(text).get("success", False))
+    except Exception:
+        return True
 
+
+async def _panel_fetch_inbound(session, srv, headers, base_url, is_3x):
+    if is_3x:
+        async with session.get(f"{base_url}/panel/api/inbounds/list/", headers=headers, timeout=10) as resp:
+            res_json = json.loads(await resp.text())
+        return next((i for i in (res_json.get("obj") or []) if i.get("id") == srv['inbound_id']), None)
+    async with session.get(f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}", headers=headers, timeout=10) as resp:
+        res_json = json.loads(await resp.text())
+    return res_json.get("obj")
+
+
+def _panel_find_client(inbound_obj, user_id, email_for_panel):
+    if not inbound_obj:
+        return None
+    raw = inbound_obj.get("settings")
+    settings = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
+    for c in settings.get("clients", []):
+        if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
+            return c
+    return None
+
+
+async def renew_vpn_subscription_flexible(user_id: int, days: int, username: str = "", set_absolute_expiry: int = None):
+    """Продлевает подписку на days дней на всех серверах. Если задан set_absolute_expiry —
+    ставит ровно эту дату (unix-секунды) вместо расчёта. Возвращает True, если хотя бы одна панель
+    обновилась и конфиг собран."""
+    user_data = get_user_from_db(user_id)
+    try:
+        current_expiry_seconds = int(user_data[4]) if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
+    except (ValueError, TypeError):
+        current_expiry_seconds = 0
+
+    now_s = int(time.time())
+    if set_absolute_expiry is not None:
+        new_expiry_seconds = int(set_absolute_expiry)
+    elif current_expiry_seconds > now_s:
+        new_expiry_seconds = current_expiry_seconds + days * 86400
+    else:
+        new_expiry_seconds = now_s + days * 86400
+    new_expiry_ms = new_expiry_seconds * 1000
+
+    jar = aiohttp.CookieJar(unsafe=True)
+    connector = aiohttp.TCPConnector(ssl=False)
+    servers_ok = 0
+
+    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
+        for srv in SERVERS:
+            if srv["id"] == "fi_1":
+                continue
+            try:
+                token_raw = (srv.get("api_token") or "").strip()
+                is_3x = srv.get("version") == "3x-ui" or bool(token_raw)
+                srv_flow = srv.get("flow", "")
+                email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
+                email_in_url = urllib.parse.quote(email_for_panel, safe="")
+
+                panel_url = srv['panel_url'].rstrip('/')
+                base_path = srv['base_path'].strip('/')
+                base_url = f"{panel_url}/{base_path}" if base_path else panel_url
+
+                headers = {"Accept": "application/json"}
+                if is_3x:
+                    headers["Authorization"] = f"Bearer {token_raw}"
+                else:
+                    async with session.post(f"{base_url}/login",
+                                            data={"username": srv['panel_user'], "password": srv['panel_password']},
+                                            timeout=10) as resp:
+                        await resp.text()
+
+                current_client = _panel_find_client(
+                    await _panel_fetch_inbound(session, srv, headers, base_url, is_3x), user_id, email_for_panel)
+
+                if not current_client:
+                    logging.info(f"[RENEW] Клиент {user_id} не найден на {srv['id']} — создаю")
+                    await get_vpn_config_clean(user_id, username)
+                    current_client = _panel_find_client(
+                        await _panel_fetch_inbound(session, srv, headers, base_url, is_3x), user_id, email_for_panel)
+
+                if not current_client:
+                    logging.error(f"[RENEW] Не удалось найти/создать клиента {user_id} на {srv['id']}")
+                    continue
+
+                client_uuid = current_client.get("id")
+                sub_id = current_client.get("subId") or secrets.token_hex(16)
+
+                if is_3x:
+                    update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
+                    headers["Content-Type"] = "application/json; charset=utf-8"
+                    payload = {
+                        "client": {
+                            "email": email_for_panel,
+                            "totalGB": int(current_client.get("totalGB", 0) or 0),
+                            "expiryTime": int(new_expiry_ms),
+                            "tgId": int(user_id) if str(user_id).isdigit() else 0,
+                            "limitIp": int(current_client.get("limitIp", 2) or 0),
+                            "limitHwid": int(current_client.get("limitHwid", 0) or 0),
+                            "enable": True,
+                            "id": client_uuid,
+                            "flow": srv_flow,
+                            "subId": sub_id
+                        },
+                        "inboundIds": [int(srv['inbound_id'])]
+                    }
+                    async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
+                        txt = await r.text()
+                        ok = _panel_resp_ok(r.status, txt)
+                        logging.info(f"[RENEW] {srv['id']} 3x-ui: HTTP={r.status} ok={ok} ответ={txt[:160]}")
+                else:
+                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    client_payload = {
+                        "id": client_uuid,
+                        "email": email_for_panel,
+                        "limitIp": int(current_client.get("limitIp", 2) or 0),
+                        "totalGB": int(current_client.get("totalGB", 0) or 0),
+                        "expiryTime": int(new_expiry_ms),
+                        "enable": True,
+                        "tgId": user_id,
+                        "subId": sub_id,
+                        "alterId": 0,
+                        "flow": srv_flow
+                    }
+                    client_data = {"id": str(srv['inbound_id']),
+                                   "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)}
+                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
+                        txt = await r.text()
+                        ok = _panel_resp_ok(r.status, txt)
+                        logging.info(f"[RENEW] {srv['id']} x-ui: HTTP={r.status} ok={ok} ответ={txt[:160]}")
+
+                if ok:
+                    servers_ok += 1
+            except Exception as e:
+                logging.error(f"[RENEW] Ошибка на сервере {srv['id']} для {user_id}: {e}", exc_info=True)
+                continue
+
+    # ---- Пересборка конфига + БД + сайт ----
+    vless_links = []
+    try:
+        vless_links, _ = await get_vpn_config_clean(user_id, username)
+    except Exception as e:
+        logging.error(f"[RENEW] get_vpn_config_clean упал для {user_id}: {e}", exc_info=True)
+
+    if vless_links:
+        combined_configs = "\n".join(vless_links)
+    else:
+        # панели не ответили — НЕ затираем рабочий конфиг пустым
+        combined_configs = (user_data[2] if (user_data and len(user_data) > 2 and user_data[2]) else "")
+        logging.error(f"[RENEW] Для {user_id} не получено ни одной ссылки — оставляю прежний конфиг")
+
+    sub_id_db = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
+    real_username = username or (user_data[1] if (user_data and len(user_data) > 1 and user_data[1]) else "")
+    try:
+        add_or_update_user(user_id, real_username, combined_configs, sub_id_db, new_expiry_seconds)
+        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
+        await send_sub_to_website(sub_id_db, base64_payload, new_expiry_seconds)
+    except Exception as db_err:
+        logging.error(f"[RENEW] Ошибка записи в БД/сайт для {user_id}: {db_err}")
+        try:
+            add_or_update_user(user_id, real_username, None, None, new_expiry_seconds)
+        except Exception:
+            pass
+
+    return servers_ok > 0 and bool(vless_links)
 
 
 async def renew_vpn_subscription(user_id: int) -> bool:
@@ -2982,195 +3209,8 @@ async def renew_vpn_subscription(user_id: int) -> bool:
         return False
 
 
-async def renew_vpn_subscription_flexible(user_id: int, days: int, username: str = ""):
-    """
-    Продлевает подписку на указанное количество дней на ВСЕХ серверах из SERVERS.
-    Если подписка активна — прибавляет дни сверху. Если истекла — считает от текущего момента.
-    Активирует/включает клиентов в X-UI панелях и сохраняет в локальную БД.
-    """
-    # ---- 1. Расчет времени (Секунды для БД, Миллисекунды для панелей) ----
-    user_data = get_user_from_db(user_id)
-    current_expiry_seconds = user_data[4] if (user_data and len(user_data) > 4 and user_data[4] is not None) else 0
-    
-    current_time_seconds = int(time.time())
-    seconds_to_add = days * 24 * 60 * 60
-    
-    # Если подписка активна -> плюсуем сверху. Если истекла/нет -> считаем от сейчас
-    if current_expiry_seconds > current_time_seconds:
-        new_expiry_seconds = current_expiry_seconds + seconds_to_add
-    else:
-        new_expiry_seconds = current_time_seconds + seconds_to_add
-        
-    new_expiry_ms = new_expiry_seconds * 1000  # Переводим в мс для 3X-UI панелей
 
-    jar = aiohttp.CookieJar(unsafe=True)
-    connector = aiohttp.TCPConnector(ssl=False)
 
-    async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        for srv in SERVERS:
-            if srv["id"] == "fi_1":
-                continue
-                
-            try:
-                token_raw = srv.get("api_token", "")
-                has_token = bool(token_raw and token_raw.strip())
-                
-                srv_flow = srv.get("flow", "")
-                email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
-                
-                panel_url = srv['panel_url'].rstrip('/')
-                base_path = srv['base_path'].strip('/')
-                base_url = f"{panel_url}/{base_path}" if base_path else panel_url
-
-                headers = {"Accept": "application/json"}
-
-                # --- 1. АВТОРИЗАЦИЯ ---
-                if srv.get("version") == "3x-ui" or has_token:
-                    headers["Authorization"] = f"Bearer {token_raw.strip()}"
-                else:
-                    login_url = f"{base_url}/login"
-                    login_data = {"username": srv['panel_user'], "password": srv['panel_password']}
-                    async with session.post(login_url, data=login_data, timeout=10) as resp:
-                        await resp.text()
-
-                # --- 2. ПОЛУЧЕНИЕ ТЕКУЩИХ ДАННЫХ ИНБАУНДА ---
-                if srv.get("version") == "3x-ui" or has_token:
-                    get_url = f"{base_url}/panel/api/inbounds/list/"
-                    async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        resp_text = await resp.text()
-                        res_json = json.loads(resp_text)
-                    inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
-                else:
-                    get_url = f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}"
-                    async with session.get(get_url, headers=headers, timeout=10) as resp:
-                        res_json = await resp.json()
-                    inbound_obj = res_json.get("obj")
-                    
-                if not inbound_obj:
-                    logging.error(f"Не удалось получить данные инбаунда на сервере {srv['id']}")
-                    continue
-
-                raw_settings = inbound_obj.get("settings")
-                settings = raw_settings if isinstance(raw_settings, dict) else (json.loads(raw_settings) if raw_settings else {})
-                clients = settings.get("clients", [])
-                
-                # Ищем клиента по tgId или email
-                current_client = None
-                for c in clients:
-                    if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
-                        current_client = c
-                        break
-
-                # Если клиента на этой панели физически нет, создаем его через ваш чистый метод
-                if not current_client:
-                    logging.info(f"Клиент {user_id} не найден на {srv['id']}. Создаем с нуля...")
-                    await get_vpn_config_clean(user_id, username)
-                    
-                    # Перезапрашиваем данные инбаунда после создания
-                    if srv.get("version") == "3x-ui" or has_token:
-                        async with session.get(f"{base_url}/panel/api/inbounds/list/", headers=headers, timeout=10) as resp:
-                            res_json = json.loads(await resp.text())
-                        inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
-                    else:
-                        async with session.get(f"{base_url}/panel/api/inbounds/get/{srv['inbound_id']}", headers=headers, timeout=10) as resp:
-                            res_json = await resp.json()
-                        inbound_obj = res_json.get("obj")
-
-                    raw_settings = inbound_obj.get("settings") if inbound_obj else {}
-                    settings = raw_settings if isinstance(raw_settings, dict) else (json.loads(raw_settings) if raw_settings else {})
-                    for c in settings.get("clients", []):
-                        if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
-                            current_client = c
-                            break
-
-                if not current_client:
-                    logging.error(f"Не удалось найти/создать клиента {user_id} на сервере {srv['id']}")
-                    continue
-
-                client_uuid = current_client.get("id")
-                sub_id = current_client.get("subId", secrets.token_hex(16))
-
-                # --- 3. ОТПРАВКА ОБНОВЛЕНИЯ С НОВЫМ СРОКОМ СЛУЖБЫ ---
-                if srv.get("version") == "3x-ui" or has_token:
-                    # Из Swagger: роут строго /panel/api/clients/update/{email}
-                    update_url = f"{base_url}/panel/api/clients/update/{email_for_panel}"
-                    headers["Content-Type"] = "application/json; charset=utf-8"
-                    
-                    payload = {
-                        "client": {
-                            "email": email_for_panel,
-                            "totalGB": int(current_client.get("totalGB", 0)),
-                            "expiryTime": int(new_expiry_ms),
-                            "tgId": int(user_id) if str(user_id).isdigit() else 0,
-                            "limitIp": int(current_client.get("limitIp", 2)),
-                            "limitHwid": int(current_client.get("limitHwid", 0)),
-                            "enable": True,
-                            "id": client_uuid,
-                            "flow": srv_flow,
-                            "subId": sub_id
-                        },
-                        "inboundIds": [int(srv['inbound_id'])]
-                    }
-                    
-                    logging.info(f"[ЛОГ КЛИЕНТА] Отправка Swagger-JSON обновления на {update_url}")
-                    async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
-                        update_resp = await r.text()
-                        logging.info(f"[ЛОГ КЛИЕНТА] Результат /clients/update 3x-ui: Статус HTTP={r.status}, Ответ='{update_resp}'")
-                else:
-                    # Старая панель x-ui (urlencoded форма)
-                    update_url = f"{base_url}/panel/api/inbounds/updateClient/{client_uuid}"
-                    headers["Content-Type"] = "application/x-www-form-urlencoded"
-                    
-                    client_payload = {
-                        "id": client_uuid,
-                        "email": email_for_panel,
-                        "totalGB": int(current_client.get("totalGB", 0)),
-                        "expiryTime": int(new_expiry_ms),
-                        "enable": True,
-                        "tgId": user_id,
-                        "subId": sub_id,
-                        "alterId": 0,
-                        "flow": srv_flow
-                    }
-                    
-                    client_data = {
-                        "id": str(srv['inbound_id']),
-                        "settings": json.dumps({"clients": [client_payload]}, ensure_ascii=False)
-                    }
-                    
-                    async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
-                        update_resp = await r.text()
-                        logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}")
-
-                logging.info(f"Сервер {srv['id']} успешно продлен на {days} дн. для {user_id}")
-
-            except Exception as e:
-                logging.error(f"Ошибка гибкого продления на сервере {srv['id']}: {e}", exc_info=True)
-                continue
-
-    # ---- 4. Обновление локальной БД Amvera и синхронизация с сайтом ----
-    try:
-        # Перегенерируем чистые ссылки с учетом новых сроков
-        vless_links, _ = await get_vpn_config_clean(user_id, username)
-        combined_configs = "\n".join(vless_links) if vless_links else ""
-        base64_payload = base64.b64encode(combined_configs.strip().encode('utf-8')).decode('utf-8')
-        
-        # Токен подписки по вашему стандарту
-        sub_id_db = "e" + hashlib.md5(str(user_id).encode()).hexdigest()[:15]
-        
-        # Обновляем сайт, чтобы ссылка sonatavpn.ru сразу отдавала новые данные
-        await send_sub_to_website(sub_id_db, base64_payload, new_expiry_seconds)
-        
-        # Пишем в локальную SQLite3 (в секундах)
-        real_username = username or (user_data[0] if user_data else "")
-        add_or_update_user(user_id, real_username, combined_configs, sub_id_db, new_expiry_seconds)
-    except Exception as db_err:
-
-        logging.error(f"Ошибка финальной записи в БД/Сайт при гибком продлении: {db_err}")
-        # Запасной вариант апдейта только времени в БД
-        add_or_update_user(user_id, username, None, None, new_expiry_seconds)
-        
-    return True
 
 
 
