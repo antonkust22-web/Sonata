@@ -60,6 +60,8 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
 import premium_emoji
+import tg_widgets
+
 
 
 class PromoStates(StatesGroup):
@@ -3846,6 +3848,11 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     try: await loading_msg.delete()
     except Exception: pass
 
+    ref_arg = command.args if (command and command.args) else "none"
+    if await tg_widgets.send_captcha_widget(message.chat.id, user_id, ref_arg):
+        return
+
+
     random_animals = random.sample(list(ANIMAL_MAP.keys()), 4)
     correct_animal = random.choice(random_animals)
     correct_name = ANIMAL_MAP[correct_animal]
@@ -5193,7 +5200,7 @@ async def delete_single_device(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(F.data == "connect")
+@dp.callback_query(F.data.in_({"connect", "connect_old"}))
 async def connect(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()   # выходим из режима ожидания кода ТВ, если был
     user_id = callback.from_user.id
@@ -5250,6 +5257,11 @@ async def connect(callback: types.CallbackQuery, state: FSMContext):
     # --- СЦЕНАРИЙ Б: Пользователь зашел ВПЕРВЫЕ (Выбор ОС) ---
     # Чтобы edit_text не конфликтовал с удалением, мы просто отправляем НОВУЮ заглушку,
     # а старое приветственное сообщение удаляем. Это полностью убирает баг.
+    if callback.data != "connect_old" and await tg_widgets.send_connect_widget(callback.message.chat.id, user_id):
+        try: await callback.message.delete()
+        except Exception: pass
+        return
+
     try:
         await callback.message.delete()
     except Exception:
@@ -5783,14 +5795,14 @@ async def send_sub_qr_callback(callback: types.CallbackQuery):
 
 # Хэндлер сброса настроек устройства
 @dp.callback_query(F.data == "reset_device")
-async def reset_device_preferences(callback: types.CallbackQuery):
+async def reset_device_preferences(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
     
     clear_user_device_prefs(user_id)
     
     # После очистки вызываем заново хэндлер connect, который запустит опрос сначала!
-    await connect(callback)
+    await connect(callback, state)
 
 
 
@@ -8433,6 +8445,7 @@ async def main():
     init_db()
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
     await premium_emoji.setup(bot, dp, ADMIN_ID)
+    tg_widgets.setup(dp, globals())
 
 
     try:
@@ -8448,7 +8461,7 @@ async def main():
 
     logging.info("Диспетчер: запускаю polling")
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=tg_widgets.allowed_updates(dp))
     finally:
         await bot.session.close()
 
