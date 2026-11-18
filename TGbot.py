@@ -1549,7 +1549,7 @@ async def get_vpn_config_clean(user_id, username=""):
                     if srv.get("version") == "3x-ui" or has_token:
                         # Из вашей Swagger-документации (image_zfRadq.png): роут обновления требует email в конце URL пути
                         email_in_url = urllib.parse.quote(email_for_panel, safe="")
-                         update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
+                        update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
                         
                         payload = {
