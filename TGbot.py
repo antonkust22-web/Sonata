@@ -2856,7 +2856,7 @@ async def admin_update_servers_decision(callback: types.CallbackQuery):
 
 
 
- STAFF_INF_EXPIRY = 4070908800   # 2099 год
+STAFF_INF_EXPIRY = 4070908800   # 2099 год
 STAFF_DEVICE_LIMIT = 999
 
 
