@@ -12,6 +12,7 @@ import asyncio, json, logging, random, sqlite3, time, zlib
 from types import SimpleNamespace
 import aiohttp
 from aiogram import BaseMiddleware, F
+from aiogram.filters import Command
 
 import miniapp_api
 
@@ -307,6 +308,7 @@ async def _connect_answer(frm, data):
 # ───────────────────────────── приём widget_query ─────────────────────────────
 async def _on_query(wq: dict):
     qid, data = str(wq.get("id")), str(wq.get("data") or "")
+    logging.info(f"[WIDGET] получен widget_query: data={data!r}")
     frm, chat = wq.get("from") or {}, wq.get("chat") or {}
     res = None
     try:
@@ -340,6 +342,21 @@ class _WidgetMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+async def _cmd_wtest(message):
+    """/wtest — только для создателя: показывает, почему виджет не отправляется."""
+    if message.from_user.id != G.get("admin"):
+        return
+    rep = [f"aiogram: {__import__('aiogram').__version__}", f"setup выполнен: {'да' if G.get('token') else 'НЕТ'}"]
+    for name, html, data in (("connect", CONNECT_HTML, {"d": 5}), ("captcha", CAPTCHA_HTML, {"s": "ok"})):
+        try:
+            m = await _api("sendWidget", {"chat_id": message.chat.id, "html": html, "allow_queries": True, "width": 0, "height": 300,
+                                          "chat_data": _j(data), "caption": f"тест: {name}"})
+            rep.append(f"✅ {name}: отправлен (message_id {m.get('message_id')})")
+        except Exception as e:
+            rep.append(f"❌ {name}: {e}")
+    await message.answer("\n".join(rep))
+
+
 def allowed_updates(dp):
     """Передайте в dp.start_polling(bot, allowed_updates=...): иначе Telegram не пришлёт widget_query."""
     return list(dp.resolve_used_update_types()) + ["widget_query"]
@@ -347,11 +364,12 @@ def allowed_updates(dp):
 
 def setup(dp, ns: dict):
     """Вызвать один раз в main() бота:  tg_widgets.setup(dp, globals())"""
-    G.update({"dp": dp, "bot": ns["bot"], "token": ns["API_TOKEN"], "db": ns["DB_PATH"], "ANIMAL_MAP": ns["ANIMAL_MAP"],
+    G.update({"admin": ns["ADMIN_ID"], "dp": dp, "bot": ns["bot"], "token": ns["API_TOKEN"], "db": ns["DB_PATH"], "ANIMAL_MAP": ns["ANIMAL_MAP"],
               "get_user_from_db": ns["get_user_from_db"], "process_captcha": ns["process_captcha"],
               "AppleTVState": ns["AppleTVState"], "AndroidTVState": ns["AndroidTVState"],
               "InlineKeyboardMarkup": ns["InlineKeyboardMarkup"], "InlineKeyboardButton": ns["InlineKeyboardButton"]})
     _db().close()
     dp.update.outer_middleware(_WidgetMiddleware())
     dp.callback_query.register(_on_capold, F.data.startswith("capold:"))
+    dp.message.register(_cmd_wtest, Command("wtest"))
     logging.info("[WIDGET] виджеты подключены (Bot API 10.4)")
