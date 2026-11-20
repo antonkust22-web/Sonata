@@ -462,11 +462,13 @@ def init_db():
     ''')
     
     # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ПРОМОКОДОВ
-    try:
-        cursor.execute('ALTER TABLE promocodes ADD COLUMN max_uses INTEGER DEFAULT 1;')
-        cursor.execute('ALTER TABLE promocodes ADD COLUMN current_uses INTEGER DEFAULT 0;')
-    except sqlite3.OperationalError:
-        pass 
+    # Кто и когда создал промокод (для статистики в мини-приложении)
+    for col in ("created_by INTEGER", "created_at INTEGER"):
+        try:
+            cursor.execute(f"ALTER TABLE promocodes ADD COLUMN {col};")
+        except sqlite3.OperationalError:
+            pass
+
 
     # ТЕХНИЧЕСКИЙ ХАК ДЛЯ ТАБЛИЦЫ USERS (добавление старых колонок)
     try: cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';")
@@ -662,21 +664,22 @@ def log_subscription_routing(user_id, username, sub_id, sub_url):
 
 
 
-def generate_new_promocode(days: int, custom_code: str = None, max_uses: int = 1) -> str:
+def generate_new_promocode(days: int, custom_code: str = None, max_uses: int = 1, created_by: int = None) -> str:
     """Генерирует промокод. max_uses=1 (для одного), max_uses=0 (многоразовый)"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
-    
+
     if not custom_code:
         random_part = secrets.token_hex(4).upper()
         code = f"SONATA-{random_part}"
     else:
         code = custom_code.strip().upper()
-        
+
     try:
         cursor.execute(
-            'INSERT INTO promocodes (code, days, max_uses, current_uses) VALUES (?, ?, ?, 0)',
-            (code, days, max_uses)
+            'INSERT INTO promocodes (code, days, max_uses, current_uses, created_by, created_at) '
+            'VALUES (?, ?, ?, 0, ?, ?)',
+            (code, days, max_uses, created_by, int(time.time()))
         )
         conn.commit()
         return code
@@ -684,6 +687,7 @@ def generate_new_promocode(days: int, custom_code: str = None, max_uses: int = 1
         return "EXISTS"
     finally:
         conn.close()
+
 
 
 
@@ -2475,35 +2479,33 @@ async def cmd_top_inviters(message: types.Message):
 
 @dp.message(Command("gen"), IsAmbassador())
 async def handle_generate_promo(message: types.Message):
-     
-
     parts = message.text.split()
     if len(parts) < 2:
         await message.answer(
             "Использование:\n"
             "• Одноразовый: <code>/gen [дни] [код]</code>\n"
             "• Бесконечный: <code>/gen [дни] [код] 0</code>\n"
-            "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>", 
+            "• Лимитированный: <code>/gen [дни] [код] [кол-во_человек]</code>",
             parse_mode="HTML"
         )
         return
-        
+
     try:
         days = int(parts[1])
         custom_code = parts[2].strip().upper() if len(parts) > 2 else None
-        
-        # Определяем лимит использований (если указан 3-й параметр, берем его, иначе ставим 1)
         max_uses = int(parts[3]) if len(parts) > 3 else 1
-        
-        # Вызываем обновленную генерацию
-        result_code = generate_new_promocode(days, custom_code, max_uses)
-        conn = sqlite3.connect(DB_PATH); conn.cursor().execute("UPDATE users SET actions_gen = actions_gen + 1 WHERE user_id = ?", (message.from_user.id,)); conn.commit(); conn.close()
-        
+
+        result_code = generate_new_promocode(days, custom_code, max_uses, message.from_user.id)
+
         if result_code == "EXISTS":
             await message.answer("❌ Такой кастомный промокод уже существует в базе данных!")
             return
-            
-        # Формируем красивый статус для админа
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.cursor().execute("UPDATE users SET actions_gen = actions_gen + 1 WHERE user_id = ?", (message.from_user.id,))
+        conn.commit()
+        conn.close()
+
         if max_uses == 0:
             uses_text = "♾ Без ограничений (каждый юзер по 1 разу)"
         elif max_uses == 1:
@@ -2516,7 +2518,7 @@ async def handle_generate_promo(message: types.Message):
             f"🔑 Код: <code>{result_code}</code>\n"
             f"⏳ Срок: <b>{days} дней</b>\n"
             f"📊 Лимит активаций: <b>{uses_text}</b>\n\n"
-            f"<i>Вы можете передать его пользователям.</i>", 
+            f"<i>Вы можете передать его пользователям.</i>",
             parse_mode="HTML"
         )
     except ValueError:
