@@ -61,6 +61,7 @@ from aiogram.fsm.context import FSMContext
 
 import premium_emoji
 import tg_widgets
+import trial_block
 
 
 
