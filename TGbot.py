@@ -8449,6 +8449,7 @@ async def main():
     logging.info("Диспетчер: База данных успешно инициализирована таблицами.")
     await premium_emoji.setup(bot, dp, ADMIN_ID)
     tg_widgets.setup(dp, globals())
+    trial_block.setup(globals())
 
 
     try:
