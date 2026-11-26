@@ -8591,7 +8591,67 @@ from db_partners import init_partner_db
 # Вызывать строго ПЕРЕД запуском бота (перед start_polling)
 init_partner_db()
 
+#======================================================================
+# 🔕 Кнопка «Отключить уведомления об этом устройстве» (приходит из index.php)
+# Вставьте этот блок в main.py на уровне модуля — например, перед `async def main():`.
+# Использует уже существующие в боте: dp, F, types, aiohttp, logging, re, API_URL, SECRET_KEY,
+# get_user_from_db, InlineKeyboardMarkup, InlineKeyboardButton.
+# (если `import re` в main.py ещё нет — он есть: в файле уже используется re)
+# ======================================================================
+@dp.callback_query(F.data.startswith("dnm:") | F.data.startswith("dnu:"))
+async def device_notify_toggle(callback: types.CallbackQuery):
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3 or not re.fullmatch(r"e[a-f0-9]{15}", parts[1]) or not re.fullmatch(r"[a-f0-9]{16}", parts[2]):
+        await callback.answer("Некорректная кнопка.", show_alert=True)
+        return
+    action, sub_id, dev_key = parts
+    mute = (action == "dnm")
 
+    # Кнопку может нажать только владелец этой подписки
+    row = get_user_from_db(callback.from_user.id)
+    if not row or len(row) <= 3 or row[3] != sub_id:
+        await callback.answer("Эта кнопка относится к другой подписке.", show_alert=True)
+        return
+
+    url = f"{API_URL}?secret={SECRET_KEY}&mute_device={sub_id}&dev_key={dev_key}&mute={'1' if mute else '0'}"
+    data = {}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+    except Exception as e:
+        logging.error(f"[MUTE DEVICE] Не удалось связаться с сайтом: {e}")
+
+    if not isinstance(data, dict) or data.get("status") != "success":
+        await callback.answer("Не удалось сохранить настройку. Попробуйте позже.", show_alert=True)
+        return
+
+    await callback.answer("Готово")
+
+    if mute:
+        text = (
+            "🔕 <b>Уведомления для этого устройства отключены</b>\n\n"
+            "<blockquote>Вы больше не получите сообщения «Новое устройство» и «Лимит устройств» именно по нему.\n"
+            "Подключение работает как прежде, слот остаётся занятым. Остальных устройств это не касается.</blockquote>\n\n"
+            f"ID устройства: <code>{dev_key}</code>\n"
+            "<i>Если вы не узнаёте это устройство — удалите его в Личном кабинете.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Включить уведомления обратно", callback_data=f"dnu:{sub_id}:{dev_key}")]
+        ])
+    else:
+        text = (
+            "🔔 <b>Уведомления для этого устройства снова включены</b>\n\n"
+            f"ID устройства: <code>{dev_key}</code>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Отключить уведомления об этом устройстве", callback_data=f"dnm:{sub_id}:{dev_key}")]
+        ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logging.warning(f"[MUTE DEVICE] Не удалось обновить сообщение: {e}")
 
 # --- Запуск ---
 async def main():
