@@ -1337,14 +1337,85 @@ import json
 import uuid
 import secrets
 import logging
+import urllib.parse
 from urllib.parse import quote
 
-# Добавлены параметры "version" и "flow" для каждого сервера
-SERVERS = [
+
+# ---------------- Статусы оплаты (БД + память) ----------------
+SERVER_PAID: dict = {}      # переопределения из команды /servers: {"ru_bridge_1": False, ...}
+
+
+def _srv_flags_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.execute("CREATE TABLE IF NOT EXISTS server_flags (server_id TEXT PRIMARY KEY, paid INTEGER NOT NULL)")
+    return conn
+
+
+def load_server_flags():
+    """Читает сохранённые командой /servers статусы из БД."""
+    SERVER_PAID.clear()
+    try:
+        conn = _srv_flags_conn()
+        try:
+            for sid, paid in conn.execute("SELECT server_id, paid FROM server_flags").fetchall():
+                SERVER_PAID[str(sid)] = bool(paid)
+        finally:
+            conn.close()
+    except Exception as e:
+        logging.error(f"[SERVERS] Не удалось прочитать статусы оплаты: {e}")
+
+
+def is_server_paid(srv) -> bool:
+    """Сначала смотрим то, что выставлено командой /servers, иначе поле "paid" из списка."""
+    sid = srv["id"]
+    if sid in SERVER_PAID:
+        return SERVER_PAID[sid]
+    return bool(srv.get("paid", True))
+
+
+def set_server_paid(server_id: str, paid: bool) -> bool:
+    if not any(s["id"] == server_id for s in SERVERS.all()):
+        return False
+    try:
+        conn = _srv_flags_conn()
+        try:
+            conn.execute("INSERT OR REPLACE INTO server_flags (server_id, paid) VALUES (?, ?)",
+                         (server_id, 1 if paid else 0))
+            conn.commit()
+        finally:
+            conn.close()
+        SERVER_PAID[server_id] = bool(paid)
+        logging.info(f"[SERVERS] {server_id}: {'ОПЛАЧЕН' if paid else 'НЕ ОПЛАЧЕН (пропускается)'}")
+        return True
+    except Exception as e:
+        logging.error(f"[SERVERS] Не удалось сохранить статус {server_id}: {e}")
+        return False
+
+
+class _ServerList(list):
+    """Список серверов, который при обычном переборе (for srv in SERVERS) отдаёт ТОЛЬКО оплаченные.
+    Поэтому все старые функции бота сами пропускают неоплаченные сервера и не пишут мусор в логи.
+    Индексация SERVERS[0], SERVERS[1] ... работает как раньше (по полному списку).
+    Полный список (с неоплаченными) — SERVERS.all()."""
+    def __iter__(self):
+        return (s for s in list.__iter__(self) if is_server_paid(s))
+
+    def all(self):
+        return list(list.__iter__(self))
+
+
+def get_active_servers() -> list:
+    return list(SERVERS)
+
+
+# ---------------- СПИСОК СЕРВЕРОВ ----------------
+# "paid": True — оплачен, False — не оплачен (пропускается везде)
+SERVERS = _ServerList([
     {
         "id": "fi_1",
+        "paid": False,                     # Финляндия — не оплачена
         "panel_url": "http://78.17.11.14:2053",
-        "base_path": "/xD2SJTfdphAmQqisoB", 
+        "base_path": "/xD2SJTfdphAmQqisoB",
         "version": "old",
         "flow": "",                        # Старая панель без flow
         "fp": "chrome",
@@ -1353,80 +1424,80 @@ SERVERS = [
         "panel_password": "Lodka120259",
         "inbound_id": 1,
         "my_ip": "78.17.11.14",
-        "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0", 
-        "sid": "d35e733e16c7a4d0", 
-        "sni": "www.amd.com",                           
+        "pbk": "GMs90LvYkQoeBfFcvbFxvSOqV9BCGleUliZueyNrZQ0",
+        "sid": "d35e733e16c7a4d0",
+        "sni": "www.amd.com",
         "country_flag": "🇫🇮",
         "country_name": "Финляндия"
     },
     {
         "id": "de_1",
-        "panel_url": "http://78.17.152.36:2053", 
+        "paid": False,                     # Польша — не оплачена
+        "panel_url": "http://78.17.152.36:2053",
         "base_path": "/dsjwEGmmrbon",
         "version": "old",
-        "flow": "xtls-rprx-vision",      # Ставь сюда нужный flow для новой панели (или "")
+        "flow": "xtls-rprx-vision",
         "fp": "qq",
         "api_token": "",
         "panel_user": "Soul",
         "panel_password": "Lodka1321",
         "inbound_id": 1,
         "my_ip": "78.17.152.36",
-        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ", 
-        "sid": "bfb0e0d2c85acc", 
-        "sni": "cloudflare.com",                                   
+        "pbk": "wEXAYpBWeoSjHYgUc75Jpze2cyAkefqNDXn6JTKPNlQ",
+        "sid": "bfb0e0d2c85acc",
+        "sni": "cloudflare.com",
         "country_flag": "🇵🇱",
         "country_name": "Польша"
     },
     {
         "id": "ru_bridge_1",
+        "paid": True,                      # Обход №1 — оплачен
         "panel_url": "https://78.17.96.45:2053",
         "base_path": "/sStN4TwNhzf4dBS4PI",
         "version": "3x-ui",
-        "flow": "",            # Оставляй пустым, если flow на этом сервере не нужен
+        "flow": "",
         "fp": "chrome",
         "api_token": "fFMIwjUzDNtJI1ikFUOytdMmSCdRxtd140fgbId9VYECioyH",
-        "panel_user": "Asad",  
-        "panel_password": "5420",  
-        "inbound_id": 1,  
-        "my_ip": "51.250.89.217",  
-        "pbk": "Dfr_ZiYS76nGhCyu3OpWJPYqwr4An2e5qwKG_5KwixA",  
-        "sid": "2c87d277",  
-        "sni": "s.microsoft.com",  
+        "panel_user": "Asad",
+        "panel_password": "5420",
+        "inbound_id": 1,
+        "my_ip": "51.250.89.217",
+        "pbk": "Dfr_ZiYS76nGhCyu3OpWJPYqwr4An2e5qwKG_5KwixA",
+        "sid": "2c87d277",
+        "sni": "s.microsoft.com",
         "country_flag": "🇮🇪",
         "country_name": "Обход №1"
     }
-]
+])
+
+load_server_flags()
 
 
-import uuid
-import secrets
-import json
-import logging
-import aiohttp
-import urllib.parse
-
+# ---------------- Конфиг пользователя ----------------
 async def get_vpn_config_clean(user_id, username=""):
     vless_links = []
     final_expiry_time_ms = 0
-    
+
+    active_servers = list(SERVERS)          # только оплаченные
+    if not active_servers:
+        logging.warning("[SERVERS] Нет ни одного оплаченного сервера — конфиг не собран")
+        return vless_links, final_expiry_time_ms
+
     # КРИТИЧЕСКИ ВАЖНО: jar автоматически сохраняет куки панели для последующих POST-запросов
     jar = aiohttp.CookieJar(unsafe=True)
     connector = aiohttp.TCPConnector(ssl=False)
 
     async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-        for srv in SERVERS:
-            if srv["id"] == "fi_1":
-                continue
-                
+        for srv in active_servers:
             try:
                 token_raw = srv.get("api_token", "")
                 has_token = bool(token_raw and token_raw.strip())
-                
+
                 srv_flow = srv.get("flow", "")
                 current_fp = srv.get("fp", "chrome")
-                
+
                 email_for_panel = f"{srv['country_flag']}_{srv['country_name']}_#{user_id}".replace(" ", "_")
-                
+
                 panel_url = srv['panel_url'].rstrip('/')
                 base_path = srv['base_path'].strip('/')
                 base_url = f"{panel_url}/{base_path}" if base_path else panel_url
@@ -1437,15 +1508,11 @@ async def get_vpn_config_clean(user_id, username=""):
                 # --- 1. АВТОРИЗАЦИЯ И ОБХОД ЗАЩИТЫ КУК ---
                 if srv.get("version") == "3x-ui" or has_token:
                     headers["Authorization"] = f"Bearer {token_raw.strip()}"
-                    
-                    # ОБХОД ЗАЩИТЫ: Делаем фейковый GET запрос к списку, чтобы панель принудительно прописала куку сессии '3x-ui' в jar
+
+                    # ОБХОД ЗАЩИТЫ: фейковый GET, чтобы панель прописала куку сессии '3x-ui' в jar
                     init_url = f"{base_url.rstrip('/')}/panel/api/inbounds/list/"
-                    logging.info("[ЛОГ ПОДКЛЮЧЕНИЯ] Инициализация сессии для 3x-ui (получение куки через Bearer токен)...")
                     async with session.get(init_url, headers=headers, timeout=10) as resp:
                         await resp.text()
-                        cookie_header = resp.headers.get("Set-Cookie")
-                        if cookie_header:
-                            logging.info(f"[ЛОГ ПОДКЛЮЧЕНИЯ] Защита обойдена! Получена сессионная кука для записи: {cookie_header}")
                 else:
                     # Старая авторизация x-ui по логину/паролю
                     login_url = f"{base_url.rstrip('/')}/login"
@@ -1462,10 +1529,10 @@ async def get_vpn_config_clean(user_id, username=""):
                     async with session.get(get_url, headers=headers, timeout=10) as resp:
                         resp_text = await resp.text()
                         res_json = json.loads(resp_text)
-                    
+
                     inbound_obj = next((i for i in res_json.get("obj", []) if i.get("id") == srv['inbound_id']), None)
                     if not inbound_obj:
-                        logging.error(f"[ЛОГ ОШИБКИ] Инбаунд с ID {srv['inbound_id']} не найден!")
+                        logging.error(f"[ЛОГ ОШИБКИ] Инбаунд с ID {srv['inbound_id']} не найден на {srv['id']}!")
                         continue
                 else:
                     get_url = f"{base_url.rstrip('/')}/panel/api/inbounds/get/{srv['inbound_id']}"
@@ -1478,7 +1545,7 @@ async def get_vpn_config_clean(user_id, username=""):
                 raw_settings = inbound_obj.get("settings")
                 settings = raw_settings if isinstance(raw_settings, dict) else (json.loads(raw_settings) if raw_settings else {})
                 clients = settings.get("clients", [])
-                
+
                 current_client = None
                 for c in clients:
                     if str(c.get("tgId", "")) == str(user_id) or str(c.get("email", "")) == email_for_panel:
@@ -1496,14 +1563,12 @@ async def get_vpn_config_clean(user_id, username=""):
                 if not client_uuid:
                     client_uuid = str(uuid.uuid4())
                     sub_id = secrets.token_hex(16)
-                    logging.info(f"[ЛОГ КЛИЕНТА] Пользователь не найден. Генерируем новый UUID: {client_uuid}, subId: {sub_id}")
-                    
+                    logging.info(f"[ЛОГ КЛИЕНТА] {srv['id']}: пользователь {user_id} не найден, создаю (UUID {client_uuid})")
+
                     if srv.get("version") == "3x-ui" or has_token:
-                        # Точный роут добавления из вашей Swagger-документации (image_Zdovsi.png)
                         add_url = f"{panel_url}/{base_path}/panel/api/clients/add" if base_path else f"{panel_url}/panel/api/clients/add"
                         headers["Content-Type"] = "application/json; charset=utf-8"
-                        
-                        # Точная структура JSON-тела из примера документации Swagger (image_Zdovsi.png)
+
                         payload = {
                             "client": {
                                 "email": email_for_panel,
@@ -1519,20 +1584,19 @@ async def get_vpn_config_clean(user_id, username=""):
                             },
                             "inboundIds": [int(srv['inbound_id'])]
                         }
-                        
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка Swagger-JSON добавления на {add_url}")
+
                         async with session.post(add_url, headers=headers, json=payload, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат /clients/add 3x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] {srv['id']} /clients/add: HTTP={r.status}, ответ='{add_resp[:200]}'")
                     else:
-                        # Старая панель x-ui (работает через urlencoded форму)
+                        # Старая панель x-ui (urlencoded форма)
                         client_payload = {
-                            "id": client_uuid, 
-                            "email": email_for_panel, 
+                            "id": client_uuid,
+                            "email": email_for_panel,
                             "totalGB": 0,
-                            "expiryTime": 0, 
-                            "enable": True, 
-                            "tgId": user_id, 
+                            "expiryTime": 0,
+                            "enable": True,
+                            "tgId": user_id,
                             "subId": sub_id,
                             "alterId": 0,
                             "flow": srv_flow
@@ -1545,18 +1609,17 @@ async def get_vpn_config_clean(user_id, username=""):
                         }
                         async with session.post(add_url, headers=headers, data=client_data, timeout=10) as r:
                             add_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат addClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{add_resp}'")
-                
+                            logging.info(f"[ЛОГ КЛИЕНТА] {srv['id']} addClient: HTTP={r.status}, ответ='{add_resp[:200]}'")
+
                 else:
                     # Пользователь НАЙДЕН — обновляем его параметры
                     expiry_time_ms = current_client.get("expiryTime", 0)
-                    
+
                     if srv.get("version") == "3x-ui" or has_token:
-                        # Из вашей Swagger-документации (image_zfRadq.png): роут обновления требует email в конце URL пути
                         email_in_url = urllib.parse.quote(email_for_panel, safe="")
                         update_url = f"{base_url}/panel/api/clients/update/{email_in_url}"
                         headers["Content-Type"] = "application/json; charset=utf-8"
-                        
+
                         payload = {
                             "client": {
                                 "email": email_for_panel,
@@ -1572,11 +1635,10 @@ async def get_vpn_config_clean(user_id, username=""):
                             },
                             "inboundIds": [int(srv['inbound_id'])]
                         }
-                        
-                        logging.info(f"[ЛОГ КЛИЕНТА] Отправка Swagger-JSON обновления на {update_url}")
+
                         async with session.post(update_url, headers=headers, json=payload, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат /clients/update 3x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] {srv['id']} /clients/update: HTTP={r.status}, ответ='{update_resp[:200]}'")
                     else:
                         # Старая панель x-ui
                         client_payload = {
@@ -1599,7 +1661,7 @@ async def get_vpn_config_clean(user_id, username=""):
                         }
                         async with session.post(update_url, headers=headers, data=client_data, timeout=10) as r:
                             update_resp = await r.text()
-                            logging.info(f"[ЛОГ КЛИЕНТА] Результат updateClient старой x-ui: Статус HTTP={r.status}, Ответ панели='{update_resp}'")
+                            logging.info(f"[ЛОГ КЛИЕНТА] {srv['id']} updateClient: HTTP={r.status}, ответ='{update_resp[:200]}'")
 
                 expiry_time_ms = current_client.get("expiryTime", 0) if current_client else 0
                 if expiry_time_ms > 0:
@@ -1608,15 +1670,15 @@ async def get_vpn_config_clean(user_id, username=""):
                 # --- 4. ГЕНЕРАЦИЯ VLESS+REALITY ССЫЛКИ ---
                 port = inbound_obj.get("port")
                 reality_settings = stream_settings.get("realitySettings", {})
-                
+
                 pbk = reality_settings.get("publicKey", srv.get("pbk", ""))
-                
+
                 short_ids = reality_settings.get("shortIds", [])
                 if isinstance(short_ids, list) and short_ids:
                     sid = short_ids[0]
                 else:
                     sid = srv.get("sid", "")
-                    
+
                 server_names = reality_settings.get("serverNames", [])
                 if isinstance(server_names, list) and server_names:
                     sni = server_names[0]
@@ -1627,12 +1689,12 @@ async def get_vpn_config_clean(user_id, username=""):
                     my_port = 443
                 else:
                     my_port = port if port else inbound_obj.get("port", 443)
-                
+
                 if srv["id"] in ["fi_1", "ru_bridge_1"]:
                     remark = f"{srv['country_flag']} {srv['country_name']}"
                 else:
                     remark = f"{srv['country_flag']}{srv['country_name']}"
-                
+
                 safe_remark = quote(remark)
 
                 config_link = (
@@ -1647,6 +1709,95 @@ async def get_vpn_config_clean(user_id, username=""):
                 continue
 
     return vless_links, final_expiry_time_ms
+
+
+# ---------------- Команда /servers (только Создатель) ----------------
+def _srv_paid_text() -> str:
+    lines = ["🖥 <b>Серверы Sonata VPN</b>\n"]
+    for s in SERVERS.all():
+        paid = is_server_paid(s)
+        lines.append(f"{'🟢' if paid else '🔴'} {s['country_flag']} <b>{s['country_name']}</b> "
+                     f"(<code>{s['id']}</code>) — {'оплачен' if paid else 'НЕ оплачен'}")
+    lines.append("\n<i>Неоплаченные сервера бот полностью пропускает: конфиги, продление, отзыв, промокоды.</i>")
+    return "\n".join(lines)
+
+
+def _srv_paid_list_kb():
+    rows = []
+    for s in SERVERS.all():
+        mark = "🟢" if is_server_paid(s) else "🔴"
+        rows.append([InlineKeyboardButton(text=f"{mark} {s['country_flag']} {s['country_name']}",
+                                          callback_data=f"srvpay:open:{s['id']}")])
+    rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="srvpay:close")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("servers"))
+async def cmd_servers_paid(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(_srv_paid_text(), reply_markup=_srv_paid_list_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("srvpay:"))
+async def cb_servers_paid(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Нет прав.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "close":
+        await callback.answer()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
+
+    if action == "list":
+        await callback.answer()
+        try:
+            await callback.message.edit_text(_srv_paid_text(), reply_markup=_srv_paid_list_kb(), parse_mode="HTML")
+        except TelegramBadRequest:
+            pass
+        return
+
+    server_id = parts[2] if len(parts) > 2 else ""
+    srv = next((s for s in SERVERS.all() if s["id"] == server_id), None)
+    if not srv:
+        await callback.answer("Сервер не найден.", show_alert=True)
+        return
+
+    if action == "set" and len(parts) > 3:
+        if not set_server_paid(server_id, parts[3] == "1"):
+            await callback.answer("❌ Не удалось сохранить.", show_alert=True)
+            return
+        await callback.answer("✅ Сохранено")
+    elif action == "open":
+        await callback.answer()
+    else:
+        await callback.answer()
+        return
+
+    paid = is_server_paid(srv)
+    text = (f"{srv['country_flag']} <b>{srv['country_name']}</b> (<code>{srv['id']}</code>)\n"
+            f"IP: <code>{srv['my_ip']}</code>\n\n"
+            f"Статус: {'🟢 <b>Оплачен</b>' if paid else '🔴 <b>Не оплачен</b> (пропускается)'}\n\n"
+            "<i>Пользователи получат обновлённый список серверов при следующем «Подключиться» или продлении. "
+            "Чтобы обновить сразу всем — /update_servers.</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("✅ Оплачен ✔" if paid else "✅ Отметить оплаченным"),
+                              callback_data=f"srvpay:set:{server_id}:1")],
+        [InlineKeyboardButton(text=("❌ Не оплачен ✔" if not paid else "❌ Отметить неоплаченным"),
+                              callback_data=f"srvpay:set:{server_id}:0")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data="srvpay:list")],
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass
 
 
 
