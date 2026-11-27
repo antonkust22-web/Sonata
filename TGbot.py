@@ -62,6 +62,7 @@ from aiogram.fsm.context import FSMContext
 import premium_emoji
 import tg_widgets
 import trial_block
+import ads_tracker
 
 
 
@@ -3971,6 +3972,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None):
     # 1. Проверяем наличие пользователя в БД ДО каких-либо действий
     existing_user = get_user_from_db(user_id)
     is_new_user = existing_user is None
+    ads_tracker.track_start(user_id, command.args if command else None, is_new_user)
     
     # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ СТАРЫЙ: СРАЗУ ВЫДАЕМ МЕНЮ БЕЗ КАПЧИ ===
     if not is_new_user:
@@ -8661,6 +8663,7 @@ async def main():
     await premium_emoji.setup(bot, dp, ADMIN_ID)
     tg_widgets.setup(dp, globals())
     trial_block.setup(globals())
+    ads_tracker.setup(globals())
 
 
     try:
