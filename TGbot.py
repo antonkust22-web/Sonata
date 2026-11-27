@@ -63,7 +63,7 @@ import premium_emoji
 import tg_widgets
 import trial_block
 import ads_tracker
-
+import domain_manager_block
 
 
 class PromoStates(StatesGroup):
@@ -8664,6 +8664,7 @@ async def main():
     tg_widgets.setup(dp, globals())
     trial_block.setup(globals())
     ads_tracker.setup(globals())
+    domain_manager_block.setup(globals())
 
 
     try:
